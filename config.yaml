@@ -1,0 +1,17 @@
+name: 数据库国产化智能体
+host: 0.0.0.0
+port: 5010
+artifact_root: artifacts
+db_path: data/db.sqlite3
+mysql_url: "mysql+pymysql://root:root123@127.0.0.1:3306/db_loc"  # 非空启用MySQL，留空则用SQLite
+chroma_dir: data/chroma
+kb_collection: migration_kb
+rag_top_k: 4
+llm:
+  provider: bailian        # ollama | deepseek | bailian
+  base_url: ""
+  model: qwen3.7-plus
+  api_key: "sk-ws-H.PLIYYMP.OFe6.MEYCIQCS-IVSDlO7H6643vyPLRSCgMfyfLIVM8pk9mMQfpEaWwIhAKrnWGK7hGvMgqwDGbl3qBF8ig-xRLCt1kRyCTx5NmAt"
+  embedding_model: qwen3.7-text-embedding
+  temperature: 0.2
+  max_tokens: 4096

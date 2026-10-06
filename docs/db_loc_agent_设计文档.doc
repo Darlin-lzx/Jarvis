@@ -1,0 +1,418 @@
+<html xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:w="urn:schemas-microsoft-com:office:word" xmlns="http://www.w3.org/TR/REC-html40">
+<head>
+<meta charset="utf-8">
+<title>db_loc_agent 数据库国产化智能体 · 设计与架构文档</title>
+<style>
+  /* Word/WPS 打开时优先采用内联样式；此 CSS 仅作浏览器兜底 */
+  body { font-family: "PingFang SC", "Microsoft YaHei", "Segoe UI", sans-serif; font-size: 11pt; line-height: 1.65; color: #26303e; background: #fff; }
+  h1 { color: #173a6d; }
+  code { font-family: Menlo, Consolas, monospace; background: #f0f4fa; padding: 1px 5px; border-radius: 3px; font-size: 10pt; color:#16437e; }
+  pre { font-family: Menlo, Consolas, monospace; font-size: 9.5pt; white-space: pre-wrap; }
+</style>
+</head>
+<body>
+
+<!-- ===== 封面 ===== -->
+<table width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;">
+<tr>
+  <td style="padding:6px 0 4px 0;">
+    <table width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;">
+      <tr><td style="background:#173a6d;height:6px;"></td></tr>
+    </table>
+  </td>
+</tr>
+<tr>
+  <td style="padding:44px 36px 30px 36px;">
+    <p style="font-size:10pt;color:#8a97a8;letter-spacing:3px;margin:0 0 8px 0;">DESIGN &amp; ARCHITECTURE</p>
+    <p style="font-size:27pt;color:#173a6d;font-weight:bold;margin:0 0 6px 0;letter-spacing:1px;">数据库国产化智能体</p>
+    <p style="font-size:17pt;color:#2b579a;margin:0 0 18px 0;">db_loc_agent · 模块设计与架构文档</p>
+    <table width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;background:#f4f8fd;border:1px solid #d5e3f2;border-radius:6px;">
+      <tr>
+        <td style="padding:14px 20px;width:50%;">
+          <p style="margin:2px 0;font-size:10pt;"><b style="color:#8a97a8;">模块路径：</b><code>/BDMP/db_loc_agent</code></p>
+          <p style="margin:2px 0;font-size:10pt;"><b style="color:#8a97a8;">版本：</b>v0.1.0</p>
+        </td>
+        <td style="padding:14px 20px;border-left:1px dashed #c8daf0;">
+          <p style="margin:2px 0;font-size:10pt;"><b style="color:#8a97a8;">日期：</b>2026-09-29</p>
+          <p style="margin:2px 0;font-size:10pt;"><b style="color:#8a97a8;">测试：</b>70 用例全绿</p>
+        </td>
+      </tr>
+    </table>
+    <table width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;margin-top:22px;">
+      <tr>
+        <td style="background:#eaf1fb;border:1px solid #c6d9f0;border-radius:6px;padding:10px 18px;" width="33%">
+          <p style="margin:0;font-size:12pt;color:#173a6d;font-weight:bold;">🔄 迁移评估</p>
+          <p style="margin:2px 0 0 0;font-size:9.5pt;color:#67809f;">评估兼容性 · 风险 · 工作量</p>
+        </td>
+        <td width="1%"></td>
+        <td style="background:#eaf8ef;border:1px solid #bae3c9;border-radius:6px;padding:10px 18px;" width="33%">
+          <p style="margin:0;font-size:12pt;color:#1c6e3f;font-weight:bold;">🚑 迁移后运维</p>
+          <p style="margin:2px 0 0 0;font-size:9.5pt;color:#5d8f72;">健康巡检 · 慢 SQL · 性能基线</p>
+        </td>
+        <td width="1%"></td>
+        <td style="background:#fdf5e9;border:1px solid #edd9b0;border-radius:6px;padding:10px 18px;" width="33%">
+          <p style="margin:0;font-size:12pt;color:#8a5a13;font-weight:bold;">📊 统一治理</p>
+          <p style="margin:2px 0 0 0;font-size:9.5pt;color:#a28350;">资产目录 · 质量评分 · 图谱沉淀</p>
+        </td>
+      </tr>
+    </table>
+  </td>
+</tr>
+</table>
+
+<h1 style="font-size:19pt;color:#173a6d;border-bottom:2px solid #2b579a;padding-bottom:6px;margin-top:26px;">目录</h1>
+<table width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;background:#fafcff;border:1px solid #e0e8f2;border-radius:6px;">
+  <tr><td style="padding:14px 22px;">
+    <table width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;font-size:10.5pt;">
+      <tr>
+        <td style="padding:3px 14px 3px 0;width:50%;">1. 模块概述</td>
+        <td style="padding:3px 0;width:50%;">9. 后端 REST API</td>
+      </tr>
+      <tr>
+        <td style="padding:3px 14px 3px 0;">2. 总体架构</td>
+        <td style="padding:3px 0;">10. 安全网关</td>
+      </tr>
+      <tr>
+        <td style="padding:3px 14px 3px 0;">3. 目录结构与职责</td>
+        <td style="padding:3px 0;">11. 技能体系与脚本沙箱</td>
+      </tr>
+      <tr>
+        <td style="padding:3px 14px 3px 0;">4. 数据模型（17 张表）</td>
+        <td style="padding:3px 0;">12. 前端工作台</td>
+      </tr>
+      <tr>
+        <td style="padding:3px 14px 3px 0;">5. 核心运行时 LangGraph</td>
+        <td style="padding:3px 0;">13. 测试体系</td>
+      </tr>
+      <tr>
+        <td style="padding:3px 14px 3px 0;">6. 智能体注册表</td>
+        <td style="padding:3px 0;">14. 设计决策与安全边界</td>
+      </tr>
+      <tr>
+        <td style="padding:3px 14px 3px 0;">7. LLM 工具集（12 项）</td>
+        <td style="padding:3px 0;">15. 运行方式</td>
+      </tr>
+      <tr>
+        <td style="padding:3px 14px 3px 0;">8. 能力矩阵（P0~P3）</td>
+        <td style="padding:3px 0;">附录 · 服务装配关系</td>
+      </tr>
+    </table>
+  </td></tr>
+</table>
+
+<!-- ===== 章节标题辅助 ===== -->
+<table width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;margin:30px 0 12px 0;">
+  <tr>
+    <td style="background:#2b579a;border-radius:4px;padding:7px 16px;" valign="middle">
+      <p style="margin:0;color:#ffffff;font-size:14pt;font-weight:bold;">1&nbsp;&nbsp;模块概述</p>
+    </td>
+  </tr>
+</table>
+<p>db_loc_agent 是面向「<b>数据库国产化迁移</b>」场景的多 Agent 智能体平台，把大模型贯穿数据库迁移的全生命周期：</p>
+<ul>
+  <li><b>迁移期</b>：迁移评估、DDL/DML 转换、代码改造（JDBC/ORM/存储过程）、知识库问答；</li>
+  <li><b>迁移后运维（第二级）</b>：健康巡检、慢 SQL 诊断、性能基线/告警；</li>
+  <li><b>多数据库统一管理与数据治理（第三级）</b>：元数据资产目录、数据质量评分、知识图谱沉淀。</li>
+</ul>
+<div style="background:#f6f9ff;border:1px solid #c9d8ec;border-left:5px solid #2b579a;padding:8px 14px;border-radius:3px;margin:10px 0;">
+  <p style="margin:0;font-size:10pt;color:#35506f;"><b>核心链路：</b>自然语言意图路由 → 多 Agent 编排 (call_agent) → LLM 工具调用（RAG / 技能 / 只读 SQL / 运维 / 治理）→ 产物落盘 → 步骤级轨迹 (trace) → 安全网关（鉴权 + 限流 + 审计）。</p>
+</div>
+<div style="background:#fdf6f6;border:1px solid #eed2d2;border-left:5px solid #c05252;padding:8px 14px;border-radius:3px;margin:10px 0;">
+  <p style="margin:0;font-size:10pt;color:#7a3f3f;"><b>技术栈：</b>Python 3.13 · FastAPI · LangGraph / LangChain · SQLAlchemy 2.0 · SQLite · ChromaDB · pypdf · uvicorn · 前端原生 HTML/JS 单页。</p>
+</div>
+
+<!-- ===== 2 架构 ===== -->
+<table width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;margin:30px 0 12px 0;">
+  <tr><td style="background:#2b579a;border-radius:4px;padding:7px 16px;">
+    <p style="margin:0;color:#ffffff;font-size:14pt;font-weight:bold;">2&nbsp;&nbsp;总体架构</p></td></tr>
+</table>
+<pre style="background:#0f1c30;color:#cdd9ea;border-radius:6px;padding:16px 18px;line-height:1.5;">
+┌─────────────────────────────────────────────────────────────────────────┐
+│      Browser  (index.html)  对话 · 工作台(11 面板)                         │
+│      REST ▲  ▼ SSE  /api/chat/stream                                     │
+├───────────┴─────────────────────────────────────────────────────────────┤
+│ FastAPI (app.py)                                                         │
+│  └─ SecurityGateway 中间件: 鉴权 + 令牌桶限流 + 审计落库                    │
+│  └─ REST: 会话/提示词/智能体/技能/数据源/知识库/图谱/产物/MCP/安全/运维/治理   │
+├─────────────────────────────────────────────────────────────────────────┤
+│ LangGraph 主图  parse → route → execute → artifact → reply                │
+│  执行节点: LLM 工具循环 (12 工具) + RAG/KG/技能/数据源上下文注入               │
+├──────┬────────┬────────┬────────┬────────┬──────────────────────────────┤
+│AgentSvc  SkillSvc DbTools RAGStore  KG       OpsSvc  GovSvc              │
+│agents  skills  只读SQL  ChromaDB 三元组    运维     治理                   │
+└──────┴────────┴────────┴────────┴────────┴──────────────────────────────┘
+                    SQLite (db.py · 17 表) · 脚本沙箱 · 产物目录
+</pre>
+<table width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;margin-top:8px;font-size:10pt;">
+  <tr>
+    <td style="background:#eef3fa;border:1px solid #b9cde4;padding:8px 12px;" width="25%"><b>入口层</b><br>nginx/browser 直接访问 5010</td>
+    <td style="background:#eef3fa;border:1px solid #b9cde4;padding:8px 12px;border-left:none;" width="25%"><b>网关层</b><br>鉴权 · 限流 · 审计</td>
+    <td style="background:#eef3fa;border:1px solid #b9cde4;padding:8px 12px;border-left:none;" width="25%"><b>编排层</b><br>LangGraph 五节点 + 工具循环</td>
+    <td style="background:#eef3fa;border:1px solid #b9cde4;padding:8px 12px;border-left:none;" width="25%"><b>服务层</b><br>6 服务 + 7 种库只读适配</td>
+  </tr>
+</table>
+
+<!-- ===== 3 目录结构 ===== -->
+<table width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;margin:30px 0 12px 0;">
+  <tr><td style="background:#2b579a;border-radius:4px;padding:7px 16px;">
+    <p style="margin:0;color:#ffffff;font-size:14pt;font-weight:bold;">3&nbsp;&nbsp;目录结构与职责</p></td></tr>
+</table>
+<table width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;font-size:9.5pt;">
+  <tr>
+    <td style="background:#173a6d;color:#fff;border:1px solid #173a6d;padding:6px 10px;width:24%;"><b>文件</b></td>
+    <td style="background:#173a6d;color:#fff;border:1px solid #173a6d;padding:6px 10px;"><b>职责</b></td>
+  </tr>
+  <tr><td style="background:#f9fbff;border:1px solid #ccd9ea;padding:5px 10px;"><code>app.py</code></td><td style="background:#f9fbff;border:1px solid #ccd9ea;padding:5px 10px;">FastAPI 应用工厂：全部 REST/SSE 端点、安全中间件、服务装配（create_app）</td></tr>
+  <tr><td style="border:1px solid #ccd9ea;padding:5px 10px;"><code>graph.py</code></td><td style="border:1px solid #ccd9ea;padding:5px 10px;">LangGraph 主图（GraphRuntime）：五节点 + 12 个 LLM 工具分发与 schema</td></tr>
+  <tr><td style="background:#f9fbff;border:1px solid #ccd9ea;padding:5px 10px;"><code>agents.py</code></td><td style="background:#f9fbff;border:1px solid #ccd9ea;padding:5px 10px;">Agent 注册中心：6 个内置智能体 + DB 覆盖 / 动态注册（AgentService）</td></tr>
+  <tr><td style="border:1px solid #ccd9ea;padding:5px 10px;"><code>db.py</code></td><td style="border:1px solid #ccd9ea;padding:5px 10px;">SQLAlchemy 数据模型（17 表）+ Database 连接与轻量迁移</td></tr>
+  <tr><td style="background:#f9fbff;border:1px solid #ccd9ea;padding:5px 10px;"><code>db_tools.py</code></td><td style="background:#f9fbff;border:1px solid #ccd9ea;padding:5px 10px;">数据源只读工具集：CRUD、只读连接、查询/EXPLAIN/探查、写拦截、慢查询观测回调</td></tr>
+  <tr><td style="border:1px solid #ccd9ea;padding:5px 10px;"><code>rag.py</code></td><td style="border:1px solid #ccd9ea;padding:5px 10px;">RAG 知识库：md/sql/txt/pdf 分块、ChromaDB 向量化与检索</td></tr>
+  <tr><td style="background:#f9fbff;border:1px solid #ccd9ea;padding:5px 10px;"><code>kg.py</code></td><td style="background:#f9fbff;border:1px solid #ccd9ea;padding:5px 10px;">知识图谱：规则式实体/关系提取、图谱重建、一跳扩展（expand）</td></tr>
+  <tr><td style="border:1px solid #ccd9ea;padding:5px 10px;"><code>skills.py</code></td><td style="border:1px solid #ccd9ea;padding:5px 10px;">技能体系：SKILL.md frontmatter、脚本沙箱执行、技能链（run_chain）</td></tr>
+  <tr><td style="background:#f9fbff;border:1px solid #ccd9ea;padding:5px 10px;"><code>artifacts.py</code></td><td style="background:#f9fbff;border:1px solid #ccd9ea;padding:5px 10px;">产物落盘：namespace 管理、对象名清洗、文件读写</td></tr>
+  <tr><td style="border:1px solid #ccd9ea;padding:5px 10px;"><code>prompts.py</code></td><td style="border:1px solid #ccd9ea;padding:5px 10px;">提示词管理：system / router / agent 三类，启用切换</td></tr>
+  <tr><td style="background:#f9fbff;border:1px solid #ccd9ea;padding:5px 10px;"><code>security.py</code></td><td style="background:#f9fbff;border:1px solid #ccd9ea;padding:5px 10px;">安全网关：API Key 鉴权 + 分钟级令牌桶限流 + 审计日志</td></tr>
+  <tr><td style="border:1px solid #ccd9ea;padding:5px 10px;"><code>ops.py</code></td><td style="border:1px solid #ccd9ea;padding:5px 10px;">迁移后运维（P3）：健康巡检、慢 SQL 记录与查询、性能基线/告警</td></tr>
+  <tr><td style="background:#f9fbff;border:1px solid #ccd9ea;padding:5px 10px;"><code>gov.py</code></td><td style="background:#f9fbff;border:1px solid #ccd9ea;padding:5px 10px;">数据治理（P3）：元数据资产目录、质量评分、图谱同步</td></tr>
+  <tr><td style="border:1px solid #ccd9ea;padding:5px 10px;"><code>llm.py / embedding.py / config.py</code></td><td style="border:1px solid #ccd9ea;padding:5px 10px;">模型工厂（ollama/deepseek/bailian）、Embedding 工厂、配置加载</td></tr>
+  <tr><td style="background:#f9fbff;border:1px solid #ccd9ea;padding:5px 10px;"><code>web/index.html</code></td><td style="background:#f9fbff;border:1px solid #ccd9ea;padding:5px 10px;">前端单页：对话 + 工作台 11 面板 + 模态框 + Markdown 渲染</td></tr>
+  <tr><td style="border:1px solid #ccd9ea;padding:5px 10px;"><code>tests/</code></td><td style="border:1px solid #ccd9ea;padding:5px 10px;">pytest 测试（15 文件，70 用例）</td></tr>
+</table>
+
+<!-- ===== 4 数据模型 ===== -->
+<table width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;margin:30px 0 12px 0;">
+  <tr><td style="background:#2b579a;border-radius:4px;padding:7px 16px;">
+    <p style="margin:0;color:#ffffff;font-size:14pt;font-weight:bold;">4&nbsp;&nbsp;数据模型（SQLite · 17 张表）</p></td></tr>
+</table>
+<table width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;font-size:9.5pt;">
+  <tr>
+    <td style="background:#173a6d;color:#fff;border:1px solid #173a6d;padding:6px 10px;width:20%;"><b>表</b></td>
+    <td style="background:#173a6d;color:#fff;border:1px solid #173a6d;padding:6px 10px;width:14%;"><b>归属</b></td>
+    <td style="background:#173a6d;color:#fff;border:1px solid #173a6d;padding:6px 10px;"><b>说明 / 关键字段</b></td>
+  </tr>
+  <tr><td style="background:#f9fbff;border:1px solid #ccd9ea;padding:5px 10px;"><code>conversations / messages</code></td><td style="background:#f9fbff;border:1px solid #ccd9ea;padding:5px 10px;">会话</td><td style="background:#f9fbff;border:1px solid #ccd9ea;padding:5px 10px;">消息正文（user/assistant）落库，支持历史回看</td></tr>
+  <tr><td style="border:1px solid #ccd9ea;padding:5px 10px;"><code>chat_trace</code></td><td style="border:1px solid #ccd9ea;padding:5px 10px;">会话</td><td style="border:1px solid #ccd9ea;padding:5px 10px;">步骤级轨迹（parse/route/skill/artifact/error）</td></tr>
+  <tr><td style="background:#f9fbff;border:1px solid #ccd9ea;padding:5px 10px;"><code>prompts / skills</code></td><td style="background:#f9fbff;border:1px solid #ccd9ea;padding:5px 10px;">配置</td><td style="background:#f9fbff;border:1px solid #ccd9ea;padding:5px 10px;">提示词库、技能索引</td></tr>
+  <tr><td style="border:1px solid #ccd9ea;padding:5px 10px;"><code>agents</code></td><td style="border:1px solid #ccd9ea;padding:5px 10px;">配置</td><td style="border:1px solid #ccd9ea;padding:5px 10px;">智能体定义（intent / default_prompt / output_files / gen_artifact）</td></tr>
+  <tr><td style="background:#f9fbff;border:1px solid #ccd9ea;padding:5px 10px;"><code>kb_documents / artifacts</code></td><td style="background:#f9fbff;border:1px solid #ccd9ea;padding:5px 10px;">知识</td><td style="background:#f9fbff;border:1px solid #ccd9ea;padding:5px 10px;">文档记录、产物文件记录（namespace 定位）</td></tr>
+  <tr><td style="border:1px solid #ccd9ea;padding:5px 10px;"><code>mcp_servers</code></td><td style="border:1px solid #ccd9ea;padding:5px 10px;">接入</td><td style="border:1px solid #ccd9ea;padding:5px 10px;">MCP Server 配置（stdio/http）</td></tr>
+  <tr><td style="background:#f9fbff;border:1px solid #ccd9ea;padding:5px 10px;"><code>data_sources</code></td><td style="background:#f9fbff;border:1px solid #ccd9ea;padding:5px 10px;">接入</td><td style="background:#f9fbff;border:1px solid #ccd9ea;padding:5px 10px;">7 种库只读数据源（sqlite/mysql/pg/oracle/dm/kingbase/gaussdb）</td></tr>
+  <tr><td style="border:1px solid #ccd9ea;padding:5px 10px;"><code>kg_entities / kg_relations</code></td><td style="border:1px solid #ccd9ea;padding:5px 10px;">图谱</td><td style="border:1px solid #ccd9ea;padding:5px 10px;">知识图谱实体与三元组（来源 doc_name 溯源）</td></tr>
+  <tr><td style="background:#f9fbff;border:1px solid #ccd9ea;padding:5px 10px;"><code>security_logs</code></td><td style="background:#f9fbff;border:1px solid #ccd9ea;padding:5px 10px;">安全</td><td style="background:#f9fbff;border:1px solid #ccd9ea;padding:5px 10px;">API/SQL 审计日志（method/path/status/duration/notes）</td></tr>
+  <tr><td style="border:1px solid #ccd9ea;padding:5px 10px;"><code>ops_checks / slow_queries</code></td><td style="border:1px solid #ccd9ea;padding:5px 10px;">运维(P3)</td><td style="border:1px solid #ccd9ea;padding:5px 10px;">健康巡检记录、慢查询记录</td></tr>
+  <tr><td style="background:#f9fbff;border:1px solid #ccd9ea;padding:5px 10px;"><code>gov_assets / gov_quality</code></td><td style="background:#f9fbff;border:1px solid #ccd9ea;padding:5px 10px;">治理(P3)</td><td style="background:#f9fbff;border:1px solid #ccd9ea;padding:5px 10px;">资产目录快照（columns JSON）、质量评分（score/issues JSON）</td></tr>
+</table>
+
+<!-- ===== 5 运行时 ===== -->
+<table width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;margin:30px 0 12px 0;">
+  <tr><td style="background:#2b579a;border-radius:4px;padding:7px 16px;">
+    <p style="margin:0;color:#ffffff;font-size:14pt;font-weight:bold;">5&nbsp;&nbsp;核心运行时 LangGraph 主图</p></td></tr>
+</table>
+<pre style="background:#f4f8fd;border:1px solid #c9d8ec;border-radius:6px;padding:12px 14px;">
+parse(意图解析) → route(路由) → execute(工具循环) → artifact(产物) → reply → END
+     ▲                                                │
+     └──────────── RAG 检索 · KG 扩展 · 技能 · 数据源 ──┘
+</pre>
+<table width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;font-size:9.5pt;">
+  <tr><td style="background:#173a6d;color:#fff;border:1px solid #173a6d;padding:6px 10px;width:16%;"><b>节点</b></td><td style="background:#173a6d;color:#fff;border:1px solid #173a6d;padding:6px 10px;"><b>行为</b></td></tr>
+  <tr><td style="background:#f9fbff;border:1px solid #ccd9ea;padding:5px 10px;"><b>parse</b></td><td style="background:#f9fbff;border:1px solid #ccd9ea;padding:5px 10px;">LLM 结构化输出 intent / agent_id / object_name / source_db / target_db / skill_id / confidence；测试走 <code>llm.parse()</code> mock</td></tr>
+  <tr><td style="border:1px solid #ccd9ea;padding:5px 10px;"><b>route</b></td><td style="border:1px solid #ccd9ea;padding:5px 10px;">置信度 ≥0.5 且 intent 合法 → 命中智能体；否则回退 <code>nl2sql_qa</code>；注入 RAG + KG 一键扩展上下文</td></tr>
+  <tr><td style="background:#f9fbff;border:1px solid #ccd9ea;padding:5px 10px;"><b>execute</b></td><td style="background:#f9fbff;border:1px solid #ccd9ea;padding:5px 10px;">组装系统提示（agent + 目标库 + RAG + 技能清单 + 数据源 + KG）；max_iterations=3 工具循环；use_skill/call_agent 记录 skill_calls/agent_calls</td></tr>
+  <tr><td style="border:1px solid #ccd9ea;padding:5px 10px;"><b>artifact</b></td><td style="border:1px solid #ccd9ea;padding:5px 10px;">仅 gen_artifact=Yes 触发；写 result.json + SQL 提取 + 报告 md（output_files 命名）</td></tr>
+  <tr><td style="background:#f9fbff;border:1px solid #ccd9ea;padding:5px 10px;"><b>reply</b></td><td style="background:#f9fbff;border:1px solid #ccd9ea;padding:5px 10px;">结束节点；错误经 chat_trace 落库错误事件</td></tr>
+</table>
+<div style="background:#f6f9ff;border:1px solid #c9d8ec;border-left:5px solid #2b579a;padding:8px 14px;border-radius:3px;margin:10px 0;">
+  <p style="margin:0;font-size:10pt;color:#35506f;"><b>多 Agent 编排：</b><code>call_agent</code> 委派给其他已启用智能体；子智能体 schema 不注入 call_agent（防自递归），主图 schema 排除当前 agent。</p>
+</div>
+
+<!-- ===== 6 智能体 ===== -->
+<table width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;margin:30px 0 12px 0;">
+  <tr><td style="background:#2b579a;border-radius:4px;padding:7px 16px;">
+    <p style="margin:0;color:#ffffff;font-size:14pt;font-weight:bold;">6&nbsp;&nbsp;智能体注册表（6 个内置）</p></td></tr>
+</table>
+<table width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;font-size:9.5pt;">
+  <tr>
+    <td style="background:#173a6d;color:#fff;border:1px solid #173a6d;padding:6px 10px;width:18%;"><b>agent_id</b></td>
+    <td style="background:#173a6d;color:#fff;border:1px solid #173a6d;padding:6px 10px;width:22%;"><b>名称</b></td>
+    <td style="background:#173a6d;color:#fff;border:1px solid #173a6d;padding:6px 10px;width:16%;"><b>intent</b></td>
+    <td style="background:#173a6d;color:#fff;border:1px solid #173a6d;padding:6px 10px;width:8%;"><b>产物</b></td>
+    <td style="background:#173a6d;color:#fff;border:1px solid #173a6d;padding:6px 10px;"><b>产物文件</b></td>
+  </tr>
+  <tr><td style="background:#f9fbff;border:1px solid #ccd9ea;padding:5px 10px;"><code>migration_assessor</code></td><td style="background:#f9fbff;border:1px solid #ccd9ea;padding:5px 10px;">迁移评估智能体</td><td style="background:#f9fbff;border:1px solid #ccd9ea;padding:5px 10px;">migration_assess</td><td style="background:#f9fbff;border:1px solid #ccd9ea;padding:5px 10px;">✔</td><td style="background:#f9fbff;border:1px solid #ccd9ea;padding:5px 10px;"><code>assessment_report.md, result.json</code></td></tr>
+  <tr><td style="border:1px solid #ccd9ea;padding:5px 10px;"><code>ddl_converter</code></td><td style="border:1px solid #ccd9ea;padding:5px 10px;">DDL/DML 转换智能体</td><td style="border:1px solid #ccd9ea;padding:5px 10px;">ddl_convert</td><td style="border:1px solid #ccd9ea;padding:5px 10px;">✔</td><td style="border:1px solid #ccd9ea;padding:5px 10px;"><code>DDL_&lt;OBJ&gt;.sql, convert_report.md, result.json</code></td></tr>
+  <tr><td style="background:#f9fbff;border:1px solid #ccd9ea;padding:5px 10px;"><code>code_migrator</code></td><td style="background:#f9fbff;border:1px solid #ccd9ea;padding:5px 10px;">代码改造智能体</td><td style="background:#f9fbff;border:1px solid #ccd9ea;padding:5px 10px;">code_migrate</td><td style="background:#f9fbff;border:1px solid #ccd9ea;padding:5px 10px;">✔</td><td style="background:#f9fbff;border:1px solid #ccd9ea;padding:5px 10px;"><code>migration_guide.md, result.json</code></td></tr>
+  <tr><td style="border:1px solid #ccd9ea;padding:5px 10px;"><code>nl2sql_qa</code></td><td style="border:1px solid #ccd9ea;padding:5px 10px;">知识库问答智能体</td><td style="border:1px solid #ccd9ea;padding:5px 10px;">nl2sql</td><td style="border:1px solid #ccd9ea;padding:5px 10px;">—</td><td style="border:1px solid #ccd9ea;padding:5px 10px;"><code>answer.md, result.json</code></td></tr>
+  <tr><td style="background:#f9fbff;border:1px solid #ccd9ea;padding:5px 10px;"><code>ops_monitor</code></td><td style="background:#f9fbff;border:1px solid #ccd9ea;padding:5px 10px;">迁移后运维智能体</td><td style="background:#f9fbff;border:1px solid #ccd9ea;padding:5px 10px;">ops_inspect</td><td style="background:#f9fbff;border:1px solid #ccd9ea;padding:5px 10px;">✔</td><td style="background:#f9fbff;border:1px solid #ccd9ea;padding:5px 10px;"><code>ops_report.md, result.json</code></td></tr>
+  <tr><td style="border:1px solid #ccd9ea;padding:5px 10px;"><code>gov_manager</code></td><td style="border:1px solid #ccd9ea;padding:5px 10px;">数据治理智能体</td><td style="border:1px solid #ccd9ea;padding:5px 10px;">gov_assess</td><td style="border:1px solid #ccd9ea;padding:5px 10px;">✔</td><td style="border:1px solid #ccd9ea;padding:5px 10px;"><code>governance_report.md, result.json</code></td></tr>
+</table>
+
+<!-- ===== 7 工具 ===== -->
+<table width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;margin:30px 0 12px 0;">
+  <tr><td style="background:#2b579a;border-radius:4px;padding:7px 16px;">
+    <p style="margin:0;color:#ffffff;font-size:14pt;font-weight:bold;">7&nbsp;&nbsp;LLM 工具集（Function Calling · 12 项）</p></td></tr>
+</table>
+<table width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;font-size:9.5pt;">
+  <tr><td style="background:#173a6d;color:#fff;border:1px solid #173a6d;padding:6px 10px;width:18%;"><b>工具</b></td><td style="background:#173a6d;color:#fff;border:1px solid #173a6d;padding:6px 10px;width:44%;"><b>说明</b></td><td style="background:#173a6d;color:#fff;border:1px solid #173a6d;padding:6px 10px;"><b>注入条件</b></td></tr>
+  <tr><td style="background:#f9fbff;border:1px solid #ccd9ea;padding:5px 10px;"><code>rag_search</code></td><td style="background:#f9fbff;border:1px solid #ccd9ea;padding:5px 10px;">检索知识库（query, top_k）</td><td style="background:#f9fbff;border:1px solid #ccd9ea;padding:5px 10px;">全部</td></tr>
+  <tr><td style="border:1px solid #ccd9ea;padding:5px 10px;"><code>use_skill</code></td><td style="border:1px solid #ccd9ea;padding:5px 10px;">调用技能并执行脚本（skill_id, args）</td><td style="border:1px solid #ccd9ea;padding:5px 10px;">全部</td></tr>
+  <tr><td style="background:#f9fbff;border:1px solid #ccd9ea;padding:5px 10px;"><code>db_schema</code></td><td style="background:#f9fbff;border:1px solid #ccd9ea;padding:5px 10px;">探查数据源表/视图/列结构（ds, object）</td><td style="background:#f9fbff;border:1px solid #ccd9ea;padding:5px 10px;">全部</td></tr>
+  <tr><td style="border:1px solid #ccd9ea;padding:5px 10px;"><code>db_query</code></td><td style="border:1px solid #ccd9ea;padding:5px 10px;">只读 SELECT/WITH 查询（ds, sql，≤100 行）</td><td style="border:1px solid #ccd9ea;padding:5px 10px;">全部</td></tr>
+  <tr><td style="background:#f9fbff;border:1px solid #ccd9ea;padding:5px 10px;"><code>db_explain</code></td><td style="background:#f9fbff;border:1px solid #ccd9ea;padding:5px 10px;">只读语法校验 EXPLAIN（ds, sql）</td><td style="background:#f9fbff;border:1px solid #ccd9ea;padding:5px 10px;">全部</td></tr>
+  <tr><td style="border:1px solid #ccd9ea;padding:5px 10px;"><code>call_agent</code></td><td style="border:1px solid #ccd9ea;padding:5px 10px;">多智能体委派（agent_id, question）</td><td style="border:1px solid #ccd9ea;padding:5px 10px;">主图（排除自身）</td></tr>
+  <tr><td style="background:#f9fbff;border:1px solid #ccd9ea;padding:5px 10px;"><code>ops_health</code></td><td style="background:#f9fbff;border:1px solid #ccd9ea;padding:5px 10px;">健康巡检（ds 可选）</td><td style="background:#f9fbff;border:1px solid #ccd9ea;padding:5px 10px;">注入 ops</td></tr>
+  <tr><td style="border:1px solid #ccd9ea;padding:5px 10px;"><code>ops_slow_sql</code></td><td style="border:1px solid #ccd9ea;padding:5px 10px;">慢 SQL 诊断（threshold_ms, limit）</td><td style="border:1px solid #ccd9ea;padding:5px 10px;">注入 ops</td></tr>
+  <tr><td style="background:#f9fbff;border:1px solid #ccd9ea;padding:5px 10px;"><code>ops_baseline</code></td><td style="background:#f9fbff;border:1px solid #ccd9ea;padding:5px 10px;">性能基线 / 告警</td><td style="background:#f9fbff;border:1px solid #ccd9ea;padding:5px 10px;">注入 ops</td></tr>
+  <tr><td style="border:1px solid #ccd9ea;padding:5px 10px;"><code>gov_catalog</code></td><td style="border:1px solid #ccd9ea;padding:5px 10px;">抽取元数据资产目录（ds）</td><td style="border:1px solid #ccd9ea;padding:5px 10px;">注入 gov</td></tr>
+  <tr><td style="background:#f9fbff;border:1px solid #ccd9ea;padding:5px 10px;"><code>gov_quality</code></td><td style="background:#f9fbff;border:1px solid #ccd9ea;padding:5px 10px;">数据质量评分（ds）</td><td style="background:#f9fbff;border:1px solid #ccd9ea;padding:5px 10px;">注入 gov</td></tr>
+  <tr><td style="border:1px solid #ccd9ea;padding:5px 10px;"><code>gov_kgsync</code></td><td style="border:1px solid #ccd9ea;padding:5px 10px;">资产目录同步至知识图谱</td><td style="border:1px solid #ccd9ea;padding:5px 10px;">注入 gov</td></tr>
+</table>
+
+<!-- ===== 8 能力矩阵 ===== -->
+<table width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;margin:30px 0 12px 0;">
+  <tr><td style="background:#2b579a;border-radius:4px;padding:7px 16px;">
+    <p style="margin:0;color:#ffffff;font-size:14pt;font-weight:bold;">8&nbsp;&nbsp;能力矩阵（P0 ~ P3）</p></td></tr>
+</table>
+<table width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;font-size:9.5pt;">
+  <tr>
+    <td style="background:#173a6d;color:#fff;border:1px solid #173a6d;padding:6px 10px;width:10%;"><b>阶段</b></td>
+    <td style="background:#173a6d;color:#fff;border:1px solid #173a6d;padding:6px 10px;"><b>能力</b></td>
+  </tr>
+  <tr><td style="background:#f9fbff;border:1px solid #ccd9ea;padding:5px 10px;"><b>P0 基础</b></td><td style="background:#f9fbff;border:1px solid #ccd9ea;padding:5px 10px;">RAG 知识库（md/sql/txt/pdf）、LLM 工厂（ollama/deepseek/bailian）、会话与消息、提示词管理</td></tr>
+  <tr><td style="border:1px solid #ccd9ea;padding:5px 10px;"><b>P1 智能体</b></td><td style="border:1px solid #ccd9ea;padding:5px 10px;">4 个迁移期内置智能体 + 意图路由 + 配置化注册 + 产物 + trace</td></tr>
+  <tr><td style="background:#f9fbff;border:1px solid #ccd9ea;padding:5px 10px;"><b>P2 纵深</b></td><td style="background:#f9fbff;border:1px solid #ccd9ea;padding:5px 10px;">技能体系（脚本沙箱 + 技能链）、多 Agent 编排、知识图谱、安全网关、MCP 接入</td></tr>
+  <tr><td style="border:1px solid #ccd9ea;padding:5px 10px;"><b>P3 两级补齐</b></td><td style="border:1px solid #ccd9ea;padding:5px 10px;">第二级：迁移后运维（巡检/慢SQL/基线）；第三级：统一治理（资产目录/质量评分/KG 沉淀）</td></tr>
+</table>
+
+<!-- ===== 9 API ===== -->
+<table width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;margin:30px 0 12px 0;">
+  <tr><td style="background:#2b579a;border-radius:4px;padding:7px 16px;">
+    <p style="margin:0;color:#ffffff;font-size:14pt;font-weight:bold;">9&nbsp;&nbsp;后端 REST API</p></td></tr>
+</table>
+<table width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;font-size:9.5pt;">
+  <tr><td style="background:#173a6d;color:#fff;border:1px solid #173a6d;padding:6px 10px;width:14%;"><b>分组</b></td><td style="background:#173a6d;color:#fff;border:1px solid #173a6d;padding:6px 10px;"><b>端点</b></td></tr>
+  <tr><td style="background:#f9fbff;border:1px solid #ccd9ea;padding:5px 10px;">健康/设置</td><td style="background:#f9fbff;border:1px solid #ccd9ea;padding:5px 10px;"><code>GET /api/health</code> · <code>GET/PUT /api/settings</code> · <code>GET /api/ollama/models</code></td></tr>
+  <tr><td style="border:1px solid #ccd9ea;padding:5px 10px;">会话</td><td style="border:1px solid #ccd9ea;padding:5px 10px;"><code>GET/POST /api/conversations</code> · <code>DELETE /{cid}</code> · <code>GET /{cid}/messages</code>（正文）· <code>GET /{cid}/trace</code>（步骤）</td></tr>
+  <tr><td style="background:#f9fbff;border:1px solid #ccd9ea;padding:5px 10px;">提示词/智能体</td><td style="background:#f9fbff;border:1px solid #ccd9ea;padding:5px 10px;"><code>/api/prompts</code> · <code>/api/agents</code>（CRUD + toggle）</td></tr>
+  <tr><td style="border:1px solid #ccd9ea;padding:5px 10px;">数据源</td><td style="border:1px solid #ccd9ea;padding:5px 10px;"><code>/api/datasources</code> CRUD + <code>test / query / explain</code></td></tr>
+  <tr><td style="background:#f9fbff;border:1px solid #ccd9ea;padding:5px 10px;">技能</td><td style="background:#f9fbff;border:1px solid #ccd9ea;padding:5px 10px;"><code>/api/skills</code> CRUD + <code>/{sid}/run</code>（脚本/链）+ <code>/{sid}/script</code>（上传）</td></tr>
+  <tr><td style="border:1px solid #ccd9ea;padding:5px 10px;">知识库/图谱</td><td style="border:1px solid #ccd9ea;padding:5px 10px;"><code>/api/kb/documents</code>（含 PDF 提取）· <code>/api/kb/search</code> · <code>/api/kg/overview|rebuild|expand</code></td></tr>
+  <tr><td style="background:#f9fbff;border:1px solid #ccd9ea;padding:5px 10px;">产物 / MCP / 安全</td><td style="background:#f9fbff;border:1px solid #ccd9ea;padding:5px 10px;"><code>/api/artifacts</code> · <code>/api/artifacts/{rid}/file</code> · <code>/api/mcp/servers</code> · <code>/api/security/logs</code></td></tr>
+  <tr><td style="border:1px solid #ccd9ea;padding:5px 10px;">运维 (P3)</td><td style="border:1px solid #ccd9ea;padding:5px 10px;"><code>POST /api/ops/health</code> · <code>GET /api/ops/health/history</code> · <code>GET /api/ops/slow-sql</code> · <code>GET /api/ops/baseline</code></td></tr>
+  <tr><td style="background:#f9fbff;border:1px solid #ccd9ea;padding:5px 10px;">治理 (P3)</td><td style="background:#f9fbff;border:1px solid #ccd9ea;padding:5px 10px;"><code>POST /api/gov/catalog|quality|kgsync</code> · <code>GET /api/gov/assets|quality/rows</code></td></tr>
+  <tr><td style="border:1px solid #ccd9ea;padding:5px 10px;">对话流</td><td style="border:1px solid #ccd9ea;padding:5px 10px;"><code>POST /api/chat/stream</code>（SSE：parse/route/skill/text/artifact/error/done，并落库消息正文）</td></tr>
+</table>
+
+<!-- ===== 10 安全 ===== -->
+<table width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;margin:30px 0 12px 0;">
+  <tr><td style="background:#2b579a;border-radius:4px;padding:7px 16px;">
+    <p style="margin:0;color:#ffffff;font-size:14pt;font-weight:bold;">10&nbsp;&nbsp;安全网关</p></td></tr>
+</table>
+<table width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;font-size:9.5pt;">
+  <tr><td style="background:#173a6d;color:#fff;border:1px solid #173a6d;padding:6px 10px;width:18%;"><b>层次</b></td><td style="background:#173a6d;color:#fff;border:1px solid #173a6d;padding:6px 10px;"><b>机制</b></td></tr>
+  <tr><td style="background:#f9fbff;border:1px solid #ccd9ea;padding:5px 10px;"><b>网关</b></td><td style="background:#f9fbff;border:1px solid #ccd9ea;padding:5px 10px;">API Key 鉴权（X-API-Key / Bearer）· 分钟级令牌桶限流（按 IP，429）· 全量审计落库</td></tr>
+  <tr><td style="border:1px solid #ccd9ea;padding:5px 10px;"><b>SQL 边界</b></td><td style="border:1px solid #ccd9ea;padding:5px 10px;">仅 SELECT/WITH；写关键字黑名单拦截；SQLite 强制 mode=ro；读操作统一回滚</td></tr>
+  <tr><td style="background:#f9fbff;border:1px solid #ccd9ea;padding:5px 10px;"><b>脚本沙箱</b></td><td style="background:#f9fbff;border:1px solid #ccd9ea;padding:5px 10px;">内存 512MB · 超时 30s · 危险模块黑名单 · 环境变量白名单（防 API Key 泄露）· 输出截断 20K</td></tr>
+</table>
+
+<!-- ===== 11 技能 ===== -->
+<table width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;margin:30px 0 12px 0;">
+  <tr><td style="background:#2b579a;border-radius:4px;padding:7px 16px;">
+    <p style="margin:0;color:#ffffff;font-size:14pt;font-weight:bold;">11&nbsp;&nbsp;技能体系与脚本沙箱</p></td></tr>
+</table>
+<table width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;font-size:9.5pt;">
+  <tr><td style="background:#173a6d;color:#fff;border:1px solid #173a6d;padding:6px 10px;width:24%;"><b>能力</b></td><td style="background:#173a6d;color:#fff;border:1px solid #173a6d;padding:6px 10px;"><b>说明</b></td></tr>
+  <tr><td style="background:#f9fbff;border:1px solid #ccd9ea;padding:5px 10px;">SKILL.md frontmatter</td><td style="background:#f9fbff;border:1px solid #ccd9ea;padding:5px 10px;">name / description / script / chain（技能链，如 <code>chain: a,b</code>）</td></tr>
+  <tr><td style="border:1px solid #ccd9ea;padding:5px 10px;">run_script</td><td style="border:1px solid #ccd9ea;padding:5px 10px;">沙箱子进程执行，捕获 stdout/stderr/超时</td></tr>
+  <tr><td style="background:#f9fbff;border:1px solid #ccd9ea;padding:5px 10px;">run_chain（技能链）</td><td style="background:#f9fbff;border:1px solid #ccd9ea;padding:5px 10px;">顺序执行子技能；步骤结果累积 <code>.chain.json</code>；经 <code>CHAIN_CTX_FILE</code> 注入上游上下文（仅 CHAIN_ 前缀键白名单）</td></tr>
+  <tr><td style="border:1px solid #ccd9ea;padding:5px 10px;">前端管理</td><td style="border:1px solid #ccd9ea;padding:5px 10px;">新建 / 编辑 / 运行 / 停用 / 删除 / 上传脚本；编辑保留 script/chain 声明</td></tr>
+</table>
+
+<!-- ===== 12 前端 ===== -->
+<table width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;margin:30px 0 12px 0;">
+  <tr><td style="background:#2b579a;border-radius:4px;padding:7px 16px;">
+    <p style="margin:0;color:#ffffff;font-size:14pt;font-weight:bold;">12&nbsp;&nbsp;前端工作台（index.html 单页）</p></td></tr>
+</table>
+<ul style="font-size:10.5pt;">
+  <li>深色主题 · Markdown 渲染（标题/代码块/表格/列表/引用/链接）· 流式追加 · 复制按钮</li>
+  <li>左侧 iconbar 分组导航 + 会话搜索 / 计数 / 相对时间 / 删除 / 执行时间线回看</li>
+  <li>工作台 11 面板：知识库 · 技能 · 知识图谱 · 智能体 · 数据源 · <b>运维(P3)</b> · <b>治理(P3)</b> · MCP · 安全 · 提示词 · 产物</li>
+  <li>设置模态框：LLM 提供商 / 模型（Ollama 模型列表下拉）/ Base URL / API Key / Embedding</li>
+</ul>
+
+<!-- ===== 13 测试 ===== -->
+<table width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;margin:30px 0 12px 0;">
+  <tr><td style="background:#2b579a;border-radius:4px;padding:7px 16px;">
+    <p style="margin:0;color:#ffffff;font-size:14pt;font-weight:bold;">13&nbsp;&nbsp;测试体系（70 用例）</p></td></tr>
+</table>
+<table width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;font-size:9.5pt;">
+  <tr><td style="background:#173a6d;color:#fff;border:1px solid #173a6d;padding:6px 10px;width:22%;"><b>文件</b></td><td style="background:#173a6d;color:#fff;border:1px solid #173a6d;padding:6px 10px;"><b>覆盖</b></td></tr>
+  <tr><td style="background:#f9fbff;border:1px solid #ccd9ea;padding:5px 10px;">test_api.py</td><td style="background:#f9fbff;border:1px solid #ccd9ea;padding:5px 10px;">REST 端点行为与校验</td></tr>
+  <tr><td style="border:1px solid #ccd9ea;padding:5px 10px;">test_graph.py</td><td style="border:1px solid #ccd9ea;padding:5px 10px;">全流程 / 低置信度回退 / 技能自主调用 / 多 Agent 编排（ScriptedLLM 步骤化 mock）</td></tr>
+  <tr><td style="background:#f9fbff;border:1px solid #ccd9ea;padding:5px 10px;">test_skill_chain.py / test_kg.py</td><td style="background:#f9fbff;border:1px solid #ccd9ea;padding:5px 10px;">技能链顺序执行与上下文注入 / 图谱提取与扩展</td></tr>
+  <tr><td style="border:1px solid #ccd9ea;padding:5px 10px;">test_security.py</td><td style="border:1px solid #ccd9ea;padding:5px 10px;">鉴权 / 限流 / 审计落库 / SQL 拦截回调</td></tr>
+  <tr><td style="background:#f9fbff;border:1px solid #ccd9ea;padding:5px 10px;">test_ops.py / test_gov.py (P3)</td><td style="background:#f9fbff;border:1px solid #ccd9ea;padding:5px 10px;">健康巡检 / 慢 SQL / 基线 · 资产目录 / 质量评分 / 图谱同步</td></tr>
+</table>
+
+<!-- ===== 14 设计决策 ===== -->
+<table width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;margin:30px 0 12px 0;">
+  <tr><td style="background:#2b579a;border-radius:4px;padding:7px 16px;">
+    <p style="margin:0;color:#ffffff;font-size:14pt;font-weight:bold;">14&nbsp;&nbsp;关键设计决策与安全边界</p></td></tr>
+</table>
+<h3 style="font-size:11.5pt;color:#173a6d;margin:8px 0 4px 0;">设计决策</h3>
+<ul style="font-size:10.5pt;">
+  <li><b>AgentState 显式字段</b>：LangGraph 会丢弃未定义键，skill_calls / agent_calls 必须先声明</li>
+  <li><b>低置信度不自由发挥</b>：意图置信度 &lt;0.5 一律回退知识库问答</li>
+  <li><b>工具统一分发</b>：_dispatch_tool 集成主图与子 Agent，避免双份逻辑</li>
+  <li><b>只读数据源</b>：connect() 统一回滚 + 行数/单格上限，防巨量返回</li>
+  <li><b>两级能力按服务注入</b>：ops/gov 为可选依赖，注入才暴露工具（低耦合、可测试）</li>
+  <li><b>消息正文落库</b>：SSE 起止写 messages，实现会话历史回看（配合 trace 步骤）</li>
+</ul>
+<h3 style="font-size:11.5pt;color:#173a6d;margin:8px 0 4px 0;">安全边界</h3>
+<ul style="font-size:10.5pt;">
+  <li>SQL 只读（关键词黑名单 + 只读连接 + 统一回滚）</li>
+  <li>脚本沙箱（内存 / 超时 / 危险模块 / 环境白名单）</li>
+  <li>网关鉴权 + 限流 + 全量审计；上传文件名清洗（防路径穿越）+ 大小限制</li>
+</ul>
+
+<!-- ===== 15 运行 ===== -->
+<table width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;margin:30px 0 12px 0;">
+  <tr><td style="background:#2b579a;border-radius:4px;padding:7px 16px;">
+    <p style="margin:0;color:#ffffff;font-size:14pt;font-weight:bold;">15&nbsp;&nbsp;运行方式</p></td></tr>
+</table>
+<pre style="background:#0f1c30;color:#cdd9ea;border-radius:6px;padding:14px 16px;line-height:1.6;">
+cd db_loc_agent
+.venv/bin/python -m uvicorn db_loc_agent.app:create_app --factory \
+    --host 0.0.0.0 --port 5010        # 启动后端
+
+open http://localhost:5010/           # 浏览器访问
+.venv/bin/python -m pytest tests/ -q # 运行 70 个测试
+</pre>
+
+<!-- ===== 附录 ===== -->
+<table width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;margin:30px 0 12px 0;">
+  <tr><td style="background:#5a7cb0;border-radius:4px;padding:7px 16px;">
+    <p style="margin:0;color:#ffffff;font-size:12.5pt;font-weight:bold;">附录 · 服务装配关系（create_app）</p></td></tr>
+</table>
+<pre style="background:#f4f8fd;border:1px solid #c9d8ec;border-radius:6px;padding:12px 14px;line-height:1.7;">
+db = Database(db_path)              # SQLite + 建表 + agents 迁移
+prompts   = PromptService(db)
+skills    = SkillService(db, skills_dir)
+artifacts = ArtifactService(db, artifact_root)
+agents_svc= AgentService(db)
+db_tools  = DbTools(db)             # + audit 审计回调 + obs_query 慢查询回调
+kg        = KnowledgeGraph(db)
+gov       = GovService(db, db_tools, kg)     # 第三级治理
+ops       = OpsService(db, db_tools)         # 第二级运维
+rag       = RAGStore(db, chroma_dir, kb_collection, embed_fn)
+graph     = build_graph(llm, rag, prompts, artifacts, skills, cfg,
+                        agents_svc, db_tools, kg, ops=ops, gov=gov)
+gateway   = SecurityGateway(api_key, rate_limit, security_log)  # 中间件
+</pre>
+
+<p style="margin-top:26px;border-top:2px solid #173a6d;padding-top:8px;color:#8a97a8;font-size:9.5pt;text-align:right;">
+db_loc_agent · 设计文档 v0.1.0 · 与当前代码逐项对齐 · 2026-09-29
+</p>
+
+</body>
+</html>
