@@ -5,6 +5,7 @@ import {
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { api } from '@/lib/api'
+import { agentDisplayName } from '@/lib/agent-display'
 import { cn } from '@/lib/utils'
 import type { ChatReference, ChatReferenceType } from '@/lib/types'
 
@@ -89,7 +90,7 @@ export function ReferencePicker({ open, onClose, onConfirm, convId, spaceId }: R
         case 'agent': {
           const r = await api.listAgents()
           return (r.success ? r.data || [] : []).filter(a => a.enabled !== false).map(a => ({
-            id: a.agent_id ?? a.id, name: a.name, sub: a.description,
+            id: a.agent_id ?? a.id, name: agentDisplayName(a), sub: a.description,
           }))
         }
         case 'skill': {

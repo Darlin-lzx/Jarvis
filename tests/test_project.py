@@ -34,6 +34,15 @@ def test_space_subsystem_task_flow(proj):
     assert ei.value.status == 409
 
 
+def test_ensure_default_space_is_idempotent(proj):
+    first = proj.ensure_default_space()
+    second = proj.ensure_default_space()
+
+    assert first["name"] == "默认空间"
+    assert first["id"] == second["id"]
+    assert [s["name"] for s in proj.list_spaces() if s["name"] == "默认空间"] == ["默认空间"]
+
+
 def test_task_delete_detaches_conversations(proj):
     sp = proj.create_space("S", "")
     sub = proj.create_subsystem(sp["id"], "营业系统")

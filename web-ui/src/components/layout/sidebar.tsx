@@ -344,7 +344,7 @@ export function Sidebar({ searchKw: _searchKw, onSearch: _onSearch, onNew, activ
         <button className={railBtn(false)} onClick={toggleCollapsed} title="展开侧边栏">
           <PanelLeftOpen className="w-4 h-4" />
         </button>
-        <button className={railBtn(false)} onClick={onNew} title="新建任务">
+        <button className={railBtn(false)} onClick={onNew} title="新建会话">
           <Plus className="w-4 h-4 text-indigo-400" />
         </button>
         <div className="w-6 h-px bg-[#252530] my-1" />
@@ -374,7 +374,7 @@ export function Sidebar({ searchKw: _searchKw, onSearch: _onSearch, onNew, activ
             <Database className="w-3.5 h-3.5 text-white" />
           </div>
           <div className="flex-1 min-w-0">
-            <div className="text-[13px] font-semibold text-[#e4e4e9] leading-tight">易互联</div>
+            <div className="text-[13px] font-semibold text-[#e4e4e9] leading-tight">易迁联</div>
             <div className="text-[10px] text-[#8b8b9e] leading-tight">数据国产化方案</div>
           </div>
           <button
@@ -387,14 +387,14 @@ export function Sidebar({ searchKw: _searchKw, onSearch: _onSearch, onNew, activ
         </div>
       </div>
 
-      {/* 新建任务 */}
+      {/* 新建会话 */}
       <div className="px-3 py-1.5">
         <Button
           className="w-full justify-start text-white text-[12px] h-8 px-3 bg-gradient-to-br from-[#5b7cfa] to-[#7a5bfa] hover:from-[#4a6dfa] hover:to-[#6a4af5] shadow-lg shadow-indigo-500/20 transition-all"
           onClick={onNew}
         >
           <Plus className="w-3.5 h-3.5 mr-1.5" />
-          新建任务
+          新建会话
         </Button>
       </div>
 

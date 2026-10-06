@@ -36,6 +36,7 @@ def bootstrap(db: Database) -> Dict[str, int]:
         n = 0
         for a in _load("agents"):
             row = s.scalar(select(AgentDef).where(AgentDef.agent_id == a["agent_id"]))
+            is_new = row is None
             if row is None:
                 row = AgentDef(agent_id=a["agent_id"])
                 s.add(row)
@@ -52,7 +53,9 @@ def bootstrap(db: Database) -> Dict[str, int]:
             row.default_prompt = a.get("default_prompt", "")
             row.tools = json.dumps(a.get("tools", []), ensure_ascii=False)
             row.bound_kbs = "[]"
-            row.enabled = bool(a.get("enabled", True))
+            # enabled 是用户运行时状态；seed 只给新记录初始值，不覆盖已有开关。
+            if is_new:
+                row.enabled = bool(a.get("enabled", True))
             n += 1
         counts["agents"] = n
 

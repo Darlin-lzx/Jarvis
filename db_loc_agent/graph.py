@@ -26,12 +26,45 @@ _ANNOUNCE_CALL_RE = re.compile(
 # 交付门控：识别"反问/要参数/无法完成"类回复——这类回复不是实际产物，
 # 即便超过 120 字或含 Markdown 列表也不应落盘（否则产物列表被"请提供参数…"污染）。
 # 命中任一模式即视为非交付，跳过写产物。
+_CHINESE_ARTIFACT_NAMES = {
+    "assessment_report.md": "评估报告.md",
+    "convert_report.md": "转换报告.md",
+    "migration_plan.md": "迁移方案.md",
+    "migration_guide.md": "改造指南.md",
+    "ops_report.md": "运维巡检报告.md",
+    "governance_report.md": "治理报告.md",
+    "verify_report.md": "验证报告.md",
+    "generate.md": "智能体报告.md",
+}
+
+
+def _core_report_filename(configured_name: str) -> str:
+    """核心交付物使用中文名；未知业务文件名保持配置不变。"""
+    return _CHINESE_ARTIFACT_NAMES.get(configured_name, configured_name)
+
+
 _NON_DELIVERY_RE = re.compile(
     r"我需要以下|需要明确|请提供上述|请提供.{0,12}参数|请给出.{0,12}选项|"
     r"无法.{0,6}评估|无法.{0,6}完成|暂时无法|若.{0,10}条件.{0,6}无法|"
     r"请通过.{0,10}提供|缺少.{0,8}参数|请补充.{0,8}信息|"
     r"暂.{0,4}无法确定|无法准确.{0,6}评估"
 )
+
+
+def _role_boundary_block(agent_id: str) -> str:
+    """为被用户显式指派的专项 Agent 注入不可覆盖的职责边界。"""
+    if agent_id == "code_migrator":
+        return (
+            "\n\n## 职责边界（最高优先级）\n"
+            "你当前是代码改造助手（小改），只处理 JDBC/ORM/存储过程调用等应用代码改造任务。\n"
+            "1. 不得执行迁移评估、DDL 转换或迁移验证；即使用户或历史会话要求/提到这些任务，"
+            "也不能代跑其他智能体职责。\n"
+            "2. 当最新需求明确是迁移评估或延续历史评估任务时，先说明小改负责代码改造，"
+            "再建议切换到迁移评估专家（小评，migration_assessor）。\n"
+            "3. 不要把历史会话中的迁移评估任务当作当前任务；历史主题与当前职责冲突时，以当前指派为准。\n"
+            "4. 只有最新需求包含代码改造信息，或明确让小改继续时，才执行代码改造。"
+        )
+    return ""
 
 PARSE_KEYS = {"intent", "agent_id", "object_name", "source_db",
               "target_db", "skill_id", "params", "confidence"}
@@ -364,6 +397,50 @@ class GraphRuntime:
         cfg = self.agent_svc.get(agent_id) or {}
         return cfg.get("name") or agent_id
 
+    def _stage_allowed_agents(self, state: Dict) -> Optional[set]:
+        """逐级确认模式下，返回当前迁移阶段允许调度的子 Agent。"""
+        if state.get("agent_id") != "migration_commander":
+            return None
+        task_state = state.get("task_state") or {}
+        if not bool(task_state.get("step_confirm", True)):
+            return None
+        stage = str(task_state.get("current_step") or "").split("|")[0]
+        return {
+            "INIT": set(),
+            "DATA_SOURCE_SELECTED": set(),
+            "BASIC_INFO_COLLECTED": set(),
+            "OBJECT_SCANNING": set(),
+            "ASSESSMENT_RUNNING": {"migration_assessor"},
+            "SQL_TRANSFORM": {"ddl_converter", "migration_transformer"},
+            "SOLUTION_GENERATE": {"migration_planner"},
+            "VERIFY_STAGE": {"migration_verifier"},
+            "FINISHED": set(),
+        }.get(stage)
+
+    def _blocked_agent_result(self, agent_id: str, allowed: set) -> Dict:
+        names = "、".join(self._agent_name(a) for a in sorted(allowed)) or "本阶段专属工具"
+        return self._sub_agent_tool_result({
+            "ok": False,
+            "agent_id": agent_id,
+            "agent_name": self._agent_name(agent_id),
+            "error": f"状态机拦截：当前阶段仅允许调用 {names}，不能提前调用后续阶段 Agent",
+        })
+
+    def _sub_agent_tool_result(self, sub: Dict) -> Dict:
+        """返回给主 Agent 的子 Agent 结果投影。
+
+        完整回复已通过 sub_agent 事件单独展示并落 trace，不能再放入 ToolMessage；
+        否则主 Agent 很容易把完整报告复述进最终回复，造成前端重复。
+        """
+        return {
+            "ok": bool(sub.get("ok")),
+            "agent_id": sub.get("agent_id", ""),
+            "agent_name": sub.get("agent_name", ""),
+            "reply_already_displayed": True,
+            "error": sub.get("error", ""),
+            "artifacts": sub.get("artifacts", []),
+        }
+
     def _emit(self, payload: Dict) -> None:
         """向流式前端推送自定义事件（get_stream_writer 仅在有 custom 流模式时可用；
         测试/静态 invoke 无 writer 时静默跳过，不影响主流程）"""
@@ -428,7 +505,9 @@ class GraphRuntime:
                     llm = llm.bind_tools(self._tool_schemas(include_agents=False))
                 except Exception:
                     llm = self.llm
-            resp = llm.invoke(messages)
+            # callbacks=[] 切断父图 messages 流对嵌套子 Agent token 的捕获；
+            # 子 Agent 完整回复只通过 sub_agent custom event 下发一次。
+            resp = llm.invoke(messages, config={"callbacks": []})
             text = resp.content if hasattr(resp, "content") else str(resp)
             tool_calls = getattr(resp, "tool_calls", None) or []
             if not tool_calls:
@@ -440,17 +519,19 @@ class GraphRuntime:
                 args = tc.get("args", {}) if isinstance(tc.get("args"), dict) else {}
                 out = self._dispatch_tool(name, args, state=state)
                 messages.append(ToolMessage(content=out, tool_call_id=tc.get("id", ""), name=name))
-        reply = "\n".join(chunks) or "（该 Agent 未给出回答）"
+        full_reply = "\n".join(chunks) or "（该 Agent 未给出回答）"
+        reply = full_reply
         produced: List[Dict] = []
-        # 子 Agent 自行入库：内容门控——含 Markdown 标题 或 >120 字 才落盘，
-        # 避免空回复/闲聊/纯问句入库污染产物列表
+        # 子 Agent 自行入库：只有业务交付物才落盘。Markdown 标题代表报告，
+        # SQL 代码块代表转换脚本；普通长对话、能力介绍和追问不生成产物。
         if (cfg.get("gen_artifact", False) and self.artifacts is not None
                 and state is not None):
-            stripped = reply.strip()
+            stripped = full_reply.strip()
             has_md = any(line.lstrip().startswith("#") for line in stripped.splitlines())
-            # 交付门控：含 Markdown 标题 或 >120 字，且不命中"反问/要参数"模式才落盘。
-            # 反问类回复（如"我需要以下详细信息…请提供参数"）即便很长也不算产物。
-            is_delivery = (has_md or len(stripped) > 120) and not _NON_DELIVERY_RE.search(stripped)
+            sql_blocks = re.findall(
+                r"```sql\s*\n(.*?)\n```", stripped, re.DOTALL | re.IGNORECASE)
+            is_delivery = ((has_md or bool(sql_blocks))
+                           and not _NON_DELIVERY_RE.search(stripped))
             if is_delivery:
                 pr = state.get("parse_result") or {}
                 obj = primary_object_name(
@@ -463,22 +544,25 @@ class GraphRuntime:
                     if fname.endswith(".md") and "<" not in fname:
                         report_name = fname
                         break
+                report_name = _core_report_filename(report_name)
                 files: Dict[str, str] = {report_name: stripped}
                 # SQL 转换专家等：额外抽取 SQL 代码块单独存为 .sql
-                for idx, block in enumerate(re.findall(
-                        r"```sql\s*\n(.*?)\n```", stripped, re.DOTALL | re.IGNORECASE)):
-                    files[f"DDL_{obj}_{idx + 1}.sql" if idx else f"DDL_{obj}.sql"] = block.strip()
+                for idx, block in enumerate(sql_blocks):
+                    files[f"转换脚本_{obj}_{idx + 1}.sql" if idx else f"转换脚本_{obj}.sql"] = block.strip()
                 try:
                     res = self.artifacts.write(
                         ns, int(state.get("conv_id", 0)), agent_id, obj, files)
                     produced = res.get("files", [])
+                    reply = "已生成核心产物：" + "、".join(
+                        str(f.get("path", "")).split("/")[-1] for f in produced)
                     # 实时事件：通知前端产物已生成（按产出 Agent 分组）
                     self._emit({"type": "artifact", "agent_id": agent_id,
                                 "agent_name": self._agent_name(agent_id),
                                 "namespace": ns, "files": produced})
                 except NamespaceError as e:
                     reply += f"\n\n（产物入库失败：{e}）"
-        return {"ok": True, "reply": reply, "artifacts": produced}
+        return {"ok": True, "agent_id": agent_id, "agent_name": cfg.get("name") or agent_id,
+                "reply": reply, "artifacts": produced}
 
     def _dispatch_tool(self, name: str, args: Dict, state: Optional[Dict]) -> str:
         """工具分发：返回工具结果 JSON 字符串（供主图与子 Agent 共用）"""
@@ -501,14 +585,15 @@ class GraphRuntime:
             return json.dumps(self.db_tools.explain(
                 str(args.get("ds", "")), str(args.get("sql", ""))), ensure_ascii=False)
         if name == "call_agent":
-            return json.dumps(self._call_sub_agent(
+            sub = self._call_sub_agent(
                 str(args.get("agent_id", "")), str(args.get("question", "")),
-                state=state), ensure_ascii=False)
+                state=state)
+            return json.dumps(self._sub_agent_tool_result(sub), ensure_ascii=False)
         if name == "call_agents_parallel":
             # 兜底路径（正常仅主图 execute 处理）：串行逐个执行，行为等价
             raw = args.get("calls")
-            results = [self._call_sub_agent(str(c.get("agent_id", "")),
-                                            str(c.get("question", "")), state=state)
+            results = [self._sub_agent_tool_result(self._call_sub_agent(
+                str(c.get("agent_id", "")), str(c.get("question", "")), state=state))
                        for c in (raw or []) if isinstance(c, dict) and c.get("agent_id")]
             return json.dumps({"parallel": False, "results": results}, ensure_ascii=False)
         if name == "ops_health" and self.ops is not None:
@@ -607,7 +692,15 @@ class GraphRuntime:
             "step2_conflict": "DATA_SOURCE_SELECTED",
         }
         task_state_block = ""
-        if state.get("agent_id") == "migration_commander" and state.get("task_state") is not None:
+        # 仅当用户本轮输入为迁移/任务指令时才注入任务状态并引导推进；非任务指令（你是谁/闲聊）
+        # 不注入，避免指挥官凭空汇报"已收集基础信息"或主动推进（任务参数是历史断点续跑数据，非本轮采集）。
+        _task_directive = bool(re.search(
+            r"继续|确认|同意|下一步|下一阶段|开始执行|开始迁移|就这么办|推进|执行|选择|"
+            r"数据源|源库|源数据库|目标库|目标数据库|库类型|容量|停机|业务等级|迁移对象|"
+            r"扫描|评估|转换|方案|验证|投产|回滚|国产化|迁移|达梦|金仓|高斯|oceanbase|"
+            r"opengauss|postgresql|oracle|mysql", str(state.get("user_input") or "")))
+        if state.get("agent_id") == "migration_commander" and state.get("task_state") is not None \
+                and _task_directive:
             ts = state["task_state"] or {}
             ts_step_raw = str(ts.get("current_step") or "INIT").split("|")[0]
             ts_step = _LEGACY_STEP_MAP.get(ts_step_raw, ts_step_raw)
@@ -682,9 +775,21 @@ class GraphRuntime:
                     "3. 全部步骤完成前禁止输出面向用户的最终总结；\n"
                     "4. 全部完成后输出简要总结（禁止重复子 Agent 回答内容）。")
 
-        system = (state.get("prompt_text") + "\n目标库: " + state["parse_result"].get("target_db", "") +
+        # 非任务指令（你是谁/问候/闲聊/普通问答）：覆盖迁移引导，指示纯回答，
+        # 避免模型主动引导迁移、列举数据源或复读已输出内容。
+        non_task_block = ""
+        if state.get("agent_id") == "migration_commander" and not _task_directive:
+            non_task_block = (
+                "\n\n## 当前对话不是迁移任务指令\n"
+                "用户本轮输入未包含迁移/任务推进意图（如自我介绍、问候、闲聊、普通问答）。请严格遵守：\n"
+                "1. 直接针对用户的问题简洁回答，不要主动引导/启动迁移流程；\n"
+                "2. 不要主动列举可用数据源、不要追问迁移需求、不要重复能力介绍；\n"
+                "3. 严禁复述或重复任何已输出的内容，同一内容只输出一次。")
+
+        system = (state.get("prompt_text") + _role_boundary_block(state.get("agent_id", "")) +
+                  "\n目标库: " + state["parse_result"].get("target_db", "") +
                   ref_block + rag_block + skill_block + skills_info + ds_info + kg_block +
-                  task_state_block + pipeline_block + UI_FORM_RULE)
+                  task_state_block + pipeline_block + non_task_block + UI_FORM_RULE)
         from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
         messages = [SystemMessage(content=system)]
         # 注入历史对话上下文（最近 N 轮）
@@ -802,28 +907,36 @@ class GraphRuntime:
                 elif name == "call_agent":
                     sub_id = str(args.get("agent_id", ""))
                     sub_name = self._agent_name(sub_id)
-                    # 调度事件：通知前端「正在调用子 Agent」（灰色系统事件，非业务答案）
-                    self._emit({"type": "system", "event": "calling_agent",
-                                "message": f"正在调用【{sub_name}】执行任务…",
-                                "agent_id": sub_id})
-                    sub = self._call_sub_agent(sub_id, str(args.get("question", "")), state=state)
-                    sub_arts = sub.get("artifacts") or []
-                    if sub_arts:
-                        inline_artifacts.extend(sub_arts)
-                    agent_calls.append({"agent_id": sub_id,
-                                        "question": args.get("question", ""),
-                                        "reply": sub.get("reply", ""),
-                                        "error": sub.get("error", ""),
-                                        "artifacts": sub_arts})
-                    # 子 Agent 输出事件：前端单独渲染为蓝色子 Agent 消息（带调度溯源）
-                    self._emit({"type": "sub_agent",
-                                "agent_id": sub_id,
-                                "agent_name": sub_name,
-                                "dispatcher_id": state.get("agent_id", ""),
-                                "dispatcher_name": self._agent_name(state.get("agent_id", "")),
-                                "reply": sub.get("reply", ""),
-                                "error": sub.get("error", "")})
-                    out = json.dumps(sub, ensure_ascii=False)
+                    allowed_agents = self._stage_allowed_agents(state)
+                    if allowed_agents is not None and sub_id not in allowed_agents:
+                        blocked = self._blocked_agent_result(sub_id, allowed_agents)
+                        self._emit({"type": "system", "event": "stage_blocked",
+                                    "message": blocked["error"], "agent_id": sub_id})
+                        out = json.dumps(blocked, ensure_ascii=False)
+                    else:
+                        # 调度事件：通知前端「正在调用子 Agent」（灰色系统事件，非业务答案）
+                        self._emit({"type": "system", "event": "calling_agent",
+                                    "message": f"正在调用【{sub_name}】执行任务…",
+                                    "agent_id": sub_id})
+                        sub = self._call_sub_agent(sub_id, str(args.get("question", "")), state=state)
+                        sub_arts = sub.get("artifacts") or []
+                        if sub_arts:
+                            inline_artifacts.extend(sub_arts)
+                        agent_calls.append({"agent_id": sub_id,
+                                            "question": args.get("question", ""),
+                                            "reply": sub.get("reply", ""),
+                                            "error": sub.get("error", ""),
+                                            "artifacts": sub_arts})
+                        # 子 Agent 输出事件：前端单独渲染为蓝色子 Agent 消息（带调度溯源）
+                        self._emit({"type": "sub_agent",
+                                    "agent_id": sub_id,
+                                    "agent_name": sub_name,
+                                    "dispatcher_id": state.get("agent_id", ""),
+                               "dispatcher_name": self._agent_name(state.get("agent_id", "")),
+                               "reply": sub.get("reply", ""),
+                               "error": sub.get("error", ""),
+                               "artifacts": sub.get("artifacts", [])})
+                        out = json.dumps(self._sub_agent_tool_result(sub), ensure_ascii=False)
                 elif name == "call_agents_parallel":
                     # 并行编排：互相独立的子任务（如 数据搬迁 ∥ 代码改造）一次并行委派。
                     # 子 Agent 内部为纯 LLM/只读检索 + 各自独立 DB 会话，可安全并发；
@@ -841,22 +954,40 @@ class GraphRuntime:
                             {"error": "calls 为空或格式不合法，应为 [{\"agent_id\": ..., \"question\": ...}]，最多 4 个"},
                             ensure_ascii=False)
                     else:
-                        for c in calls:
+                        allowed_agents = self._stage_allowed_agents(state)
+                        if allowed_agents is None:
+                            runnable_calls = calls
+                            blocked_results: List[Dict] = []
+                        else:
+                            runnable_calls = [c for c in calls
+                                              if str(c["agent_id"]) in allowed_agents]
+                            blocked_results = [self._blocked_agent_result(str(c["agent_id"]), allowed_agents)
+                                               for c in calls
+                                               if str(c["agent_id"]) not in allowed_agents]
+                            for c in calls:
+                                sub_id = str(c["agent_id"])
+                                if sub_id not in allowed_agents:
+                                    self._emit({"type": "system", "event": "stage_blocked",
+                                                "message": self._blocked_agent_result(
+                                                    sub_id, allowed_agents)["error"],
+                                                "agent_id": sub_id})
+                        for c in runnable_calls:
                             self._emit({"type": "system", "event": "calling_agent",
                                         "message": f"正在调用【{self._agent_name(str(c['agent_id']))}】执行任务…（并行）",
                                         "agent_id": str(c["agent_id"])})
-                        from concurrent.futures import ThreadPoolExecutor
                         subs: List[Dict] = []
-                        with ThreadPoolExecutor(max_workers=len(calls)) as pool:
-                            futs = [pool.submit(self._call_sub_agent, str(c["agent_id"]),
-                                                str(c.get("question", "")), state)
-                                    for c in calls]
-                            for f in futs:
-                                try:
-                                    subs.append(f.result())
-                                except Exception as e:  # 单个子 Agent 失败不拖垮整批
-                                    subs.append({"ok": False, "error": f"并行执行异常：{e}"})
-                        for c, sub in zip(calls, subs):
+                        if runnable_calls:
+                            from concurrent.futures import ThreadPoolExecutor
+                            with ThreadPoolExecutor(max_workers=len(runnable_calls)) as pool:
+                                futs = [pool.submit(self._call_sub_agent, str(c["agent_id"]),
+                                                    str(c.get("question", "")), state)
+                                        for c in runnable_calls]
+                                for f in futs:
+                                    try:
+                                        subs.append(f.result())
+                                    except Exception as e:  # 单个子 Agent 失败不拖垮整批
+                                        subs.append({"ok": False, "error": f"并行执行异常：{e}"})
+                        for c, sub in zip(runnable_calls, subs):
                             sub_id = str(c["agent_id"])
                             sub_name = self._agent_name(sub_id)
                             sub_arts = sub.get("artifacts") or []
@@ -873,8 +1004,11 @@ class GraphRuntime:
                                         "dispatcher_id": state.get("agent_id", ""),
                                         "dispatcher_name": self._agent_name(state.get("agent_id", "")),
                                         "reply": sub.get("reply", ""),
-                                        "error": sub.get("error", "")})
-                        out = json.dumps({"parallel": True, "results": subs}, ensure_ascii=False)
+                                        "error": sub.get("error", ""),
+                                        "artifacts": sub.get("artifacts", [])})
+                        out = json.dumps({"parallel": True, "results": [
+                            self._sub_agent_tool_result(sub) for sub in subs
+                        ] + blocked_results}, ensure_ascii=False)
                 if out is None:
                     out = self._dispatch_tool(name, args, state=state)
                 messages.append(ToolMessage(content=out, tool_call_id=tc.get("id", ""), name=name))
@@ -998,50 +1132,8 @@ class GraphRuntime:
         # 本轮各子 Agent 内联写入的产物（execute 阶段累计），artifact 节点需合并引用
         inline_files: List[Dict] = list(state.get("artifacts") or [])
 
-        # 指挥官：仅当本轮编排了子 Agent 才写一个轻量任务索引文件
-        # （只列调了谁、各产出了什么文件，不含报告正文——正文由各子 Agent 自行入库）；
-        # 纯闲聊/未委派时直接返回不落盘，避免空方案文件
+        # 指挥官只负责编排。调度索引是过程数据，不是核心交付物，不落产物库。
         if agent_id == "migration_commander":
-            agent_calls = state.get("agent_calls") or []
-            if not agent_calls:
-                return state
-            lines = [f"# 任务索引：{object_name}", "",
-                     f"**用户需求**：{state.get('user_input', '')}", "",
-                     "## 调度的子 Agent 与产物", ""]
-            for ac in agent_calls:
-                sid = str(ac.get("agent_id", ""))
-                sname = self._agent_name(sid)
-                q = ac.get("question", "")
-                fnames = [str(f.get("path", "")).split("/")[-1]
-                          for f in (ac.get("artifacts") or [])]
-                lines.append(f"### {sname}（{sid}）")
-                lines.append(f"- 委派问题：{q}")
-                if fnames:
-                    lines.append(f"- 产物文件：{', '.join(fnames)}")
-                else:
-                    lines.append("- 产物文件：（本轮未生成，可能是闲聊或内容不足门控阈值）")
-                lines.append("")
-            files: Dict[str, str] = {
-                "任务索引.md": "\n".join(lines),
-                "result.json": json.dumps({
-                    "agent_id": agent_id, "object_name": object_name,
-                    "user_input": state.get("user_input", ""),
-                    "agent_calls": [{"agent_id": ac.get("agent_id", ""),
-                                     "question": ac.get("question", ""),
-                                     "produced_files": [str(f.get("path", "")).split("/")[-1]
-                                                        for f in (ac.get("artifacts") or [])]}
-                                    for ac in agent_calls],
-                }, ensure_ascii=False, indent=2),
-            }
-            try:
-                res = self.artifacts.write(namespace, conv_id, agent_id, object_name, files)
-            except NamespaceError as e:
-                state["error"] = str(e)
-                return state
-            state["namespace"] = namespace
-            # 只上报指挥官本轮自己写的索引文件；各子 Agent 的内联产物已在 execute 阶段
-            # 单独发过 artifact 事件，不重复列入（避免误导前端把子 Agent 文件归到指挥官名下）
-            state["artifacts"] = res["files"]
             return state
 
         # 其他 Agent：按 gen_artifact 开关决定是否落盘（直接对话场景，
@@ -1050,18 +1142,13 @@ class GraphRuntime:
             return state
         text = state.get("reply", "")
         # 交付门控：反问/要参数类回复不落盘（与 _call_sub_agent 内联写盘一致）
-        if _NON_DELIVERY_RE.search(text):
-            return state
-        files: Dict[str, str] = {
-            "result.json": json.dumps({
-                "agent_id": agent_id, "intent": pr.get("intent", ""),
-                "object_name": object_name, "reply": text,
-                "rag_refs": [f"{c['doc_name']}#{c['chunk_index']}" for c in state.get("rag_context", [])],
-            }, ensure_ascii=False, indent=2),
-        }
         sql_blocks = re.findall(r"```sql\s*\n(.*?)\n```", text, re.DOTALL | re.IGNORECASE)
+        has_md = any(line.lstrip().startswith("#") for line in text.splitlines())
+        if _NON_DELIVERY_RE.search(text) or not (has_md or sql_blocks):
+            return state
+        files: Dict[str, str] = {}
         for idx, block in enumerate(sql_blocks):
-            files[f"DDL_{object_name}_{idx + 1}.sql" if idx else f"DDL_{object_name}.sql"] = block.strip()
+            files[f"转换脚本_{object_name}_{idx + 1}.sql" if idx else f"转换脚本_{object_name}.sql"] = block.strip()
         md = re.sub(r"```(sql|markdown|json)?\n.*?\n```", "", text, flags=re.DOTALL | re.IGNORECASE).strip() or text
         # 报告文件名按预置 Agent 产物模板映射（agents.py output_files 中第一个 .md 成员）
         report_name = "generate.md"
@@ -1069,6 +1156,7 @@ class GraphRuntime:
             if fname.endswith(".md") and "<" not in fname:
                 report_name = fname
                 break
+        report_name = _core_report_filename(report_name)
         files[report_name] = md
         try:
             res = self.artifacts.write(namespace, conv_id, agent_id, object_name, files)

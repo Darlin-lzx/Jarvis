@@ -162,8 +162,10 @@ STATE_GUIDANCE: Dict[str, str] = {
         "对高风险对象生成目标库转换 SQL。转换完成后停靠在当前阶段，"
         "请求用户显式确认（继续）后再由后端推进迁移方案生成。"),
     MIGRATE_STATUS_SOLUTION_GENERATE: (
-        "迁移方案生成阶段。当前动作：汇总资产清单与转换 SQL，向用户展示方案概要并请求确认"
-        "（字段 task_confirm，选项：确认 / 返回修改）。确认后由后端推进到验证阶段。"),
+        "迁移方案生成阶段。当前动作：调用方案专家（call_agent → migration_planner，别名小方）"
+        "汇总资产清单与转换 SQL，生成国产化迁移落地方案；方案完成后停靠当前阶段，"
+        "向用户展示方案概要并请求确认（字段 task_confirm，选项：确认 / 返回修改）。"
+        "确认后由后端推进到验证阶段，禁止自行跳转。"),
     MIGRATE_STATUS_VERIFY_STAGE: (
         "迁移验证阶段。当前动作：调用迁移验证专家（call_agent → migration_verifier）做校验，"
         "验证完成停靠在当前阶段，请求用户显式确认（继续）后完成整个迁移评估，"

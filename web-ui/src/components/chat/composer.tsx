@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef, type KeyboardEvent, type ChangeEvent } from 'react'
 import { Button } from '@/components/ui/button'
 import { Textarea } from '@/components/ui/textarea'
-import { Square, AtSign, Plus, ChevronDown, Mic, Paperclip, Loader2, X, Hammer, Info } from 'lucide-react'
+import { Square, AtSign, Plus, Bot, ChevronDown, Mic, Paperclip, Loader2, X, Hammer, Info } from 'lucide-react'
 import { agents as builtinAgents, agentDisplayName, skillGroups } from './agent-tabs'
 import { ReferencePicker } from './reference-picker'
 import { api } from '@/lib/api'
@@ -23,6 +23,7 @@ interface ComposerProps {
 export function Composer({ onSend, onStop, disabled, activeAgent, setActiveAgent, convId, spaceId, agentList }: ComposerProps) {
   // 使用后端智能体列表，如果未提供则降级为内置列表
   const agents = agentList && agentList.length > 0 ? agentList : builtinAgents
+  const currentAgent = agents.find(a => a.id === activeAgent)
   const [text, setText] = useState('')
   const [showRefPicker, setShowRefPicker] = useState(false)
   const [references, setReferences] = useState<ChatReference[]>([])
@@ -229,25 +230,16 @@ export function Composer({ onSend, onStop, disabled, activeAgent, setActiveAgent
               {/* 智能体下拉：联动 activeAgent */}
               <div className="relative" ref={agentDrpRef}>
                 <button
-                  className="flex items-center gap-1 h-7 px-2.5 rounded-lg text-[12px] text-[#9a9aa4] hover:text-[#cdd3e0] hover:bg-white/[0.05] transition-colors"
+                  className={cn(
+                    'flex items-center justify-center h-7 w-7 rounded-lg transition-colors',
+                    showAgentDrp ? 'text-indigo-400 bg-white/[0.05]' : 'text-[#9a9aa4] hover:text-[#cdd3e0] hover:bg-white/[0.05]'
+                  )}
                   onClick={() => setShowAgentDrp(!showAgentDrp)}
-                  title="切换当前对话使用的智能体"
+                  title={`智能体：${agentDisplayName(currentAgent)}`}
+                  aria-haspopup="menu"
+                  aria-expanded={showAgentDrp}
                 >
-                  {/* 智能体头像：与顶部标签栏一致（彩色圆形 + 首字符） */}
-                  {(() => {
-                    const cur = agents.find(a => a.id === activeAgent)
-                    const color = cur?.color || '#5b7cfa'
-                    return (
-                      <span
-                        className="w-4 h-4 rounded-full flex items-center justify-center text-[9px] font-bold text-white shrink-0"
-                        style={{ background: color }}
-                      >
-                        {(agentDisplayName(cur as { name?: string; alias?: string } | null) || '智')[0]}
-                      </span>
-                    )
-                  })()}
-                  <span className="max-w-[88px] truncate">{agentDisplayName(agents.find(a => a.id === activeAgent) as { name?: string; alias?: string } | null)}</span>
-                  <ChevronDown className={cn('w-3 h-3 shrink-0 transition-transform', showAgentDrp && 'rotate-180')} />
+                  <Bot className="w-4 h-4" />
                 </button>
                 {showAgentDrp && (
                   <div className="absolute left-0 bottom-full mb-1 bg-[#1a1a24] border border-[#252530] rounded-lg shadow-xl z-50 w-44 py-1.5 overflow-hidden">
@@ -262,7 +254,7 @@ export function Composer({ onSend, onStop, disabled, activeAgent, setActiveAgent
                         onClick={() => { setActiveAgent?.(a.id); setShowAgentDrp(false) }}
                       >
                         <span className="w-4 h-4 rounded flex items-center justify-center text-[9px] font-bold shrink-0" style={{ backgroundColor: a.color + '20', color: a.color }}>
-                          {(a.name || '智')[0]}
+                          {(agentDisplayName(a) || '智')[0]}
                         </span>
                         <span className="truncate">{agentDisplayName(a as { name?: string; alias?: string })}</span>
                       </button>
@@ -278,7 +270,7 @@ export function Composer({ onSend, onStop, disabled, activeAgent, setActiveAgent
                         onClick={() => { setActiveAgent?.(a.id); setShowAgentDrp(false) }}
                       >
                         <span className="w-4 h-4 rounded flex items-center justify-center text-[9px] font-bold shrink-0" style={{ backgroundColor: a.color + '20', color: a.color }}>
-                          {(a.name || '智')[0]}
+                          {(agentDisplayName(a) || '智')[0]}
                         </span>
                         <span className="truncate">{agentDisplayName(a as { name?: string; alias?: string })}</span>
                       </button>

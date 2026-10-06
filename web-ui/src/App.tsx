@@ -42,7 +42,7 @@ export default function App() {
 
   // 加载后端智能体列表，找到主智能体作为默认值
   useEffect(() => {
-    api.listAgents().then(r => {
+    api.listAgents(true).then(r => {
       if (r.success && r.data && r.data.length > 0) {
         // 主智能体（agent_type === '主Agent'）排最前
         const sorted = [...r.data].sort((a, b) => {
@@ -128,11 +128,28 @@ export default function App() {
     }).catch(() => {})
   }
 
-  const handleNewTask = async () => {
+  const handleNewConversation = async () => {
     setQuickMode(false)
-    setShowWelcome(true)
+    setShowWelcome(false)
     setCurrentSpace(null)
+    setSelectedTask(null)
+    setChatFromTask(null)
+    setSelectedSub(null)
     conv.setCurrentId(null)
+
+    try {
+      const spaceResponse = await api.getDefaultSpace()
+      if (!spaceResponse.success || !spaceResponse.data) throw new Error(spaceResponse.error || '默认空间不可用')
+      const conversationResponse = await api.createConversation('新会话', {
+        space_id: spaceResponse.data.id,
+        agent_id: activeAgent,
+      })
+      if (!conversationResponse.success || !conversationResponse.data) throw new Error(conversationResponse.error || '会话创建失败')
+      handleConvCreated(conversationResponse.data.id)
+      bumpSidebarRefresh()
+    } catch (error) {
+      window.alert(error instanceof Error ? error.message : '创建会话失败，请稍后重试')
+    }
   }
 
   const handleConvCreatedFromWelcome = (id: number) => {
@@ -195,7 +212,7 @@ export default function App() {
           searchKw={conv.searchKw}
           onSearch={conv.setSearchKw}
           onSelect={handleSelectConv}
-          onNew={handleNewTask}
+          onNew={handleNewConversation}
           onDelete={conv.remove}
           activeTab={activeTab}
           onTabChange={handleTabChange}

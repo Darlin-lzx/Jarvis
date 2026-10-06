@@ -22,6 +22,19 @@ def test_builtin_agents_enabled_by_default(tmp_path):
     assert svc.get("nl2sql_qa")["gen_artifact"] is False
 
 
+def test_bootstrap_preserves_user_disabled_agents(tmp_path):
+    from db_loc_agent.bootstrap import bootstrap
+
+    db = Database(str(tmp_path / "t.db"))
+    bootstrap(db)
+    svc = AgentService(db)
+    svc.set_enabled("ddl_converter", False)
+
+    bootstrap(db)
+
+    assert svc.get("ddl_converter")["enabled"] is False
+
+
 def test_resolve_intent(tmp_path):
     svc = _svc(tmp_path)
     assert svc.resolve("ddl_convert") == "ddl_converter"

@@ -3,6 +3,7 @@ import { createPortal } from 'react-dom'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { Button } from '@/components/ui/button'
 import { api } from '@/lib/api'
+import { isCoreArtifact } from '@/lib/artifact-filter'
 import type { ArtifactItem, Agent } from '@/lib/types'
 import { cn } from '@/lib/utils'
 import {
@@ -48,6 +49,9 @@ interface ArtifactPanelProps {
   onReference?: (name: string) => void
   /** 快速问答模式：禁用入库相关能力 */
   quickMode?: boolean
+  /** 聊天区文件卡片发来的预览请求 */
+  previewRequest?: ArtifactItem | null
+  onPreviewRequestHandled?: () => void
 }
 
 /* ISO 时间 → MM-DD HH:mm */
@@ -56,6 +60,24 @@ function fmtSlash(iso?: string) {
   const d = new Date(iso)
   if (isNaN(d.getTime())) return ''
   return `${d.getMonth() + 1}-${String(d.getDate()).padStart(2, '0')} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
+}
+
+function toArtifact(it: ArtifactItem, stage = '其他', imported = false): Artifact {
+  const nsParts = (it.namespace || '').split('/')
+  const fileBase = it.path?.split('/').pop()?.replace(/\.[^.]+$/, '') || ''
+  const agentId = it.agent_id || nsParts[1] || ''
+  return {
+    id: it.id,
+    name: fileBase || it.object_name || it.namespace || '产物',
+    status: imported || it.kb_doc_id ? '已入库' : '已保存',
+    source: it.namespace || '',
+    time: it.created_at ? fmtSlash(it.created_at) : '',
+    type: it.type || '',
+    createdAt: it.created_at || '',
+    agent: agentId,
+    stage,
+    kbDocId: it.kb_doc_id ?? null,
+  }
 }
 
 /* 状态样式 */
@@ -307,7 +329,7 @@ function inlineMd(text: string): React.ReactNode[] {
   return nodes
 }
 
-export function ArtifactPanel({ convId, taskId, taskName, onClose, space = '浙江移动国产化', subSystem = '营业系统', activeAgent, onReference, quickMode = false }: ArtifactPanelProps) {
+export function ArtifactPanel({ convId, taskId, taskName, onClose, space = '浙江移动国产化', subSystem = '营业系统', activeAgent, onReference, quickMode = false, previewRequest, onPreviewRequestHandled }: ArtifactPanelProps) {
   const [searchQ, setSearchQ] = useState('')
   const [activeFilter, setActiveFilter] = useState<FilterKey>('全部')
   const [autoImportMap, setAutoImportMap] = useState<Record<number, boolean>>({})
@@ -367,27 +389,11 @@ export function ArtifactPanel({ convId, taskId, taskName, onClose, space = '浙�
         if (ag && ag.success) {
           ;(ag.data as Agent[]).forEach(a => stageMap.set(a.id || a.agent_id || '', a.stage || '其他'))
         }
-        const items = (r.data || []) as ArtifactItem[]
+        const items = ((r.data || []) as ArtifactItem[]).filter(isCoreArtifact)
         setArtifacts(items.map(it => {
-           const nsParts = (it.namespace || '').split('/')
-           // 标题优先用文件名（去扩展名，如 任务索引 / assessment_report），
-           // 而非 object_name——后者常是提取出的垃圾名（A / task_confirm / artifact）
-           const fileBase = it.path?.split('/').pop()?.replace(/\.[^.]+$/, '') || ''
-           const agentId = it.agent_id || nsParts[1] || ''
-           return {
-             id: it.id,
-             name: fileBase || it.object_name || it.namespace || '产物',
-             // 入库状态以后端 kb_doc_id 为准（真实入库后持久化）
-             status: (localImported.has(it.id) || it.kb_doc_id) ? '已入库' as const : '已保存' as const,
-             source: it.namespace || '',
-             time: it.created_at ? fmtSlash(it.created_at) : '',
-             type: it.type || '',
-             createdAt: it.created_at || '',
-             agent: agentId,
-             stage: stageMap.get(agentId) || '其他',
-             kbDocId: it.kb_doc_id ?? null,
-           }
-         }))
+          const agentId = it.agent_id || (it.namespace || '').split('/')[1] || ''
+          return toArtifact(it, stageMap.get(agentId) || '其他', localImported.has(it.id))
+        }))
       }).catch(() => setArtifacts([]))
     }
     load()
@@ -397,6 +403,14 @@ export function ArtifactPanel({ convId, taskId, taskName, onClose, space = '浙�
       return () => clearInterval(timer)
     }
   }, [convId, taskId, localImported])
+
+  useEffect(() => {
+    if (!previewRequest) return
+    setCollapsed(false)
+    const existing = artifacts.find(a => a.id === previewRequest.id)
+    openPreview(existing || toArtifact(previewRequest))
+    onPreviewRequestHandled?.()
+  }, [previewRequest?.id])
 
   // 关闭更多菜单 / 预览的点击外部处理
   useEffect(() => {

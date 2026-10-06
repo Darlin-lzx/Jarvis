@@ -1,5 +1,7 @@
 import type { ReactNode } from 'react'
 import { cn } from '@/lib/utils'
+import { createAgentTabClickHandler } from '@/lib/agent-assignment'
+import { agentDisplayName } from '@/lib/agent-display'
 import {
   ClipboardCheck, FileText, Code2, MessageSquare, Monitor, BarChart3,
   Loader2, X, Workflow, UserRound,
@@ -17,11 +19,8 @@ export const builtinAgentTabs = [
   { id: 'gov_manager', name: '数据治理', role: '治理智能体', desc: '数据质量与合规', icon: BarChart3, color: '#f59e0b', version: 'v1.9.3' },
 ]
 
-/** 取智能体展示名：别名优先（alias 来自数据库 agents.alias），无别名回退原名 */
-export function agentDisplayName(a?: { alias?: string; name?: string } | null): string {
-  if (!a) return '智能体'
-  return a.alias || a.name || '智能体'
-}
+// 兼容旧导入路径；别名优先规则集中在 React-free helper，便于测试与复用。
+export { agentDisplayName }
 
 // 兼容旧导出名
 export const agents = builtinAgentTabs
@@ -53,8 +52,10 @@ export const skillGroups = [
 
 interface AgentTabsProps {
   active: string
-  /** 只读标签栏：智能体不可手动切换，由指挥官自动调度子 Agent */
+  /** 点击启用智能体后，将其作为下一条消息的指派对象 */
   onChange?: (id: string) => void
+  /** 流式输出期间禁止切换，避免当前回复的归属发生变化 */
+  disabled?: boolean
   /** 每个技能的执行状态：执行中(蓝) / 已完成(绿) / 失败(红) / 未执行(灰) */
   status?: Record<string, AgentTabStatus>
   /** 标签栏最左侧插槽（如：折叠链路开关） */
@@ -76,9 +77,10 @@ function statusNode(s: AgentTabStatus | undefined) {
   return null
 }
 
-export function AgentTabs({ active, status, leading, agents: externalAgents }: AgentTabsProps) {
-  // 使用外部传入的智能体列表，如果未提供则降级为内置列表
-  const displayAgents = externalAgents && externalAgents.length > 0 ? externalAgents : builtinAgentTabs
+export function AgentTabs({ active, status, leading, agents: externalAgents, onChange, disabled = false }: AgentTabsProps) {
+  // 使用外部传入的智能体列表，如果未提供则降级为内置列表；只展示启用状态（enabled 未定义视为启用）
+  const rawAgents = externalAgents && externalAgents.length > 0 ? externalAgents : builtinAgentTabs
+  const displayAgents = rawAgents.filter(a => (a as { enabled?: boolean }).enabled !== false)
 
   return (
     <div className="flex items-center gap-2 px-4 py-2 border-b border-[#1e1e28] bg-[#0f0f14]">
@@ -95,11 +97,20 @@ export function AgentTabs({ active, status, leading, agents: externalAgents }: A
         const isActive = active === a.id
         const isMainAgent = !isBuiltin && a.agent_type === '主Agent'
         const s = status?.[a.id]
+        const handleClick = createAgentTabClickHandler({ id: a.id, onChange, disabled })
         return (
           <div key={a.id} className="relative group">
-            <div
+            <button
+              type="button"
+              onClick={handleClick}
+              disabled={handleClick === undefined}
+              aria-pressed={isActive}
+              title={handleClick ? '点击指派该智能体执行下一项任务' : '当前状态不可切换智能体'}
               className={cn(
-                'flex items-center gap-1.5 px-3 py-1.5 rounded-full text-[12px] border select-none cursor-default',
+                'flex items-center gap-1.5 px-3 py-1.5 rounded-full text-[12px] border select-none',
+                handleClick ? 'cursor-pointer' : 'cursor-not-allowed',
+                handleClick && !isActive && 'hover:border-[#3a3a48] hover:text-[#a8a8b8]',
+                handleClick === undefined && 'opacity-60',
                 isActive
                   ? 'border-transparent text-white shadow-sm'
                   : 'border-[#252530] text-[#6a6a7a]',
@@ -121,7 +132,7 @@ export function AgentTabs({ active, status, leading, agents: externalAgents }: A
                 <UserRound className="w-3 h-3" />
               </div>
               <span className={cn('font-medium', isMainAgent && !isActive && 'text-amber-300')}>{agentDisplayName(a as { name?: string; alias?: string })}</span>
-            </div>
+            </button>
             {/* hover 悬浮卡片：展示该智能体的功能 */}
             <div className="pointer-events-none absolute top-full left-1/2 -translate-x-1/2 mt-1.5 z-50 w-64 opacity-0 group-hover:opacity-100 transition-opacity duration-150">
               <div className="rounded-xl bg-[#1a1a24] border border-[#2a2a35] shadow-2xl p-3">
@@ -140,7 +151,7 @@ export function AgentTabs({ active, status, leading, agents: externalAgents }: A
                 {isBuiltin && (a as any).version && (
                   <div className="text-[10px] text-[#5a5a70] mt-1.5">版本 {(a as any).version}</div>
                 )}
-                <div className="text-[9px] text-[#5a5a70] mt-2 border-t border-[#252530] pt-1.5">标签只读 · 由主智能体自动调度</div>
+                <div className="text-[9px] text-[#5a5a70] mt-2 border-t border-[#252530] pt-1.5">点击指派该智能体执行下一项任务</div>
               </div>
             </div>
           </div>

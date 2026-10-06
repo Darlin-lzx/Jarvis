@@ -6,6 +6,8 @@ from db_loc_agent.db import Database
 from db_loc_agent.graph import AgentState, build_graph
 from db_loc_agent.prompts import PromptService
 from db_loc_agent.skills import SkillService
+from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
+from langchain_core.messages import AIMessage
 
 
 class FakeLLM:
@@ -244,3 +246,381 @@ def test_custom_stream_events_on_call_agent(tmp_path):
     assert sub_ev["agent_name"] == "SQL 转换助手"
     assert sub_ev["reply"] == "子智能体回复：已转换 SQL"
     assert sub_ev["dispatcher_name"]  # 主 Agent 溯源名非空
+
+
+def test_call_agent_tool_message_omits_displayed_sub_reply(tmp_path):
+    """子 Agent 完整回复已单独展示给用户，返回主 Agent 的 ToolMessage 不应携带正文。
+
+    否则指挥官会把 ToolMessage 中的完整报告复述进最终回复，前端出现两份相同内容。
+    """
+    db = Database(str(tmp_path / "t.db"))
+    from db_loc_agent.bootstrap import bootstrap
+    bootstrap(db)
+    prompt_svc = PromptService(db)
+    prompt_svc.create("ddl_converter 提示词", "agent",
+                      AgentService(db).get("ddl_converter")["default_prompt"])
+    artifact_svc = ArtifactService(db, str(tmp_path / "artifacts"))
+
+    call_tool = {"name": "call_agent",
+                 "args": {"agent_id": "ddl_converter",
+                          "question": "请转换 select * from t"},
+                 "id": "call_agent_1"}
+    sub_reply = "子智能体完整回复：" + "这是一份很长的转换报告内容。" * 30
+
+    class RecordingScriptedLLM(ScriptedLLM):
+        def __init__(self, steps):
+            super().__init__(steps)
+            self.seen_messages = []
+
+        def stream(self, messages, **kw):
+            self.seen_messages.append(list(messages))
+            yield from super().stream(messages, **kw)
+
+    llm = RecordingScriptedLLM([
+        ("需要委派给转换智能体", [call_tool]),
+        (sub_reply, None),
+        ("转换已完成，详见上方子智能体输出。", None),
+    ])
+    graph = build_graph(
+        llm=llm, rag_search=lambda q, top_k=4, space_id=None: [],
+        prompt_service=prompt_svc, artifact_service=artifact_svc,
+        skill_service=None, parse_schema={}, max_iterations=3,
+        agent_service=AgentService(db),
+    )
+    final = graph.invoke(AgentState(
+        user_input="帮我做个 DDL 转换", conv_id=6,
+        agent_id="migration_commander", task_state={"current_step": "complete"}))
+
+    tool_payloads = []
+    for messages in llm.seen_messages:
+        for msg in messages:
+            if msg.__class__.__name__ == "ToolMessage" and msg.name == "call_agent":
+                tool_payloads.append(json.loads(msg.content))
+    assert len(tool_payloads) == 1
+    assert sub_reply not in tool_payloads[0].get("reply", "")
+    assert tool_payloads[0]["reply_already_displayed"] is True
+    assert final["agent_calls"][0]["reply"] == sub_reply
+
+
+def test_call_agent_nested_tokens_are_not_parent_stream(tmp_path):
+    """子 Agent 内部 LLM token 不能进入父图 messages 流。
+
+    app.py 会把 messages 流当主回复 text 下发；若嵌套子 Agent token 也被
+    LangGraph 捕获，前端会同时收到 text 与 sub_agent 两份相同内容。
+    """
+    db = Database(str(tmp_path / "t.db"))
+    from db_loc_agent.bootstrap import bootstrap
+    bootstrap(db)
+    prompt_svc = PromptService(db)
+    prompt_svc.create("ddl_converter 提示词", "agent",
+                      AgentService(db).get("ddl_converter")["default_prompt"])
+    artifact_svc = ArtifactService(db, str(tmp_path / "artifacts"))
+
+    class CallbackToolFake(GenericFakeChatModel):
+        def _stream(self, messages, stop=None, run_manager=None, **kw):
+            from langchain_core.messages import AIMessageChunk
+            from langchain_core.outputs import ChatGenerationChunk
+            result = self._generate(messages, stop=stop,
+                                    run_manager=run_manager, **kw)
+            msg = result.generations[0].message
+            if msg.content:
+                chunk_msg = AIMessageChunk(content=msg.content, chunk_position="last")
+                if run_manager:
+                    run_manager.on_llm_new_token(msg.content, chunk=chunk_msg)
+                yield ChatGenerationChunk(message=chunk_msg)
+            if getattr(msg, "tool_calls", None):
+                chunks = []
+                for i, tc in enumerate(msg.tool_calls):
+                    chunks.append({
+                        "name": tc["name"],
+                        "args": json.dumps(tc["args"], ensure_ascii=False),
+                        "id": tc["id"], "index": i, "type": "tool_call_chunk",
+                    })
+                yield ChatGenerationChunk(message=AIMessageChunk(
+                    content="", tool_call_chunks=chunks,
+                    chunk_position="last" if not msg.content else None))
+
+    sub_reply = "子智能体流式完整回复：这是详细报告"
+    responses = iter([
+        json.dumps({"intent": "migration_overall", "agent_id": "migration_commander",
+                    "object_name": "", "source_db": "", "target_db": "",
+                    "skill_id": "", "params": {}, "confidence": 1.0},
+                   ensure_ascii=False),
+        AIMessage(content="我来调度", tool_calls=[{
+            "name": "call_agent",
+            "args": {"agent_id": "ddl_converter", "question": "请转换"},
+            "id": "nested_call_1",
+        }]),
+        sub_reply,
+        "主智能体简要总结",
+    ])
+    graph = build_graph(
+        llm=CallbackToolFake(messages=responses),
+        rag_search=lambda q, top_k=4, space_id=None: [],
+        prompt_service=prompt_svc, artifact_service=artifact_svc,
+        skill_service=None, parse_schema={}, max_iterations=3,
+        agent_service=AgentService(db),
+    )
+    parent_texts = []
+    final_reply = ""
+    for mode, payload in graph.stream(
+            AgentState(user_input="帮我做个 DDL 转换", conv_id=7,
+                       agent_id="migration_commander",
+                       task_state={"current_step": "complete"}),
+            stream_mode=["messages", "updates"]):
+        if mode == "messages":
+            parent_texts.append(payload[0].content or "")
+        elif mode == "updates" and "reply" in payload:
+            final_reply = payload["reply"].get("reply", "")
+
+    assert sub_reply not in "".join(parent_texts)
+    assert final_reply == "主智能体简要总结"
+
+
+def test_parallel_calls_cannot_start_future_migration_stages(tmp_path):
+    """逐级确认模式下，方案阶段不得把评估/代码改造混入同一并行批次提前执行。"""
+    db = Database(str(tmp_path / "t.db"))
+    from db_loc_agent.bootstrap import bootstrap
+    bootstrap(db)
+    prompt_svc = PromptService(db)
+    artifact_svc = ArtifactService(db, str(tmp_path / "artifacts"))
+
+    parallel_tool = {"name": "call_agents_parallel", "args": {"calls": [
+        {"agent_id": "migration_planner", "question": "请生成迁移方案"},
+        {"agent_id": "migration_assessor", "question": "请评估"},
+        {"agent_id": "code_migrator", "question": "请改造代码"},
+    ]}, "id": "parallel_future_1"}
+    llm = ScriptedLLM([
+        ("需要并行调度", [parallel_tool]),
+        ("方案专家完整方案", None),
+        ("评估专家报告", None),
+        ("代码改造报告", None),
+        ("方案阶段已完成", None),
+    ])
+    graph = build_graph(
+        llm=llm, rag_search=lambda q, top_k=4, space_id=None: [],
+        prompt_service=prompt_svc, artifact_service=artifact_svc,
+        skill_service=None, parse_schema={}, max_iterations=6,
+        agent_service=AgentService(db),
+    )
+    custom_events = []
+    final = {}
+    for mode, payload in graph.stream(
+            AgentState(
+                user_input="继续生成迁移方案", conv_id=8,
+                agent_id="migration_commander",
+                task_state={"current_step": "SOLUTION_GENERATE",
+                            "step_confirm": True, "pipeline_start": True}),
+            stream_mode=["custom", "updates"]):
+        if mode == "custom" and isinstance(payload, dict) \
+                and payload.get("event") == "calling_agent":
+            custom_events.append(payload["agent_id"])
+        elif mode == "updates" and isinstance(payload, dict) and "reply" in payload:
+            final = payload["reply"]
+
+    assert custom_events == ["migration_planner"]
+    assert [c["agent_id"] for c in final["agent_calls"]] == ["migration_planner"]
+
+
+def test_sub_agent_conversational_reply_does_not_create_artifact(tmp_path):
+    """子 Agent 的追问/中间对话不是交付物，不得写入右侧产物面板。"""
+    db = Database(str(tmp_path / "t.db"))
+    from db_loc_agent.bootstrap import bootstrap
+    bootstrap(db)
+    prompt_svc = PromptService(db)
+    artifact_svc = ArtifactService(db, str(tmp_path / "artifacts"))
+
+    call_tool = {"name": "call_agent",
+                 "args": {"agent_id": "migration_assessor",
+                          "question": "请评估迁移风险"},
+                 "id": "call_conversational_1"}
+    llm = ScriptedLLM([
+        ("需要评估", [call_tool]),
+        ("请先提供源库对象清单、目标库类型和停机窗口。", None),
+        ("评估专家需要补充信息。", None),
+    ])
+    graph = build_graph(
+        llm=llm, rag_search=lambda q, top_k=4, space_id=None: [],
+        prompt_service=prompt_svc, artifact_service=artifact_svc,
+        skill_service=None, parse_schema={}, max_iterations=3,
+        agent_service=AgentService(db),
+    )
+    final = graph.invoke(AgentState(
+        user_input="继续评估", conv_id=9,
+        agent_id="migration_commander",
+        task_state={"current_step": "ASSESSMENT_RUNNING",
+                    "step_confirm": True, "pipeline_start": True}))
+
+    assert final["agent_calls"][0]["artifacts"] == []
+    assert artifact_svc.list_namespaces(conv_id=9) == []
+
+
+def test_sub_agent_core_report_creates_one_document_and_chat_link(tmp_path):
+    """核心报告只落业务文档；聊天事件只给简短状态和可预览文件记录。"""
+    db = Database(str(tmp_path / "t.db"))
+    from db_loc_agent.bootstrap import bootstrap
+    bootstrap(db)
+    prompt_svc = PromptService(db)
+    artifact_svc = ArtifactService(db, str(tmp_path / "artifacts"))
+
+    call_tool = {"name": "call_agent",
+                 "args": {"agent_id": "migration_assessor",
+                          "question": "请评估迁移风险"},
+                 "id": "call_core_report_1"}
+    report = "# 迁移评估报告\n\n源库与目标库兼容性良好，主要风险集中在函数兼容性。"
+    llm = ScriptedLLM([
+        ("需要评估", [call_tool]),
+        (report, None),
+        ("评估文档已生成。", None),
+    ])
+    graph = build_graph(
+        llm=llm, rag_search=lambda q, top_k=4, space_id=None: [],
+        prompt_service=prompt_svc, artifact_service=artifact_svc,
+        skill_service=None, parse_schema={}, max_iterations=3,
+        agent_service=AgentService(db),
+    )
+    custom_events = []
+    for mode, payload in graph.stream(
+            AgentState(user_input="继续评估", conv_id=10,
+                       agent_id="migration_commander",
+                       task_state={"current_step": "ASSESSMENT_RUNNING",
+                                   "step_confirm": True, "pipeline_start": True}),
+            stream_mode=["custom", "updates"]):
+        if mode == "custom" and isinstance(payload, dict) and payload.get("type") == "sub_agent":
+            custom_events.append(payload)
+
+    event = custom_events[0]
+    files = event["artifacts"]
+    assert [f["path"].split("/")[-1] for f in files] == ["评估报告.md"]
+    assert report not in event["reply"]
+    assert "评估报告.md" in event["reply"]
+    assert artifact_svc.read(files[0]["id"]) == report
+
+
+def test_commander_does_not_write_orchestration_index_artifact(tmp_path):
+    """调度索引是过程数据，不是核心交付物，不得进入产物面板。"""
+    db = Database(str(tmp_path / "t.db"))
+    from db_loc_agent.bootstrap import bootstrap
+    bootstrap(db)
+    prompt_svc = PromptService(db)
+    artifact_svc = ArtifactService(db, str(tmp_path / "artifacts"))
+
+    call_tool = {"name": "call_agent",
+                 "args": {"agent_id": "migration_assessor",
+                          "question": "请评估迁移风险"},
+                 "id": "call_no_index_1"}
+    llm = ScriptedLLM([
+        ("需要评估", [call_tool]),
+        ("请先提供源库对象清单。", None),
+        ("评估专家等待补充信息。", None),
+    ])
+    graph = build_graph(
+        llm=llm, rag_search=lambda q, top_k=4, space_id=None: [],
+        prompt_service=prompt_svc, artifact_service=artifact_svc,
+        skill_service=None, parse_schema={}, max_iterations=3,
+        agent_service=AgentService(db),
+    )
+    final = graph.invoke(AgentState(
+        user_input="继续评估", conv_id=11,
+        agent_id="migration_commander",
+        task_state={"current_step": "ASSESSMENT_RUNNING",
+                    "step_confirm": True, "pipeline_start": True}))
+
+    assert final.get("agent_calls")
+    assert artifact_svc.list_namespaces(conv_id=11) == []
+
+
+def test_direct_core_agent_writes_only_business_document(tmp_path):
+    """用户直接咨询评估专家时，也只生成核心报告，不生成 result.json。"""
+    db = Database(str(tmp_path / "t.db"))
+    from db_loc_agent.bootstrap import bootstrap
+    bootstrap(db)
+    prompt_svc = PromptService(db)
+    artifact_svc = ArtifactService(db, str(tmp_path / "artifacts"))
+    report = "# 迁移评估报告\n\n兼容性结论：可以迁移，需处理函数差异。"
+
+    class OneReplyLLM(FakeLLM):
+        def parse(self, text):
+            return {"intent": "migration_assess", "agent_id": "migration_assessor",
+                    "object_name": "营业库", "source_db": "oracle", "target_db": "dm",
+                    "skill_id": "", "confidence": 0.99}
+
+    graph = build_graph(
+        llm=OneReplyLLM(reply=report), rag_search=lambda q, top_k=4, space_id=None: [],
+        prompt_service=prompt_svc, artifact_service=artifact_svc,
+        skill_service=None, parse_schema={}, max_iterations=1,
+        agent_service=AgentService(db),
+    )
+    final = graph.invoke(AgentState(user_input="请评估营业库", conv_id=12))
+
+    filenames = [f["path"].split("/")[-1] for f in final["artifacts"]]
+    assert filenames == ["评估报告.md"]
+
+
+def test_core_sql_artifacts_use_chinese_filenames(tmp_path):
+    """新产物文件名使用中文业务名，技术对象名仅作为后缀保留。"""
+    db = Database(str(tmp_path / "t.db"))
+    from db_loc_agent.bootstrap import bootstrap
+    bootstrap(db)
+    prompt_svc = PromptService(db)
+    artifact_svc = ArtifactService(db, str(tmp_path / "artifacts"))
+
+    class ConverterLLM(FakeLLM):
+        def parse(self, text):
+            return {"intent": "ddl_convert", "agent_id": "ddl_converter",
+                    "object_name": "USER_ORDER", "source_db": "oracle",
+                    "target_db": "dm", "skill_id": "", "confidence": 0.99}
+
+    graph = build_graph(
+        llm=ConverterLLM(reply="# 转换报告\n\n```sql\nCREATE TABLE USER_ORDER (ID INT);\n```"),
+        rag_search=lambda q, top_k=4, space_id=None: [],
+        prompt_service=prompt_svc, artifact_service=artifact_svc,
+        skill_service=None, parse_schema={}, max_iterations=1,
+        agent_service=AgentService(db),
+    )
+    final = graph.invoke(AgentState(user_input="转换 USER_ORDER", conv_id=13))
+
+    filenames = [f["path"].split("/")[-1] for f in final["artifacts"]]
+    assert filenames == ["转换脚本_USER_ORDER.sql", "转换报告.md"]
+
+
+def test_code_migrator_gets_role_boundary_and_ignores_mismatched_history(tmp_path):
+    """用户指派小改时，不得因历史评估任务而代跑评估专家职责。"""
+    db = Database(str(tmp_path / "t.db"))
+    from db_loc_agent.bootstrap import bootstrap
+    bootstrap(db)
+    prompt_svc = PromptService(db)
+    artifact_svc = ArtifactService(db, str(tmp_path / "artifacts"))
+
+    class RecordingCodeLLM(FakeLLM):
+        def __init__(self):
+            super().__init__(reply="请切换到小评处理评估。")
+            self.seen_messages = []
+
+        def parse(self, text):
+            return {"intent": "migration_assess", "agent_id": "migration_assessor",
+                    "object_name": "", "source_db": "", "target_db": "",
+                    "skill_id": "", "confidence": 0.95}
+
+        def stream(self, messages, **kw):
+            self.seen_messages.append(list(messages))
+            yield from super().stream(messages, **kw)
+
+    llm = RecordingCodeLLM()
+    graph = build_graph(
+        llm=llm, rag_search=lambda q, top_k=4, space_id=None: [],
+        prompt_service=prompt_svc, artifact_service=artifact_svc,
+        skill_service=None, parse_schema={}, max_iterations=1,
+        agent_service=AgentService(db),
+    )
+    final = graph.invoke(AgentState(
+        user_input="干活", conv_id=14, agent_id="code_migrator",
+        history=[{"role": "user", "content": "我要做数据迁移评估"},
+                 {"role": "assistant", "content": "好的，我来帮你做数据迁移评估。"}]))
+
+    assert final["agent_id"] == "code_migrator"
+    system_prompt = str(llm.seen_messages[0][0].content)
+    assert "职责边界（最高优先级）" in system_prompt
+    assert "不得执行迁移评估" in system_prompt
+    assert "小评" in system_prompt
+    assert "不要把历史会话中的迁移评估任务当作当前任务" in system_prompt

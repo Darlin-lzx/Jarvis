@@ -300,6 +300,44 @@ export function AgentsPanel({ onNavigate }: { onNavigate?: (tab: string) => void
       ))
     } catch (err) {
       console.error('切换状态失败:', err)
+      window.alert('切换状态失败，请检查后端服务是否已重启')
+    }
+  }
+
+  // 批量启用/禁用（持久化到数据库）
+  const batchSetEnabled = async (enabled: boolean) => {
+    const targets = agents.filter(a => selected.includes(a.id))
+    if (!targets.length) return
+    try {
+      for (const a of targets) {
+        await api.toggleAgent(a.uniqueKey, enabled)
+      }
+      setAgents(prev => prev.map(a =>
+        selected.includes(a.id) ? { ...a, status: enabled ? '启用' : '禁用' } : a
+      ))
+      setSelected([])
+      setShowBatchMenu(false)
+    } catch (err) {
+      console.error('批量设置状态失败:', err)
+      window.alert('批量设置状态失败，请检查后端服务是否已重启')
+    }
+  }
+
+  // 批量删除
+  const batchDelete = async () => {
+    const targets = agents.filter(a => selected.includes(a.id))
+    if (!targets.length) return
+    if (!window.confirm(`确认删除选中的 ${targets.length} 个智能体？删除后不可恢复。`)) return
+    try {
+      for (const a of targets) {
+        await api.deleteAgent(a.uniqueKey)
+      }
+      setAgents(prev => prev.filter(a => !selected.includes(a.id)))
+      setSelected([])
+      setShowBatchMenu(false)
+    } catch (err) {
+      console.error('批量删除失败:', err)
+      window.alert('批量删除失败，请检查后端服务是否已重启')
     }
   }
 
@@ -319,9 +357,9 @@ export function AgentsPanel({ onNavigate }: { onNavigate?: (tab: string) => void
             </Button>
             {showBatchMenu && (
               <div className="absolute left-0 top-full mt-1 bg-[#1e1e2a] border border-[#2a2a35] rounded-lg shadow-xl z-50 py-1 min-w-[120px]">
-                <button className="w-full text-left px-3 py-2 text-[12px] text-[#9a9aa4] hover:bg-white/[0.05] hover:text-[#e4e4e9]">批量启用</button>
-                <button className="w-full text-left px-3 py-2 text-[12px] text-[#9a9aa4] hover:bg-white/[0.05] hover:text-[#e4e4e9]">批量禁用</button>
-                <button className="w-full text-left px-3 py-2 text-[12px] text-[#f56c6c] hover:bg-red-500/10">批量删除</button>
+                <button className="w-full text-left px-3 py-2 text-[12px] text-[#9a9aa4] hover:bg-white/[0.05] hover:text-[#e4e4e9]" onClick={() => batchSetEnabled(true)}>批量启用</button>
+                <button className="w-full text-left px-3 py-2 text-[12px] text-[#9a9aa4] hover:bg-white/[0.05] hover:text-[#e4e4e9]" onClick={() => batchSetEnabled(false)}>批量禁用</button>
+                <button className="w-full text-left px-3 py-2 text-[12px] text-[#f56c6c] hover:bg-red-500/10" onClick={batchDelete}>批量删除</button>
               </div>
             )}
           </div>

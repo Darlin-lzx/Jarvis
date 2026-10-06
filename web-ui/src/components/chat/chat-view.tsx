@@ -8,11 +8,11 @@ import { ChatStepPanel, computeStepTotal, isEstimatedTotal } from './chat-step-p
 import { AttachTaskDialog } from '@/components/project/attach-task-dialog'
 import { useChatStream, stripLeadingJson, type ChatStep } from '@/hooks/use-chat-stream'
 import { api } from '@/lib/api'
-import type { Agent, Message as MsgType, TraceEvent, ConversationDetail, Space, SendExtra, SystemEvent, SubAgentEvent, MigrateStatus, MigrateEvent, MigrateTaskDetail } from '@/lib/types'
+import type { Agent, ArtifactItem, Message as MsgType, TraceEvent, ConversationDetail, Space, SendExtra, SystemEvent, SubAgentEvent, MigrateStatus, MigrateEvent, MigrateTaskDetail } from '@/lib/types'
 import { MIGRATE_STATUS_FLOW, MIGRATE_STATUS_LABEL } from '@/lib/types'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { cn } from '@/lib/utils'
-import { Sparkles, ChevronRight, ChevronDown, Timer, Square, ChevronsUpDown, Link2, Zap, ArrowLeft, Workflow, Play } from 'lucide-react'
+import { Sparkles, ChevronRight, ChevronDown, Timer, Square, ChevronsUpDown, Link2, Zap, ArrowLeft, Workflow, Play, FileText } from 'lucide-react'
 import { StateBoard, effectiveIdx, StageDrawer, BOARD_STAGES } from '@/components/migrate/state-board'
 
 interface ChatViewProps {
@@ -44,6 +44,8 @@ interface DisplayItem {
   pending?: boolean
   /** 结构化 UI 指令（<UI_RENDER> 首个合法 JSON），assistant 消息可能携带 */
   ui?: Record<string, unknown>
+  /** 子 Agent 核心产物；有值时正文不直接展示，改为文件入口 */
+  artifacts?: ArtifactItem[]
 }
 
 const examplePrompts = [
@@ -63,10 +65,15 @@ const skillGroups = [
   },
 ]
 
+function artifactFileName(item: ArtifactItem) {
+  return item.path?.split('/').pop() || item.object_name || `产物 ${item.id}`
+}
+
 export function ChatView({ convId, onRefreshArtifacts, activeAgent, setActiveAgent, quickMode = false, onConvertToProject, onBackToTask, agentList }: ChatViewProps) {
   // 使用后端智能体列表，如果未提供则降级为内置列表
   const agents = agentList && agentList.length > 0 ? agentList : builtinAgents
   const [items, setItems] = useState<DisplayItem[]>([])
+  const [previewRequest, setPreviewRequest] = useState<ArtifactItem | null>(null)
   const pendingMsgRef = useRef<string | null>(null)
   const activeAgentRef = useRef(activeAgent)
   const { streaming, assistantText, steps, timeline, timelineRef, uiRenderRef, migrateState, send, stop } = useChatStream()
@@ -195,13 +202,15 @@ export function ChatView({ convId, onRefreshArtifacts, activeAgent, setActiveAge
           combined.push({ kind: 'system', content: (c.message as string) || '', ts: new Date(ev.created_at || '').getTime() })
         } else if (ev.node === 'agent') {
           const replyC = (c.reply as string) || ''
+          const artifacts = (c.artifacts as ArtifactItem[]) || []
           combined.push({
             kind: 'sub_agent',
-            content: replyC || (c.error ? `❌ ${c.error}` : '（无返回内容）'),
+            content: artifacts.length ? '' : (replyC || (c.error ? `❌ ${c.error}` : '（无返回内容）')),
             agentId: (c.agent_id as string) || ev.agent_id || undefined,
             agentName: (c.agent_name as string) || undefined,
             dispatcherName: (c.dispatcher_name as string) || undefined,
             error: !!c.error,
+            artifacts,
             ts: new Date(ev.created_at || '').getTime(),
           })
           // 与实时流一致：子 Agent 调用同时进入任务链路节点
@@ -273,6 +282,7 @@ export function ChatView({ convId, onRefreshArtifacts, activeAgent, setActiveAge
           agentName: sa.agent_name,
           dispatcherName: sa.dispatcher_name,
           error: !!sa.error,
+          artifacts: sa.artifacts || [],
         }
       })
       setItems(prev => {
@@ -337,6 +347,7 @@ export function ChatView({ convId, onRefreshArtifacts, activeAgent, setActiveAge
           agentName: sa.agent_name,
           dispatcherName: sa.dispatcher_name,
           error: !!sa.error,
+          artifacts: sa.artifacts || [],
         })
       }
     }
@@ -398,11 +409,13 @@ export function ChatView({ convId, onRefreshArtifacts, activeAgent, setActiveAge
 
   return (
     <div className="flex-1 flex flex-col min-w-0 min-h-0">
-      {/* 智能体标签栏（只读：智能体不可手动切换，由指挥官自动调度） */}
+      {/* 智能体标签栏：用户可直接指派，流式期间锁定 */}
       <AgentTabs
         active={activeAgent}
         status={tabStatus}
         agents={agentList}
+        onChange={setActiveAgent}
+        disabled={streaming}
       />
 
       {/* 顶部综合信息栏：任务归属 + 迁移进度 一行（智能体标签栏保持不变） */}
@@ -634,6 +647,29 @@ export function ChatView({ convId, onRefreshArtifacts, activeAgent, setActiveAge
                     return <Message key={i} role="system" content={item.content || ''} />
                   }
                   if (item.kind === 'sub_agent') {
+                    if (item.artifacts?.length) {
+                      return (
+                        <div key={i} className="flex flex-col gap-2 rounded-lg border border-indigo-500/20 bg-indigo-500/[0.06] px-3 py-2.5">
+                          <div className="flex items-center gap-2 text-[12px] text-[#cdd3e0]">
+                            <FileText className="w-3.5 h-3.5 text-indigo-400 shrink-0" />
+                            <span className="font-medium">{item.agentName || '子智能体'}已生成核心产物</span>
+                          </div>
+                          <div className="flex flex-wrap gap-1.5">
+                            {item.artifacts.map(file => (
+                              <button
+                                key={file.id}
+                                className="inline-flex max-w-full items-center gap-1.5 rounded-md border border-indigo-500/25 bg-[#12121a] px-2 py-1 text-left text-[11px] text-indigo-300 transition-colors hover:border-indigo-400 hover:text-indigo-200"
+                                title="预览产物文件"
+                                onClick={() => setPreviewRequest(file)}
+                              >
+                                <FileText className="w-3 h-3 shrink-0" />
+                                <span className="truncate">{artifactFileName(file)}</span>
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+                      )
+                    }
                     return (
                       <Message
                         key={i}
@@ -697,7 +733,13 @@ export function ChatView({ convId, onRefreshArtifacts, activeAgent, setActiveAge
             <Composer onSend={handleSend} onStop={stop} disabled={streaming} activeAgent={activeAgent} setActiveAgent={setActiveAgent} convId={convId} spaceId={convInfo?.space_id ?? null} agentList={agentList} />
           </div>
         </div>
-        <ArtifactPanel convId={convId} taskName={convInfo?.task_name} quickMode={quickMode} />
+        <ArtifactPanel
+          convId={convId}
+          taskName={convInfo?.task_name}
+          quickMode={quickMode}
+          previewRequest={previewRequest}
+          onPreviewRequestHandled={() => setPreviewRequest(null)}
+        />
       </div>
       {attachOpen && (
         <AttachTaskDialog

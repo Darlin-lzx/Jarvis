@@ -525,8 +525,9 @@ def create_app(db_path: str = "data/db.sqlite3", artifact_root: str = "artifacts
 
     # ---------- 智能体（配置化注册） ----------
     @app.get("/api/agents")
-    def list_api_agents():
-        return {"success": True, "data": agents_svc.all()}
+    def list_api_agents(enabled_only: Optional[bool] = None):
+        """查询智能体列表；enabled_only=true 时只返回启用状态（会话页顶部标签用）"""
+        return {"success": True, "data": agents_svc.all(enabled_only=bool(enabled_only))}
 
     @app.post("/api/agents")
     def create_api_agent(payload: Dict):
@@ -1112,6 +1113,11 @@ def create_app(db_path: str = "data/db.sqlite3", artifact_root: str = "artifacts
             str(payload.get("name", "")), str(payload.get("description", "")),
             payload.get("kb_ids"))}
 
+    @app.get("/api/spaces/default")
+    @_project_handler
+    def get_default_space():
+        return {"success": True, "data": proj.ensure_default_space()}
+
     @app.get("/api/spaces/{sid}")
     @_project_handler
     def get_space(sid: int):
@@ -1654,16 +1660,40 @@ def create_app(db_path: str = "data/db.sqlite3", artifact_root: str = "artifacts
     def conversation_messages(cid: int):
         """查询会话的消息正文（user/assistant），用于历史回看"""
         from sqlalchemy import select
-        from db_loc_agent.db import Message
+        from db_loc_agent.db import ChatTrace, Message
         with db.session() as s:
+            trace_rows = list(s.scalars(select(ChatTrace)
+                                        .where(ChatTrace.conv_id == cid,
+                                               ChatTrace.node == "agent")
+                                        .order_by(ChatTrace.id)))
+            displayed_replies = []
+            for trace in trace_rows:
+                try:
+                    payload = json.loads(trace.content) if trace.content else {}
+                except json.JSONDecodeError:
+                    continue
+                reply = payload.get("reply") if isinstance(payload, dict) else ""
+                if isinstance(reply, str) and len(reply) >= 80:
+                    displayed_replies.append(reply)
+
             rows = list(s.scalars(select(Message)
                                   .where(Message.conv_id == cid)
                                   .order_by(Message.id)))
-            return {"success": True, "data": [{
-                "id": r.id, "role": r.role, "content": r.content,
-                "agent_id": r.agent_id,
-                "created_at": r.created_at.isoformat() if r.created_at else None}
-                for r in rows]}
+            data = []
+            for r in rows:
+                content = r.content or ""
+                if r.role == "assistant":
+                    for reply in displayed_replies:
+                        content = content.replace(reply, "")
+                    content = re.sub(r"\n{3,}", "\n\n", content).strip()
+                    if not content:
+                        continue
+                data.append({
+                    "id": r.id, "role": r.role, "content": content,
+                    "agent_id": r.agent_id,
+                    "created_at": r.created_at.isoformat() if r.created_at else None,
+                })
+            return {"success": True, "data": data}
 
     @app.post("/api/chat/stream")
     def chat_stream(payload: Dict):
@@ -1879,7 +1909,7 @@ def create_app(db_path: str = "data/db.sqlite3", artifact_root: str = "artifacts
                     else:
                         task_state["last_warning"] = _lk["message"]
                         migrate_row = None  # 阻止状态机推进/扫描/编排（只读模式）
-                if migrate_row is not None:
+                if migrate_row is not None and is_migration_flow:
                     # 逐级确认开关（DB 配置化，从任务读取）：注入 task_state 供 graph 编排决策
                     task_state["step_confirm"] = bool(getattr(migrate_row, "step_confirm", True))
                     # 数据源防重复硬拦截：一旦选定，后续轮次传入不同 source_ds_id 一律忽略
@@ -2061,6 +2091,13 @@ def create_app(db_path: str = "data/db.sqlite3", artifact_root: str = "artifacts
             assistant_parts: List[str] = []
             reply_started = False      # 是否已进入真正的回复正文
             pending_prefix = ""        # 最前可能为解析 JSON 前缀的文本缓冲区
+            # 直接对话的产物型 Agent：正文必须先缓冲，等 artifact 节点确认是否为核心交付物。
+            # 落产物 -> 只发文件卡片；未落产物（追问/普通说明）-> 流结束后恢复正文。
+            direct_agent_id = str(agent_id or "")
+            direct_cfg = agents_svc.get(direct_agent_id) or {} if direct_agent_id else {}
+            buffer_direct_reply = bool(direct_cfg.get("gen_artifact", False))
+            direct_reply_buffer = ""
+            direct_artifacts: List[Dict] = []
 
             # ---- <UI_RENDER>/<TASK_STATE> 结构化指令提取（流式状态机） ----
             # 模型可在回复中嵌入 UI 指令（交互表单）与任务状态声明（采集进度）。
@@ -2191,8 +2228,11 @@ def create_app(db_path: str = "data/db.sqlite3", artifact_root: str = "artifacts
                         for _seg in _ui_emit(text):
                             if not _seg:
                                 continue
-                            yield event("text", _seg)
-                            assistant_parts.append(_seg)
+                            if buffer_direct_reply:
+                                direct_reply_buffer += _seg
+                            else:
+                                yield event("text", _seg)
+                                assistant_parts.append(_seg)
                         continue
                     # custom 模式：graph 内实时事件（子 Agent 调度系统事件 + 子 Agent 输出消息）
                     if mode == "custom":
@@ -2207,7 +2247,7 @@ def create_app(db_path: str = "data/db.sqlite3", artifact_root: str = "artifacts
                         elif etype == "sub_agent":
                             ev_body = {k: ev.get(k) for k in
                                        ("agent_id", "agent_name", "dispatcher_id",
-                                        "dispatcher_name", "reply", "error")}
+                                        "dispatcher_name", "reply", "error", "artifacts")}
                             yield event("sub_agent", ev_body)
                             trace("agent", ev_body, aid)
                         elif etype == "artifact":
@@ -2227,6 +2267,10 @@ def create_app(db_path: str = "data/db.sqlite3", artifact_root: str = "artifacts
                             yield event("parse", pr)
                             trace("parse", pr)
                         elif node == "route":
+                            routed_agent_id = str(update.get("agent_id") or direct_agent_id)
+                            routed_cfg = agents_svc.get(routed_agent_id) or {}
+                            direct_agent_id = routed_agent_id
+                            buffer_direct_reply = bool(routed_cfg.get("gen_artifact", False))
                             yield event("route", {"agent_id": update.get("agent_id"),
                                                   "reason": update.get("route_reason")})
                             trace("route", update.get("route_reason", ""), update.get("agent_id", ""))
@@ -2238,9 +2282,12 @@ def create_app(db_path: str = "data/db.sqlite3", artifact_root: str = "artifacts
                                 yield event("skill", sc)
                                 trace("skill", sc, update.get("agent_id", ""))
                         elif node == "artifact":
+                            artifact_files = update.get("artifacts") or []
+                            if buffer_direct_reply:
+                                direct_artifacts.extend(artifact_files)
                             if update.get("namespace"):
                                 yield event("artifact", {"namespace": update["namespace"],
-                                                         "files": update.get("artifacts", [])})
+                                                         "files": artifact_files})
                                 trace("artifact", {"namespace": update["namespace"]},
                                       update.get("agent_id", ""))
                         elif node == "reply" and update.get("error"):
@@ -2249,15 +2296,34 @@ def create_app(db_path: str = "data/db.sqlite3", artifact_root: str = "artifacts
                             trace("error", update["error"])
                 # 流结束后若仍有未判定内容（非解析 JSON 的文本）则正常下发
                 if pending_prefix:
-                    yield event("text", pending_prefix)
-                    assistant_parts.append(pending_prefix)
+                    if buffer_direct_reply:
+                        direct_reply_buffer += pending_prefix
+                    else:
+                        yield event("text", pending_prefix)
+                        assistant_parts.append(pending_prefix)
+                    pending_prefix = ""
                 # 处理缓冲中的残余文本（可能是不完整的 UI_RENDER 标签或尾部文本），
                 # 残余标签丢弃，残余纯文本照常下发
                 for _seg in _ui_emit(""):
                     if not _seg:
                         continue
-                    yield event("text", _seg)
-                    assistant_parts.append(_seg)
+                    if buffer_direct_reply:
+                        direct_reply_buffer += _seg
+                    else:
+                        yield event("text", _seg)
+                        assistant_parts.append(_seg)
+                if buffer_direct_reply and direct_artifacts:
+                    agent_cfg = agents_svc.get(direct_agent_id) or {}
+                    card = {"agent_id": direct_agent_id,
+                            "agent_name": agent_cfg.get("name") or direct_agent_id,
+                            "dispatcher_id": direct_agent_id,
+                            "dispatcher_name": agent_cfg.get("name") or direct_agent_id,
+                            "reply": "", "error": "", "artifacts": direct_artifacts}
+                    yield event("sub_agent", card)
+                    trace("agent", card, direct_agent_id)
+                elif buffer_direct_reply and direct_reply_buffer:
+                    yield event("text", direct_reply_buffer)
+                    assistant_parts.append(direct_reply_buffer)
                 _update_task_status("done")
                 if ui_render is not None:
                     yield event("ui_render", _resolve_ui_placeholders(ui_render, db_tools))
@@ -2266,6 +2332,10 @@ def create_app(db_path: str = "data/db.sqlite3", artifact_root: str = "artifacts
                 yield event("done", None)
             except Exception as e:  # 覆盖 LLM 未启动等运行错误
                 _update_task_status("failed")
+                if buffer_direct_reply and direct_reply_buffer:
+                    yield event("text", direct_reply_buffer)
+                    assistant_parts.append(direct_reply_buffer)
+                    direct_reply_buffer = ""
                 # AssertionError 等异常 str 为空串，需生成有意义的提示，否则前端收不到可见错误
                 msg = str(e) or f"处理出错：{type(e).__name__}"
                 yield event("error", msg)

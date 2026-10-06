@@ -20,6 +20,9 @@ class ProjectError(Exception):
         self.message = message
 
 
+DEFAULT_SPACE_NAME = "默认空间"
+
+
 class ProjectService:
     def __init__(self, db: Database):
         self.db = db
@@ -71,6 +74,19 @@ class ProjectService:
             subs = list(s.scalars(select(SpaceSubsystem)
                                   .where(SpaceSubsystem.space_id == space_id)))
             return self._space_dict(sp, subs)
+
+    def ensure_default_space(self) -> Dict:
+        """获取或创建全局默认空间，用于侧边栏直接新建项目会话。"""
+        with self.db.session() as s:
+            sp = s.scalar(select(Space).where(Space.name == DEFAULT_SPACE_NAME))
+            if sp is None:
+                sp = Space(name=DEFAULT_SPACE_NAME, description="系统默认会话空间")
+                s.add(sp)
+                s.commit()
+                space_id = sp.id
+            else:
+                space_id = sp.id
+        return self.get_space(space_id)
 
     def create_space(self, name: str, description: str = "",
                      kb_ids: Optional[List[int]] = None) -> Dict:
