@@ -146,7 +146,7 @@ function toWorkspaceGroup(s: Space): WorkspaceGroup {
   }
 }
 
-export function Sidebar({ searchKw: _searchKw, onSearch: _onSearch, onNew, onSelect, activeTab, onTabChange, onSelectSpace, onQuickQA, onSelectSubSystem, activeFilter, activeAgent: _activeAgent, agents: _agents, refreshKey, conversations, onRenameConv }: SidebarProps) {
+export function Sidebar({ searchKw: _searchKw, onSearch: _onSearch, onNew, onSelect, onDelete, activeTab, onTabChange, onSelectSpace, onQuickQA, onSelectSubSystem, activeFilter, activeAgent: _activeAgent, agents: _agents, refreshKey, conversations, onRenameConv }: SidebarProps) {
   const [groups, setGroups] = useState<WorkspaceGroup[]>([])
   const [tempSpace, setTempSpace] = useState<Space | null>(null)
   const [spacesLoading, setSpacesLoading] = useState(true)
