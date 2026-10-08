@@ -86,6 +86,33 @@ def _resolve_ui_placeholders(obj: Dict, db_tools: Any) -> Dict:
     return res
 
 
+_EMPTY_CONFIRMATION_RE = re.compile(
+    r"(请确认以上|确认以上|请完成以上|完成以上)", re.I)
+_EXPLICIT_FIELD_LIST_RE = re.compile(
+    r"^\s*(?:[-*+]\s+\S+|\d+[.)]\s+\S+|\|.+\|)", re.M)
+
+
+def _fallback_confirmation_form() -> Dict:
+    """模型宣布要用户确认但未输出字段时的确定性兜底，避免空确认文案。"""
+    return {
+        "title": "请补充关键信息",
+        "fields": [{
+            "name": "pending_confirmation_details",
+            "label": "请逐项填写具体待确认信息",
+            "type": "textarea",
+            "options": [],
+            "placeholder": "例如：源数据源、目标数据库、停机窗口、迁移对象范围",
+        }],
+        "submit": "提交关键信息",
+    }
+
+
+def _needs_confirmation_fallback(text: str) -> bool:
+    """仅拦截“指向以上内容但正文没有字段清单”的空确认。"""
+    return bool(_EMPTY_CONFIRMATION_RE.search(text or "")
+                and not _EXPLICIT_FIELD_LIST_RE.search(text or ""))
+
+
 def create_app(db_path: str = "data/db.sqlite3", artifact_root: str = "artifacts",
                faiss_dir: str = "data/faiss", config_override: Optional[Dict] = None,
                static_dir: Optional[str] = None,
@@ -395,6 +422,20 @@ def create_app(db_path: str = "data/db.sqlite3", artifact_root: str = "artifacts
             s.refresh(c)
             return {"success": True, "data": {"id": c.id, "title": c.title,
                                               "task_id": c.task_id}}
+
+    @app.put("/api/conversations/{cid}")
+    def rename_conversation(cid: int, payload: Dict):
+        """重命名会话（仅改展示标题）"""
+        title = str(payload.get("title", "")).strip()
+        if not title:
+            raise HTTPException(400, "会话名称不能为空")
+        with db.session() as s:
+            c = s.get(Conversation, cid)
+            if not c:
+                raise HTTPException(404, "会话不存在")
+            c.title = title
+            s.commit()
+            return {"success": True, "data": {"id": c.id, "title": c.title}}
 
     # 注意：{cid} 详情路由需声明在其子路由（/{cid}/messages、/{cid}/trace）之前
     @app.get("/api/conversations/{cid}")
@@ -1682,6 +1723,14 @@ def create_app(db_path: str = "data/db.sqlite3", artifact_root: str = "artifacts
             data = []
             for r in rows:
                 content = r.content or ""
+                ui_render = None
+                if r.ui_render:
+                    try:
+                        parsed_ui = json.loads(r.ui_render)
+                    except (TypeError, json.JSONDecodeError):
+                        parsed_ui = None
+                    if isinstance(parsed_ui, dict):
+                        ui_render = parsed_ui
                 if r.role == "assistant":
                     for reply in displayed_replies:
                         content = content.replace(reply, "")
@@ -1691,6 +1740,7 @@ def create_app(db_path: str = "data/db.sqlite3", artifact_root: str = "artifacts
                 data.append({
                     "id": r.id, "role": r.role, "content": content,
                     "agent_id": r.agent_id,
+                    "ui_render": ui_render,
                     "created_at": r.created_at.isoformat() if r.created_at else None,
                 })
             return {"success": True, "data": data}
@@ -1797,7 +1847,7 @@ def create_app(db_path: str = "data/db.sqlite3", artifact_root: str = "artifacts
                 return False
             return t[end + 1:]
 
-        async def gen():
+        def gen():
             from db_loc_agent.db import Message
 
             def _update_task_status(status: str):
@@ -1840,8 +1890,8 @@ def create_app(db_path: str = "data/db.sqlite3", artifact_root: str = "artifacts
                 or task_state.get("migrate_task_id")
                 or _MIGRATE_INTENT_RE.search(user_input))
             if is_migration_flow:
-                _M_EXEC_STATES = ("OBJECT_SCANNING", "ASSESSMENT_RUNNING", "SQL_TRANSFORM",
-                                  "SOLUTION_GENERATE", "VERIFY_STAGE", "FINISHED")
+                _M_EXEC_STATES = ("DATA_COLLECTION", "ASSESSMENT_RUNNING", "SOLUTION_GENERATE",
+                                  "CODE_MIGRATE", "VERIFY_STAGE", "FINISHED")
                 mpr = parse_migrate_params(user_input)
                 # 别名归一：source_data_id / datasource → source_ds_id
                 if not mpr.get("source_ds_id"):
@@ -1912,6 +1962,7 @@ def create_app(db_path: str = "data/db.sqlite3", artifact_root: str = "artifacts
                 if migrate_row is not None and is_migration_flow:
                     # 逐级确认开关（DB 配置化，从任务读取）：注入 task_state 供 graph 编排决策
                     task_state["step_confirm"] = bool(getattr(migrate_row, "step_confirm", True))
+                    task_state["strict_flow"] = bool(getattr(migrate_row, "strict_flow", True))
                     # 数据源防重复硬拦截：一旦选定，后续轮次传入不同 source_ds_id 一律忽略
                     if migrate_row.source_ds_id and merged_params.get("source_ds_id") \
                             and str(merged_params["source_ds_id"]) != str(migrate_row.source_ds_id):
@@ -1948,9 +1999,10 @@ def create_app(db_path: str = "data/db.sqlite3", artifact_root: str = "artifacts
                                                   "stop_window", "object_count") and v}
                         task_state["task_params"] = {**(task_state.get("task_params") or {}),
                                                      **{k: v for k, v in _saved_params.items()}}
-                        # 进入对象扫描阶段：自动扫描数据源对象 → 规则引擎打风险 → 资产落库
-                        if (_mt["status"] == "OBJECT_SCANNING"
-                                and int(_mt.get("object_count") or 0) == 0):
+                        # 进入数据采集阶段且已选定源数据源：自动扫描对象 → 规则引擎打风险 → 资产落库
+                        if (_mt["status"] == "DATA_COLLECTION"
+                                and int(_mt.get("object_count") or 0) == 0
+                                and (_mt.get("source_ds_name") or task_state["task_params"].get("source_ds_name"))):
                             _scan_res = _scan_migrate_objects(
                                 migrate_row.id,
                                 _mt.get("source_ds_name") or task_state["task_params"].get("source_ds_name"),
@@ -2190,7 +2242,8 @@ def create_app(db_path: str = "data/db.sqlite3", artifact_root: str = "artifacts
                         # 只取首个合法 dict，其后/非法一律丢弃（降级为纯文本）
                         if not ui_taken and isinstance(obj, dict):
                             ui_taken = True
-                            ui_render = obj
+                            if ui_render is None:
+                                ui_render = obj
                     else:  # TASK_STATE：取首个合法 dict 写库
                         if task_state_evt is None and isinstance(obj, dict):
                             task_state_evt = obj
@@ -2246,8 +2299,12 @@ def create_app(db_path: str = "data/db.sqlite3", artifact_root: str = "artifacts
                             trace("system", ev_body, aid)
                         elif etype == "sub_agent":
                             ev_body = {k: ev.get(k) for k in
-                                       ("agent_id", "agent_name", "dispatcher_id",
-                                        "dispatcher_name", "reply", "error", "artifacts")}
+                                        ("agent_id", "agent_name", "dispatcher_id",
+                                         "dispatcher_name", "reply", "error",
+                                         "artifacts", "ui_render")}
+                            sub_ui = ev.get("ui_render")
+                            if isinstance(sub_ui, dict) and ui_render is None:
+                                ui_render = sub_ui
                             yield event("sub_agent", ev_body)
                             trace("agent", ev_body, aid)
                         elif etype == "artifact":
@@ -2284,7 +2341,10 @@ def create_app(db_path: str = "data/db.sqlite3", artifact_root: str = "artifacts
                         elif node == "artifact":
                             artifact_files = update.get("artifacts") or []
                             if buffer_direct_reply:
-                                direct_artifacts.extend(artifact_files)
+                                direct_artifacts.extend(
+                                    f for f in artifact_files
+                                    if str(f.get("agent_id", "")) == direct_agent_id
+                                )
                             if update.get("namespace"):
                                 yield event("artifact", {"namespace": update["namespace"],
                                                          "files": artifact_files})
@@ -2325,8 +2385,12 @@ def create_app(db_path: str = "data/db.sqlite3", artifact_root: str = "artifacts
                     yield event("text", direct_reply_buffer)
                     assistant_parts.append(direct_reply_buffer)
                 _update_task_status("done")
+                if (ui_render is None
+                        and _needs_confirmation_fallback("".join(assistant_parts))):
+                    ui_render = _fallback_confirmation_form()
                 if ui_render is not None:
-                    yield event("ui_render", _resolve_ui_placeholders(ui_render, db_tools))
+                    ui_render = _resolve_ui_placeholders(ui_render, db_tools)
+                    yield event("ui_render", ui_render)
                 if migrate_evt is not None:
                     yield event("migrate", migrate_evt)
                 yield event("done", None)
@@ -2347,7 +2411,10 @@ def create_app(db_path: str = "data/db.sqlite3", artifact_root: str = "artifacts
                 with db.session() as s:
                     s.add(Message(conv_id=conv_id, role="assistant",
                                   content="".join(assistant_parts),
-                                  agent_id=agent_id or None))
+                                  agent_id=agent_id or None,
+                                  ui_render=json.dumps(
+                                      ui_render, ensure_ascii=False)
+                                  if ui_render is not None else None))
                     s.commit()
 
             # 会话任务状态落库：以状态机（后端确定性逻辑）为准；LLM 的 <TASK_STATE> 声明
@@ -2475,6 +2542,16 @@ def create_app(db_path: str = "data/db.sqlite3", artifact_root: str = "artifacts
         payload = payload or {}
         try:
             res = migrate_state.set_step_confirm(tid, bool(payload.get("step_confirm", True)))
+        except MigrateStateError as e:
+            raise HTTPException(400, str(e))
+        return {"success": True, "data": res}
+
+    @app.post("/api/migrate/tasks/{tid}/strict-flow")
+    def migrate_task_strict_flow(tid: int, payload: Dict = None):
+        """切换流程强校验：True=严格顺序，False=允许按用户指派自由选择阶段。"""
+        payload = payload or {}
+        try:
+            res = migrate_state.set_strict_flow(tid, bool(payload.get("strict_flow", True)))
         except MigrateStateError as e:
             raise HTTPException(400, str(e))
         return {"success": True, "data": res}

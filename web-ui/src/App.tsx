@@ -82,6 +82,10 @@ export default function App() {
         setActiveTab('workspace')
       }
     }
+    // 打开网站默认展示工作台：清理上次会话残留的 #/chat/{id}（仅保留 #/workspace/{tab} 直达）
+    if (/^#\/chat\//.test(window.location.hash)) {
+      window.history.replaceState(null, '', window.location.pathname)
+    }
     handleHash()
     window.addEventListener('hashchange', handleHash)
     return () => window.removeEventListener('hashchange', handleHash)
@@ -168,6 +172,9 @@ export default function App() {
       api.getConversation(id).then(r => { if (r.success && r.data) setQuickMode(!r.data.space_id && !r.data.task_id) }).catch(() => {})
     }
   }
+  const handleRenameConv = (id: number, title: string) => {
+    api.renameConversation(id, title).then(() => conv.reload()).catch(() => {})
+  }
 
   const handleTabChange = (tab: string) => {
     setActiveTab(tab)
@@ -214,6 +221,7 @@ export default function App() {
           onSelect={handleSelectConv}
           onNew={handleNewConversation}
           onDelete={conv.remove}
+          onRenameConv={handleRenameConv}
           activeTab={activeTab}
           onTabChange={handleTabChange}
           onSelectSpace={handleSelectSpaceTasks}

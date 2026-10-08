@@ -358,12 +358,12 @@ def test_stream_sub_agent_and_system_events(tmp_path, monkeypatch):
     assert '"type": "error"' not in r.text
     # 系统调度事件：正在调用子 Agent
     assert '"type": "system"' in r.text or '"type":"system"' in r.text
-    assert "正在调用【SQL 转换助手】执行任务…" in r.text
+    assert "正在调用【小转】执行任务…" in r.text
     # 子 Agent 输出事件：名称 + 回答 + 调度溯源（派遣方为当前主 Agent 知识问答助手）
     assert '"type": "sub_agent"' in r.text or '"type":"sub_agent"' in r.text
-    assert '"agent_name": "SQL 转换助手"' in r.text
+    assert '"agent_name": "小转"' in r.text
     assert '"reply": "已完成"' in r.text
-    assert '"dispatcher_name": "知识问答助手"' in r.text
+    assert '"dispatcher_name": "小问"' in r.text
 
 
 def test_stream_without_extra_fields(tmp_path, monkeypatch):

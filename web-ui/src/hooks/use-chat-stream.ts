@@ -24,6 +24,7 @@ export interface TimelineItem {
  * 解析字段集且包含 intent/agent_id/confidence 时剥离，避免误删用户需要的 JSON 回答。
  */
 const PARSE_KEYS = new Set(['intent', 'agent_id', 'object_name', 'source_db', 'target_db', 'skill_id', 'params', 'confidence'])
+const STREAM_UI_INTERVAL_MS = 80
 
 export function stripLeadingJson(text: string): string {
   const t = text.replace(/^[\s\u200b\u200c\u200d\ufeff]+/, '')
@@ -100,6 +101,9 @@ export function useChatStream() {
   const uiRenderRef = useRef<Record<string, unknown> | null>(null)
   /** 本次运行状态机推进事件（供发送方流结束后刷新迁移面板/状态） */
   const migrateRef = useRef<MigrateEvent | null>(null)
+  /** 正文 token 高频到达时先合并渲染，避免长回复按 token 重复解析 Markdown 卡住页面 */
+  const assistantTextRef = useRef('')
+  const assistantTextTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   const stop = useCallback(() => {
     abortRef.current?.abort()
@@ -115,10 +119,23 @@ export function useChatStream() {
     timelineRef.current = []
     uiRenderRef.current = null
     migrateRef.current = null
+    assistantTextRef.current = ''
+    if (assistantTextTimerRef.current != null) {
+      clearTimeout(assistantTextTimerRef.current)
+      assistantTextTimerRef.current = null
+    }
 
     const controller = new AbortController()
     abortRef.current = controller
     const startTs = performance.now() // 用于链路节点真实耗时统计
+
+    const flushAssistantText = (sync: boolean) => {
+      if (assistantTextTimerRef.current != null) {
+        clearTimeout(assistantTextTimerRef.current)
+        assistantTextTimerRef.current = null
+      }
+      if (sync) setAssistantText(stripLeadingJson(assistantTextRef.current))
+    }
 
     try {
       const resp = await api.chatStream(message, convId, agentId, controller.signal, extra)
@@ -135,6 +152,15 @@ export function useChatStream() {
       let buf = ''
       let fullText = ''
 
+      const scheduleAssistantText = (text: string) => {
+        assistantTextRef.current = text
+        if (assistantTextTimerRef.current != null) return
+        assistantTextTimerRef.current = setTimeout(() => {
+          assistantTextTimerRef.current = null
+          setAssistantText(stripLeadingJson(assistantTextRef.current))
+        }, STREAM_UI_INTERVAL_MS)
+      }
+
       while (true) {
         const { done, value } = await reader.read()
         if (done) break
@@ -150,7 +176,7 @@ export function useChatStream() {
             const ev: StreamEvent = JSON.parse(line)
             if (ev.type === 'text') {
               fullText += ev.content as string
-              setAssistantText(stripLeadingJson(fullText))
+              scheduleAssistantText(fullText)
             } else if (ev.type === 'system') {
               timelineRef.current.push({ kind: 'system', ev: ev.content as SystemEvent })
               setTimeline(prev => [...prev, { kind: 'system', ev: ev.content as SystemEvent }])
@@ -184,11 +210,13 @@ export function useChatStream() {
           } catch { /* ignore */ }
         }
       }
+      flushAssistantText(true)
       return stripLeadingJson(fullText)
     } catch (e: unknown) {
       if ((e as Error).name !== 'AbortError') throw e
       return null
     } finally {
+      flushAssistantText(true)
       setStreaming(false)
       abortRef.current = null
     }

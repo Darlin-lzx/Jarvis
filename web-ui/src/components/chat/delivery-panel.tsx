@@ -101,16 +101,14 @@ type FilterKey = (typeof filters)[number]['key']
 
 /* ---- 产物迁移阶段（由生成 Agent 的 stage 决定，DB 配置化；对应状态机阶段） ---- */
 const STAGE_META: Record<string, { Icon: any; color: string; bg: string }> = {
-  '选择数据源': { Icon: Database, color: 'text-emerald-400', bg: 'bg-emerald-500/10' },
-  '基础信息采集': { Icon: ListChecks, color: 'text-sky-400', bg: 'bg-sky-500/10' },
-  '对象扫描': { Icon: ScanSearch, color: 'text-amber-400', bg: 'bg-amber-500/10' },
-  '兼容性评估': { Icon: ClipboardCheck, color: 'text-indigo-400', bg: 'bg-indigo-500/10' },
-  'SQL 转换': { Icon: FileCode, color: 'text-cyan-400', bg: 'bg-cyan-500/10' },
-  '方案生成': { Icon: FileText, color: 'text-purple-400', bg: 'bg-purple-500/10' },
-  '验证': { Icon: CheckCircle2, color: 'text-teal-400', bg: 'bg-teal-500/10' },
+  '数据采集': { Icon: ListChecks, color: 'text-sky-400', bg: 'bg-sky-500/10' },
+  '迁移评估': { Icon: ClipboardCheck, color: 'text-indigo-400', bg: 'bg-indigo-500/10' },
+  '迁移方案': { Icon: FileText, color: 'text-purple-400', bg: 'bg-purple-500/10' },
+  '代码改造': { Icon: FileCode, color: 'text-cyan-400', bg: 'bg-cyan-500/10' },
+  '迁移验证': { Icon: CheckCircle2, color: 'text-teal-400', bg: 'bg-teal-500/10' },
   '完成': { Icon: ShieldCheck, color: 'text-green-400', bg: 'bg-green-500/10' },
 }
-const STAGE_ORDER = ['选择数据源', '基础信息采集', '对象扫描', '兼容性评估', 'SQL 转换', '方案生成', '验证', '完成', '其他']
+const STAGE_ORDER = ['数据采集', '迁移评估', '迁移方案', '代码改造', '迁移验证', '完成', '其他']
 
 /* 文件类型图标 */
 function fileMeta(name: string) {

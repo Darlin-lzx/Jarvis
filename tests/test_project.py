@@ -43,7 +43,8 @@ def test_ensure_default_space_is_idempotent(proj):
     assert [s["name"] for s in proj.list_spaces() if s["name"] == "默认空间"] == ["默认空间"]
 
 
-def test_task_delete_detaches_conversations(proj):
+def test_task_delete_cascades_conversations(proj):
+    """删除任务：级联删除其下全部会话（含消息/trace/产物），知识库副本保留。"""
     sp = proj.create_space("S", "")
     sub = proj.create_subsystem(sp["id"], "营业系统")
     task = proj.create_task(space_id=sp["id"], sub_system_id=sub["id"], name="T")
@@ -55,4 +56,4 @@ def test_task_delete_detaches_conversations(proj):
     with proj.db.session() as s:
         from db_loc_agent.db import Conversation
         c = s.query(Conversation).first()
-        assert c is not None and c.task_id is None
+        assert c is None, "删除任务应级联删除其下会话"

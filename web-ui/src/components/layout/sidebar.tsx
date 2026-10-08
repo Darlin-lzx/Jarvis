@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect } from 'react'
 import { createPortal } from 'react-dom'
-import { Plus, Trash2, ChevronRight, ChevronDown, BookOpen, Brain, Package, Bot, Puzzle, FileText, Database, Plug, Wrench, BarChart3, Shield, MoreHorizontal, Pencil, FolderPlus, FolderOpen, MessageCircle, FileCode2, Cpu, LayoutDashboard, Zap, PanelLeftClose, PanelLeftOpen } from 'lucide-react'
+import { Plus, Trash2, ChevronRight, ChevronDown, BookOpen, Brain, Package, Bot, Puzzle, FileText, Database, Plug, Wrench, BarChart3, Shield, MoreHorizontal, Pencil, FolderPlus, FolderOpen, MessageCircle, MessageSquare, FileCode2, Cpu, LayoutDashboard, Zap, PanelLeftClose, PanelLeftOpen } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { cn } from '@/lib/utils'
@@ -91,6 +91,7 @@ interface SidebarProps {
   onSelect: (id: number) => void
   onNew: () => void
   onDelete: (id: number) => void
+  onRenameConv?: (id: number, title: string) => void
   activeTab: string
   onTabChange: (tab: string) => void
   onSelectSpace?: (g: WorkspaceGroup) => void
@@ -111,6 +112,8 @@ const AUTO_COLLAPSE_WIDTH = 1024
 const defaultExpanded: Record<string, boolean> = {
   tasks: true,
   spaces: true,
+  // 临时会话目录默认收起
+  temp: false,
   // 分组默认展开
   knowledge: true,
   agent: true,
@@ -143,8 +146,9 @@ function toWorkspaceGroup(s: Space): WorkspaceGroup {
   }
 }
 
-export function Sidebar({ searchKw: _searchKw, onSearch: _onSearch, onNew, activeTab, onTabChange, onSelectSpace, onQuickQA, onSelectSubSystem, activeFilter, activeAgent: _activeAgent, agents: _agents, refreshKey }: SidebarProps) {
+export function Sidebar({ searchKw: _searchKw, onSearch: _onSearch, onNew, onSelect, activeTab, onTabChange, onSelectSpace, onQuickQA, onSelectSubSystem, activeFilter, activeAgent: _activeAgent, agents: _agents, refreshKey, conversations, onRenameConv }: SidebarProps) {
   const [groups, setGroups] = useState<WorkspaceGroup[]>([])
+  const [tempSpace, setTempSpace] = useState<Space | null>(null)
   const [spacesLoading, setSpacesLoading] = useState(true)
   const [expandedSections, setExpandedSections] = useState<Record<string, boolean>>(() => loadFromStorage(EXPANDED_KEY, defaultExpanded))
   const [menuOpen, setMenuOpen] = useState<{ key: string; x: number; y: number } | null>(null)
@@ -153,7 +157,21 @@ export function Sidebar({ searchKw: _searchKw, onSearch: _onSearch, onNew, activ
   const [editName, setEditName] = useState('')
   const [addingChildTo, setAddingChildTo] = useState<string | null>(null)
   const [addingChildName, setAddingChildName] = useState('')
+  const [tempEditId, setTempEditId] = useState<number | null>(null)
+  const [tempEditName, setTempEditName] = useState('')
   const menuRef = useRef<HTMLDivElement>(null)
+  const startTempRename = (c: Conversation) => {
+    setTempEditId(c.id)
+    setTempEditName(c.title)
+  }
+  const confirmTempRename = () => {
+    if (tempEditId != null) {
+      const t = tempEditName.trim()
+      const cur = conversations.find(x => x.id === tempEditId)
+      if (t && cur && t !== cur.title) onRenameConv?.(tempEditId, t)
+    }
+    setTempEditId(null)
+  }
   const editInputRef = useRef<HTMLInputElement>(null)
 
   // 左下角登录用户信息（轻量：从后端 /api/me 读取，仅展示，不做鉴权）
@@ -186,7 +204,10 @@ export function Sidebar({ searchKw: _searchKw, onSearch: _onSearch, onNew, activ
     setSpacesLoading(true)
     api.listSpaces().then(r => {
       if (r.success) {
-        setGroups((r.data || []).map(toWorkspaceGroup))
+        const all = r.data || []
+        const temp = all.find(s => s.name === '临时会话') || null
+        setTempSpace(temp)
+        setGroups(all.filter(s => s !== temp).map(toWorkspaceGroup))
       }
     }).catch(() => {}).finally(() => setSpacesLoading(false))
   }
@@ -438,6 +459,79 @@ export function Sidebar({ searchKw: _searchKw, onSearch: _onSearch, onNew, activ
             <Zap className="w-4 h-4 text-amber-400" />
             <span className="text-[12px] text-[#b9b9c8]">快速问答</span>
           </button>
+        </div>
+
+        {/* 临时会话（独立目录，与空间同级；收纳新建会话） */}
+        <div className="pb-2">
+          <div className="flex items-center justify-between px-1 mb-1">
+            <button
+              className="flex-1 flex items-center gap-1 py-1.5 text-[11px] font-semibold text-[#8b8b9e] tracking-wide hover:text-[#8b8b9e] transition-colors"
+              onClick={() => toggleSection('temp')}
+            >
+              {expandedSections.temp !== false ? (
+                <ChevronDown className="w-3 h-3" />
+              ) : (
+                <ChevronRight className="w-3 h-3" />
+              )}
+              临时会话
+              <span className="text-[10px] font-normal text-[#b9b9c8] ml-0.5">
+                {conversations.filter(c => c.space_id === tempSpace?.id).length}
+              </span>
+            </button>
+          </div>
+          {expandedSections.temp !== false && (
+            <div className="space-y-0.5">
+              {conversations.filter(c => c.space_id === tempSpace?.id).length === 0 && (
+                <div className="px-3 py-2 text-[11px] text-[#5a5a70]">暂无临时会话</div>
+              )}
+              {conversations
+                .filter(c => c.space_id === tempSpace?.id)
+                .map(c => (
+                  <div key={c.id} className="group flex items-center pr-1">
+                    {tempEditId === c.id ? (
+                      <Input
+                        className="flex-1 h-7 px-2 py-1 text-[11px]"
+                        autoFocus
+                        value={tempEditName}
+                        onChange={e => setTempEditName(e.target.value)}
+                        onBlur={confirmTempRename}
+                        onKeyDown={e => {
+                          if (e.key === 'Enter') confirmTempRename()
+                          if (e.key === 'Escape') setTempEditId(null)
+                        }}
+                        onClick={e => e.stopPropagation()}
+                      />
+                    ) : (
+                      <>
+                        <button
+                          className="flex-1 flex items-center gap-1.5 px-3 py-1.5 text-[11px] text-[#b9b9c8] hover:text-[#e4e4e9] hover:bg-white/[0.03] rounded-md truncate"
+                          onClick={() => onSelect(c.id)}
+                        >
+                          <MessageSquare className="w-3 h-3 text-cyan-400 shrink-0" />
+                          <span className="truncate">{c.title}</span>
+                        </button>
+                        <div className="opacity-60 hover:opacity-100 flex items-center gap-0.5">
+                          <button
+                            className="p-1 rounded hover:text-[#e4e4e9] hover:bg-white/[0.05]"
+                            title="重命名会话"
+                            onClick={e => { e.stopPropagation(); startTempRename(c) }}
+                          >
+                            <Pencil className="w-3 h-3" />
+                          </button>
+                          <button
+                            className="p-1 rounded hover:text-red-400 hover:bg-white/[0.05]"
+                            title="删除会话"
+                            onClick={e => { e.stopPropagation(); onDelete(c.id) }}
+                          >
+                            <Trash2 className="w-3 h-3" />
+                          </button>
+                        </div>
+                      </>
+                    )}
+                  </div>
+                ))}
+            </div>
+          )}
         </div>
 
         {/* 空间 */}

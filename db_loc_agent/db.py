@@ -42,6 +42,7 @@ class Message(Base):
     role: Any = Column(String(20))  # user / assistant / tool
     content: Any = Column(Text)
     agent_id: Any = Column(String(64), default="")
+    ui_render: Any = Column(Text, comment="结构化 UI 指令 JSON（交互表单）")
     created_at: Any = Column(DateTime, default=utcnow)
 
 
@@ -377,37 +378,42 @@ class UserProfile(Base):
 
 
 # 迁移任务状态枚举（状态机硬编码流转，不依赖大模型记忆）
-MIGRATE_STATUS_INIT = "INIT"                        # 初始化，等待选择数据源
-MIGRATE_STATUS_DATA_SOURCE_SELECTED = "DATA_SOURCE_SELECTED"  # 数据源已选定（source_ds_id 一旦赋值不再询问）
-MIGRATE_STATUS_BASIC_INFO_COLLECTED = "BASIC_INFO_COLLECTED"  # 基础信息采集完成（版本/业务等级/容量/停机窗口）
-MIGRATE_STATUS_OBJECT_SCANNING = "OBJECT_SCANNING"  # 扫描数据库对象（表/存储过程/函数）
-MIGRATE_STATUS_ASSESSMENT_RUNNING = "ASSESSMENT_RUNNING"      # 兼容性评估执行中
-MIGRATE_STATUS_SQL_TRANSFORM = "SQL_TRANSFORM"      # SQL 转换阶段
-MIGRATE_STATUS_SOLUTION_GENERATE = "SOLUTION_GENERATE"        # 迁移方案生成阶段
-MIGRATE_STATUS_VERIFY_STAGE = "VERIFY_STAGE"        # 迁移验证阶段
+MIGRATE_STATUS_DATA_COLLECTION = "DATA_COLLECTION"    # 数据采集（小采：元数据/表结构/对象清单 + 选源/库类型/基础参数）
+MIGRATE_STATUS_INIT = "INIT"                        # 兼容旧值：初始化，等待选择数据源（已并入数据采集）
+MIGRATE_STATUS_DATA_SOURCE_SELECTED = "DATA_SOURCE_SELECTED"  # 兼容旧值：数据源已选定（并入数据采集）
+MIGRATE_STATUS_BASIC_INFO_COLLECTED = "BASIC_INFO_COLLECTED"  # 兼容旧值：基础信息采集完成（并入数据采集）
+MIGRATE_STATUS_OBJECT_SCANNING = "OBJECT_SCANNING"  # 兼容旧值：扫描数据库对象（并入数据采集）
+MIGRATE_STATUS_ASSESSMENT_RUNNING = "ASSESSMENT_RUNNING"      # 迁移评估（小评：兼容性风险/工作量评估）
+MIGRATE_STATUS_SQL_TRANSFORM = "SQL_TRANSFORM"      # 兼容旧值：SQL 转换阶段（已并入代码改造）
+MIGRATE_STATUS_SOLUTION_GENERATE = "SOLUTION_GENERATE"        # 迁移方案（小方：国产化迁移落地方案）
+MIGRATE_STATUS_CODE_MIGRATE = "CODE_MIGRATE"        # 代码改造（小改：JDBC/ORM/存储过程适配）
+MIGRATE_STATUS_VERIFY_STAGE = "VERIFY_STAGE"        # 迁移验证（小测：语法与结构一致性校验）
 MIGRATE_STATUS_FINISHED = "FINISHED"                # 全部完成，报告与资产产物生成
 MIGRATE_STATUS_ERROR = "ERROR"                      # 异常中断，支持断点续跑
 
+# 对外展示的执行阶段（与 pipeline 一致）
 MIGRATE_STATUSES = [
-    MIGRATE_STATUS_INIT, MIGRATE_STATUS_DATA_SOURCE_SELECTED,
-    MIGRATE_STATUS_BASIC_INFO_COLLECTED, MIGRATE_STATUS_OBJECT_SCANNING,
-    MIGRATE_STATUS_ASSESSMENT_RUNNING, MIGRATE_STATUS_SQL_TRANSFORM,
-    MIGRATE_STATUS_SOLUTION_GENERATE, MIGRATE_STATUS_VERIFY_STAGE,
-    MIGRATE_STATUS_FINISHED, MIGRATE_STATUS_ERROR,
+    MIGRATE_STATUS_DATA_COLLECTION, MIGRATE_STATUS_ASSESSMENT_RUNNING,
+    MIGRATE_STATUS_SOLUTION_GENERATE, MIGRATE_STATUS_CODE_MIGRATE,
+    MIGRATE_STATUS_VERIFY_STAGE, MIGRATE_STATUS_FINISHED, MIGRATE_STATUS_ERROR,
 ]
 
 # 各阶段对应的「待采集字段」（状态机依据字段是否收集决定是否可推进）
 MIGRATE_STAGE_FIELDS = {
+    MIGRATE_STATUS_DATA_COLLECTION: ["source_ds_id", "source_db_type", "target_db_type",
+                                     "db_business_level", "db_capacity", "stop_window"],
+    MIGRATE_STATUS_ASSESSMENT_RUNNING: [],
+    MIGRATE_STATUS_SOLUTION_GENERATE: [],
+    MIGRATE_STATUS_CODE_MIGRATE: [],
+    MIGRATE_STATUS_VERIFY_STAGE: [],
+    MIGRATE_STATUS_FINISHED: [],
+    MIGRATE_STATUS_ERROR: [],
+    # 兼容旧值（存量任务映射用）
     MIGRATE_STATUS_INIT: ["source_ds_id"],
     MIGRATE_STATUS_DATA_SOURCE_SELECTED: ["source_db_type", "target_db_type"],
     MIGRATE_STATUS_BASIC_INFO_COLLECTED: ["db_business_level", "db_capacity"],
     MIGRATE_STATUS_OBJECT_SCANNING: [],
-    MIGRATE_STATUS_ASSESSMENT_RUNNING: [],
     MIGRATE_STATUS_SQL_TRANSFORM: [],
-    MIGRATE_STATUS_SOLUTION_GENERATE: [],
-    MIGRATE_STATUS_VERIFY_STAGE: [],
-    MIGRATE_STATUS_FINISHED: [],
-    MIGRATE_STATUS_ERROR: [],
 }
 
 
@@ -435,6 +441,7 @@ class DbMigrateTask(Base):
     lock_expire_time: Any = Column(DateTime, nullable=True, comment="锁超时时间（超时自动释放，防页面关闭死锁）")
     conv_id: Any = Column(Integer, nullable=True, index=True, comment="绑定会话 ID（对话驱动）")
     step_confirm: Any = Column(Boolean, default=True, comment="逐级确认：True=每个执行阶段完成后停驻等待用户确认，False=一次性编排跑完")
+    strict_flow: Any = Column(Boolean, default=True, comment="流程强校验：True=严格按状态机顺序，False=允许按用户指派自由选择阶段")
     created_at: Any = Column(DateTime, default=utcnow)
     updated_at: Any = Column(DateTime, default=utcnow, onupdate=utcnow)
 
@@ -538,6 +545,7 @@ class Database:
         """轻量迁移：conversations/artifacts 补齐归属相关列（存量库无这些列）"""
         try:
             for table, additions in (
+                ("messages", {"ui_render": "TEXT"}),
                 ("conversations",
                  {"space_id": "INTEGER", "sub_system_id": "INTEGER",
                   "task_id": "INTEGER", "agent_id": "VARCHAR(64) DEFAULT ''",
@@ -559,7 +567,8 @@ class Database:
                  {"exec_lock_session_id": "VARCHAR(100) DEFAULT ''",
                   "lock_owner_user_id": "VARCHAR(100) DEFAULT ''",
                   "lock_expire_time": "DATETIME",
-                  "step_confirm": "BOOLEAN DEFAULT 1"}),
+                  "step_confirm": "BOOLEAN DEFAULT 1",
+                  "strict_flow": "BOOLEAN DEFAULT 1"}),
                 ("prompts",
                  {"type": "VARCHAR(20) DEFAULT 'task_instruction'"}),
             ):

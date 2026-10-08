@@ -199,7 +199,7 @@ export function MigratePanel() {
     setBusy(true); setMessage('')
     const r: { success?: boolean; data?: { object_count: number; findings: number }; error?: string } =
       await api.scanMigrateTask(activeId).catch(e => ({ success: false, error: String(e) }))
-    if (r.success && r.data) setMessage(`对象扫描完成：${r.data.object_count} 个对象，规则命中 ${r.data.findings} 条，已写入结构化资产`)
+    if (r.success && r.data) setMessage(`数据采集·对象扫描完成：${r.data.object_count} 个对象，规则命中 ${r.data.findings} 条，已写入结构化资产`)
     else setMessage(r.error || '扫描失败')
     const fresh = await api.getMigrateTask(activeId).catch(() => null)
     if (fresh?.success && fresh.data) setDetail(fresh.data as MigrateTaskDetail)
@@ -225,7 +225,7 @@ export function MigratePanel() {
   /** 重置任务：状态回 INIT，清空参数与资产（二次确认） */
   const doReset = async () => {
     if (activeId == null) return
-    if (!window.confirm('确定重置该迁移任务？状态将回到「选择数据源」，已采集参数与已生成资产全部清空。此操作不可恢复！')) return
+    if (!window.confirm('确定重置该迁移任务？状态将回到「数据采集」，已采集参数与已生成资产全部清空。此操作不可恢复！')) return
     setBusy(true); setMessage('')
     const r: { success?: boolean; data?: MigrateTask; error?: string } =
       await api.resetMigrateTask(activeId).catch(e => ({ success: false, error: String(e) }))

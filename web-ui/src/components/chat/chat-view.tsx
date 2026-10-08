@@ -8,6 +8,7 @@ import { ChatStepPanel, computeStepTotal, isEstimatedTotal } from './chat-step-p
 import { AttachTaskDialog } from '@/components/project/attach-task-dialog'
 import { useChatStream, stripLeadingJson, type ChatStep } from '@/hooks/use-chat-stream'
 import { api } from '@/lib/api'
+import { isVisibleSystemTrace } from '@/lib/trace-filter'
 import type { Agent, ArtifactItem, Message as MsgType, TraceEvent, ConversationDetail, Space, SendExtra, SystemEvent, SubAgentEvent, MigrateStatus, MigrateEvent, MigrateTaskDetail } from '@/lib/types'
 import { MIGRATE_STATUS_FLOW, MIGRATE_STATUS_LABEL } from '@/lib/types'
 import { ScrollArea } from '@/components/ui/scroll-area'
@@ -124,7 +125,13 @@ export function ChatView({ convId, onRefreshArtifacts, activeAgent, setActiveAge
       }).catch(e => ({ success: false, error: String(e) }))
     if (r.success && r.data?.task) {
       setMigrateDetail(r.data.task)
-      if (r.data.warning) window.alert(r.data.warning)
+      if (!r.data.advanced) {
+        window.alert(r.data.warning || '当前阶段还不能推进：请先补齐本阶段必填信息，或等待当前智能体执行完成。')
+      } else {
+        if (r.data.warning) window.alert(r.data.warning)
+        // 状态机只负责跨过确认闸门；下一阶段专家必须通过会话流真正执行。
+        await handleSend('继续', undefined, 'migration_commander')
+      }
     } else {
       window.alert(r.error || '状态机推进失败')
     }
@@ -139,6 +146,19 @@ export function ChatView({ convId, onRefreshArtifacts, activeAgent, setActiveAge
       const r = await api.setMigrateStepConfirm(migrateDetail.task_id, next)
       if (r.success && r.data) setMigrateDetail(r.data as MigrateTaskDetail)
     } catch { /* 静默 */ }
+  }
+
+  /** 切换流程强校验：开=严格顺序；关=允许按用户指派自由选择阶段专家 */
+  const toggleStrictFlow = async () => {
+    if (migrateDetail == null) return
+    const next = migrateDetail.strict_flow !== false ? false : true
+    try {
+      const r = await api.setMigrateStrictFlow(migrateDetail.task_id, next)
+      if (r.success && r.data) setMigrateDetail(r.data as MigrateTaskDetail)
+      else window.alert(r.error || '流程强校验开关设置失败')
+    } catch (e) {
+      window.alert(String(e))
+    }
   }
 
   // 链路相关状态（默认折叠：业务使用者只看对话）
@@ -192,6 +212,7 @@ export function ChatView({ convId, onRefreshArtifacts, activeAgent, setActiveAge
             content: m.role === 'assistant' ? stripLeadingJson(m.content || '') : m.content,
             // 历史消息的 agent_id 可能为空（旧数据），回退到当前会话的 activeAgent
             agentId: m.role === 'assistant' ? (m.agent_id || activeAgentRef.current) : undefined,
+            ui: m.ui_render || undefined,
             ts: new Date(m.created_at || '').getTime(),
           })
         }
@@ -199,6 +220,7 @@ export function ChatView({ convId, onRefreshArtifacts, activeAgent, setActiveAge
       for (const ev of events) {
         const c = (typeof ev.content === 'object' ? ev.content : {}) as Record<string, unknown>
         if (ev.node === 'system') {
+          if (!isVisibleSystemTrace(c)) continue
           combined.push({ kind: 'system', content: (c.message as string) || '', ts: new Date(ev.created_at || '').getTime() })
         } else if (ev.node === 'agent') {
           const replyC = (c.reply as string) || ''
@@ -247,15 +269,16 @@ export function ChatView({ convId, onRefreshArtifacts, activeAgent, setActiveAge
     return () => cancelAnimationFrame(id)
   }, [items, assistantText, steps, timeline, streaming])
 
-  const handleSend = async (text: string, extra?: SendExtra) => {
+  const handleSend = async (text: string, extra?: SendExtra, agentOverride?: string) => {
     let cid = convId
-    setUsedAgents(prev => new Set(prev).add(activeAgentRef.current))
+    const runAgentId = agentOverride || activeAgentRef.current
+    setUsedAgents(prev => new Set(prev).add(runAgentId))
     // 用户消息后立即占位一条空回复（带头像）：发送后马上在下方出现新的助手头像 + 转圈，
     // 而不是等首个 Token 返回才出现回复块
     setItems(prev => [
       ...prev.filter(i => !(i.kind === 'step')),
       { kind: 'message', role: 'user', content: text },
-      { kind: 'message', role: 'assistant', content: '', agentId: activeAgentRef.current, pending: true },
+      { kind: 'message', role: 'assistant', content: '', agentId: runAgentId, pending: true },
     ])
 
     // 如果 convId 为 null，说明当前不在有效会话中，不应在此处创建新会话
@@ -267,7 +290,7 @@ export function ChatView({ convId, onRefreshArtifacts, activeAgent, setActiveAge
     }
 
     try {
-      const fullText = await send(text, cid, activeAgentRef.current, extra)
+      const fullText = await send(text, cid, runAgentId, extra)
       // 流结束后：移除占位回复条目，把本次运行产生的系统事件 / 子 Agent 输出补入当前会话视图
       // （已由后端写入 trace，刷新后仍会恢复；此处保证流结束后即时可见）
       const runItems: DisplayItem[] = timelineRef.current.map(it => {
@@ -518,6 +541,26 @@ export function ChatView({ convId, onRefreshArtifacts, activeAgent, setActiveAge
                 )
               })()}
               {(() => {
+                const strictOn = migrateDetail.strict_flow !== false
+                return (
+                  <div
+                    className="flex items-center gap-1.5 shrink-0"
+                    title={strictOn
+                      ? '流程强校验已开启：只能按数据采集→评估→方案→改造→验证的顺序执行'
+                      : '流程强校验已关闭：可直接指派任意阶段专家执行，不强制前序阶段完成'}
+                  >
+                    <span className="text-[11px] text-[#9a9aa4]">流程强校验</span>
+                    <button
+                      className={cn('relative w-7 h-4 rounded-full transition-colors shrink-0', strictOn ? 'bg-indigo-500' : 'bg-[#2a2a35]')}
+                      onClick={toggleStrictFlow}
+                    >
+                      <div className={cn('absolute top-0.5 w-3 h-3 rounded-full bg-white transition-transform', strictOn ? 'left-3.5' : 'left-0.5')} />
+                    </button>
+                    <span className={cn('text-[10px] w-4 shrink-0', strictOn ? 'text-indigo-400' : 'text-[#5a5a70]')}>{strictOn ? '开' : '关'}</span>
+                  </div>
+                )
+              })()}
+              {(() => {
                 const errored = migrateDetail.status === 'ERROR'
                 const lockBusy = !!migrateDetail.exec_lock?.locked
                 const nextIdx = effectiveIdx(migrateDetail) + 1
@@ -730,7 +773,7 @@ export function ChatView({ convId, onRefreshArtifacts, activeAgent, setActiveAge
           {/* 输入区：放在聊天列内部，与消息列表（max-w-3xl mx-auto）在同一容器居中。
               原先放在「聊天列 + 产物面板」整体下方居中，导致输入框相对消息区向右偏移半个产物面板宽度 */}
           <div className="w-full bg-[#0f0f14] flex-shrink-0 flex justify-center">
-            <Composer onSend={handleSend} onStop={stop} disabled={streaming} activeAgent={activeAgent} setActiveAgent={setActiveAgent} convId={convId} spaceId={convInfo?.space_id ?? null} agentList={agentList} />
+            <Composer onSend={handleSend} onStop={stop} disabled={streaming} activeAgent={activeAgent} convId={convId} spaceId={convInfo?.space_id ?? null} agentList={agentList} currentStage={migrateDetail?.status_label} />
           </div>
         </div>
         <ArtifactPanel

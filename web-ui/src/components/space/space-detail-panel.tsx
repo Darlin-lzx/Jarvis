@@ -264,6 +264,12 @@ export function SpaceDetailPage({ space, onNewTask, onOpenTask, onOpenSub }: {
     api.listDatasources(realSpace.id).then(r => { if (r.success) setDsCount((r.data || []).length) }).catch(() => {})
   }, [realSpace])
 
+  // 切到「会话」标签时刷新会话列表（新建会话后无需重进空间页即可看到）
+  useEffect(() => {
+    if (!realSpace || activeSubTab !== '会话') return
+    api.listConversations({ space_id: realSpace.id }).then(r => { if (r.success) setRealConvs(r.data || []) }).catch(() => {})
+  }, [realSpace, activeSubTab])
+
   useEffect(() => {
     api.listKbSpaces().then(r => { if (r.success) setKbSpaces(r.data || []) }).catch(() => {})
     api.listSkills().then(r => { if (r.success) setSkillCount((r.data || []).length) }).catch(() => {})
@@ -279,6 +285,8 @@ export function SpaceDetailPage({ space, onNewTask, onOpenTask, onOpenSub }: {
   // 设置抽屉 tab
   const [settingsTab, setSettingsTab] = useState<'基础' | '成员' | '统计' | '智能体' | '高级'>('基础')
   const [activeSubTab, setActiveSubTab] = useState<'任务' | '会话' | '产物'>('任务')
+  const [showAllConvs, setShowAllConvs] = useState(false)
+  const [showAllArts, setShowAllArts] = useState(false)
 
   useEffect(() => {
     const h = (e: MouseEvent) => {
@@ -556,13 +564,16 @@ export function SpaceDetailPage({ space, onNewTask, onOpenTask, onOpenSub }: {
               <div className="flex items-center gap-1.5 text-[13px] font-semibold text-[#e4e4e9] pt-2">
                 <MessageSquare className="w-4 h-4 text-cyan-400" />最近会话
               </div>
-              <button className="text-[11px] text-indigo-400 hover:text-indigo-300 pt-2">查看全部会话</button>
+              <button
+                className="text-[11px] text-indigo-400 hover:text-indigo-300 pt-2"
+                onClick={() => setShowAllConvs(v => !v)}
+              >{showAllConvs ? '收起' : '查看全部会话'}</button>
             </div>
             <div className="divide-y divide-[#252530]">
               {recentConvs.length === 0 && (
                 <div className="py-4 text-center text-[12px] text-[#5a5a70]">暂无会话</div>
               )}
-              {recentConvs.map(c => (
+              {(showAllConvs ? realConvs : recentConvs).map(c => (
                 <div key={c.id} className="flex items-center gap-2 py-2">
                   <MessageSquare className="w-3.5 h-3.5 text-cyan-400 shrink-0" />
                   <div className="flex-1 min-w-0">
@@ -581,13 +592,16 @@ export function SpaceDetailPage({ space, onNewTask, onOpenTask, onOpenSub }: {
               <div className="flex items-center gap-1.5 text-[13px] font-semibold text-[#e4e4e9]">
                 <FileText className="w-4 h-4 text-amber-400" />最近产物文件
               </div>
-              <button className="text-[11px] text-indigo-400 hover:text-indigo-300">查看全部产物</button>
+              <button
+                className="text-[11px] text-indigo-400 hover:text-indigo-300"
+                onClick={() => setShowAllArts(v => !v)}
+              >{showAllArts ? '收起' : '查看全部产物'}</button>
             </div>
             <div className="divide-y divide-[#252530]">
               {recentArts.length === 0 && (
                 <div className="py-4 text-center text-[12px] text-[#5a5a70]">暂无产物</div>
               )}
-              {recentArts.map(a => (
+              {(showAllArts ? realArts : recentArts).map(a => (
                 <div key={a.id} className="flex items-center gap-2 py-2">
                   <FileText className="w-3.5 h-3.5 text-amber-400 shrink-0" />
                   <div className="flex-1 min-w-0">

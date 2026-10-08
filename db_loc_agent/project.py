@@ -20,7 +20,7 @@ class ProjectError(Exception):
         self.message = message
 
 
-DEFAULT_SPACE_NAME = "默认空间"
+DEFAULT_SPACE_NAME = "临时会话"
 
 
 class ProjectService:
@@ -80,7 +80,7 @@ class ProjectService:
         with self.db.session() as s:
             sp = s.scalar(select(Space).where(Space.name == DEFAULT_SPACE_NAME))
             if sp is None:
-                sp = Space(name=DEFAULT_SPACE_NAME, description="系统默认会话空间")
+                sp = Space(name=DEFAULT_SPACE_NAME, description="系统临时会话目录（新建会话默认落在此）")
                 s.add(sp)
                 s.commit()
                 space_id = sp.id

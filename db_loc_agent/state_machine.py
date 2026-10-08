@@ -5,10 +5,9 @@
 - 状态与已采集参数持久化到 db_migrate_task 表，断点续跑：重新打开任务从上次状态继续；
 - 指挥官 Agent 只负责对话、渲染表单、调度子 Agent。
 
-状态流转（硬编码，指挥官无权修改流转顺序）：
-  INIT → DATA_SOURCE_SELECTED → BASIC_INFO_COLLECTED → [用户确认]→
-       OBJECT_SCANNING →[确认]→ ASSESSMENT_RUNNING →[确认]→ SQL_TRANSFORM →[确认]→
-       SOLUTION_GENERATE →[确认]→ VERIFY_STAGE →[确认]→ FINISHED
+状态流转（硬编码，指挥官无权修改流转顺序；与 pipeline 一致）：
+  DATA_COLLECTION →[确认]→ ASSESSMENT_RUNNING →[确认]→ SOLUTION_GENERATE →[确认]→
+       CODE_MIGRATE →[确认]→ VERIFY_STAGE →[确认]→ FINISHED
   任意节点可进入 ERROR（保存当前已采集参数与资产，支持断点续跑）
   执行阶段每一级都需用户显式确认（继续/确认），后端才跨闸门进入下一阶段。
 """
@@ -22,6 +21,8 @@ from typing import Any, Dict, List, Optional
 from db_loc_agent.db import (DbMigrateTask, DbMigrateFlow,
                              MIGRATE_STATUS_ASSESSMENT_RUNNING,
                              MIGRATE_STATUS_BASIC_INFO_COLLECTED,
+                             MIGRATE_STATUS_CODE_MIGRATE,
+                             MIGRATE_STATUS_DATA_COLLECTION,
                              MIGRATE_STATUS_DATA_SOURCE_SELECTED,
                              MIGRATE_STATUS_ERROR, MIGRATE_STATUS_FINISHED,
                              MIGRATE_STATUS_INIT, MIGRATE_STATUS_OBJECT_SCANNING,
@@ -47,29 +48,22 @@ class MigrateStateError(ValueError):
 # 字段：status 状态 / label 节点名 / description 说明 /
 #       need_confirm 进入下一节点前是否需用户显式确认 / required_fields 离开本节点前必须采集的字段
 DEFAULT_FLOW: List[Dict[str, Any]] = [
-    {"status": MIGRATE_STATUS_INIT, "label": "选择数据源",
-     "description": "从数据源列表中选择待迁移的源数据库连接",
-     "need_confirm": False, "required_fields": ["source_ds_id"]},
-    {"status": MIGRATE_STATUS_DATA_SOURCE_SELECTED, "label": "库类型确认",
-     "description": "确认源库类型与目标国产库类型",
-     "need_confirm": False, "required_fields": ["source_db_type", "target_db_type"]},
-    {"status": MIGRATE_STATUS_BASIC_INFO_COLLECTED, "label": "基础信息采集",
-     "description": "采集业务等级、容量、停机窗口等参数",
+    {"status": MIGRATE_STATUS_DATA_COLLECTION, "label": "数据采集",
+     "description": "采集源库元数据/表结构/对象清单（小采），并确认源/目标库类型、业务等级、容量、停机窗口等参数",
+     "need_confirm": True,
+     "required_fields": ["source_ds_id", "source_db_type", "target_db_type",
+                         "db_business_level", "db_capacity", "stop_window"]},
+    {"status": MIGRATE_STATUS_ASSESSMENT_RUNNING, "label": "迁移评估",
+     "description": "评估专家（小评）结合规则命中做兼容性风险与工作量评估",
      "need_confirm": True, "required_fields": []},
-    {"status": MIGRATE_STATUS_OBJECT_SCANNING, "label": "对象扫描",
-     "description": "扫描表/视图/存储过程等对象，规则引擎打风险标签",
+    {"status": MIGRATE_STATUS_SOLUTION_GENERATE, "label": "迁移方案",
+     "description": "方案专家（小方）汇总采集与评估结果，生成国产化迁移落地方案",
      "need_confirm": True, "required_fields": []},
-    {"status": MIGRATE_STATUS_ASSESSMENT_RUNNING, "label": "兼容性评估",
-     "description": "评估专家结合规则命中做兼容性业务解读",
+    {"status": MIGRATE_STATUS_CODE_MIGRATE, "label": "代码改造",
+     "description": "改造专家（小改）做 JDBC/ORM/存储过程应用代码适配",
      "need_confirm": True, "required_fields": []},
-    {"status": MIGRATE_STATUS_SQL_TRANSFORM, "label": "SQL 转换",
-     "description": "转换专家将高风险对象改写为目标国产库兼容 SQL",
-     "need_confirm": True, "required_fields": []},
-    {"status": MIGRATE_STATUS_SOLUTION_GENERATE, "label": "方案生成",
-     "description": "汇总资产清单与转换结果，生成迁移方案并请求确认",
-     "need_confirm": True, "required_fields": []},
-    {"status": MIGRATE_STATUS_VERIFY_STAGE, "label": "验证",
-     "description": "验证专家校验迁移结果的一致性",
+    {"status": MIGRATE_STATUS_VERIFY_STAGE, "label": "迁移验证",
+     "description": "验证专家（小测）校验语法与结构一致性",
      "need_confirm": True, "required_fields": []},
     {"status": MIGRATE_STATUS_FINISHED, "label": "完成（终态）",
      "description": "任务全部完成，所有会话只读",
@@ -112,7 +106,7 @@ def next_state(current: str, collected: Dict[str, Any],
     - 候选节点为最后一个（FINISHED 之后）→ 终态停驻。
     """
     nodes = _flow_nodes(flow)
-    cur = current or MIGRATE_STATUS_INIT
+    cur = current or MIGRATE_STATUS_DATA_COLLECTION
     idx = next((i for i, n in enumerate(nodes) if n["status"] == cur), None)
     if idx is None or idx >= len(nodes) - 1:
         # 不在流程中（如 ERROR）或已到终态 → 保持
@@ -137,41 +131,29 @@ def _truthy(v: Any) -> bool:
 
 # 各状态对指挥官的动作指引（注入 system 上下文，LLM 据此推进，但无权改流转）
 STATE_GUIDANCE: Dict[str, str] = {
-    MIGRATE_STATUS_INIT: (
-        "当前动作：向用户提供「选择源数据源」交互式表单（UI_RENDER，字段 source_ds_id）。"
-        "选择完成后后端会自动推进到下一阶段，你无权跳转。"),
-    MIGRATE_STATUS_DATA_SOURCE_SELECTED: (
-        "数据源已选定（source_ds_id 已记录，禁止再次让用户选择数据源！）。"
-        "当前动作：向用户提供「源/目标库类型」表单（UI_RENDER，字段 source_db_type / target_db_type）。"
-        "目标库必须是国产数据库（dm/kingbase/gaussdb/oceanbase/opengauss 等），源库类型不得等于目标库类型。"),
-    MIGRATE_STATUS_BASIC_INFO_COLLECTED: (
-        "基础信息采集阶段。当前动作：向用户提供表单（UI_RENDER，字段 "
-        "db_business_level：核心/一般业务；db_capacity：如 500GB；stop_window：停机窗口），"
-        "并汇总已录入信息让用户确认（字段 task_confirm，选项：确认 / 返回修改）。"
-        "用户确认后由后端推进，禁止在确认前调用子 Agent 或输出迁移结论。"),
-    MIGRATE_STATUS_OBJECT_SCANNING: (
-        "对象扫描阶段。当前动作：调用 db_tools 扫描数据源对象（db_schema 工具列出表/视图/存储过程/函数），"
-        "扫描结果交由规则引擎与评估专家处理。扫描完成后停靠在当前阶段，"
-        "向用户展示对象清单摘要并请求显式确认（输入“继续”/点确认），确认后由后端推进到评估阶段，禁止自行跳过。"),
+    MIGRATE_STATUS_DATA_COLLECTION: (
+        "数据采集阶段。当前动作：调用数据采集专家（call_agent → migration_collector，别名小采）"
+        "采集源库元数据、表结构、索引约束与对象清单，并确认源/目标库类型、业务等级、容量、停机窗口等参数；"
+        "参数与对象清单采集完成后停靠在本阶段，向用户展示并请求显式确认（输入“继续”/点确认），"
+        "确认后由后端推进到迁移评估阶段，禁止自行跳过。"),
     MIGRATE_STATUS_ASSESSMENT_RUNNING: (
-        "兼容性评估执行中。当前动作：调用评估专家（call_agent → migration_assessor），"
-        "把规则引擎扫描出的风险清单作为输入，由其做业务解读。评估完成后停靠在当前阶段，"
-        "请求用户显式确认（继续）后再由后端推进 SQL 转换阶段。"),
-    MIGRATE_STATUS_SQL_TRANSFORM: (
-        "SQL 转换阶段。当前动作：调用 SQL 转换专家（call_agent → migration_transformer），"
-        "对高风险对象生成目标库转换 SQL。转换完成后停靠在当前阶段，"
-        "请求用户显式确认（继续）后再由后端推进迁移方案生成。"),
+        "迁移评估阶段。当前动作：调用评估专家（call_agent → migration_assessor，别名小评），"
+        "把采集结果与规则命中作为输入，由其做兼容性风险与工作量评估。评估完成后停靠当前阶段，"
+        "请求用户显式确认（继续）后再由后端推进迁移方案阶段。"),
     MIGRATE_STATUS_SOLUTION_GENERATE: (
-        "迁移方案生成阶段。当前动作：调用方案专家（call_agent → migration_planner，别名小方）"
-        "汇总资产清单与转换 SQL，生成国产化迁移落地方案；方案完成后停靠当前阶段，"
+        "迁移方案阶段。当前动作：调用方案专家（call_agent → migration_planner，别名小方）"
+        "汇总采集与评估结果，生成国产化迁移落地方案；方案完成后停靠当前阶段，"
         "向用户展示方案概要并请求确认（字段 task_confirm，选项：确认 / 返回修改）。"
-        "确认后由后端推进到验证阶段，禁止自行跳转。"),
+        "确认后由后端推进到代码改造阶段，禁止自行跳转。"),
+    MIGRATE_STATUS_CODE_MIGRATE: (
+        "代码改造阶段。当前动作：调用改造专家（call_agent → code_migrator，别名小改）"
+        "做 JDBC/ORM/存储过程应用代码适配；改造完成后停靠当前阶段，"
+        "请求用户显式确认（继续）后再由后端推进迁移验证阶段。"),
     MIGRATE_STATUS_VERIFY_STAGE: (
-        "迁移验证阶段。当前动作：调用迁移验证专家（call_agent → migration_verifier）做校验，"
-        "验证完成停靠在当前阶段，请求用户显式确认（继续）后完成整个迁移评估，"
-        "即生成结构化资产与完整报告。"),
+        "迁移验证阶段。当前动作：调用验证专家（call_agent → migration_verifier，别名小测）做校验，"
+        "验证完成停靠在当前阶段，请求用户显式确认（继续）后完成整个迁移，即生成结构化资产与完整报告。"),
     MIGRATE_STATUS_FINISHED: (
-        "任务已全部完成。当前动作：向用户总结迁移评估结论，展示资产清单与报告产物（已生成）。"),
+        "任务已全部完成。当前动作：向用户总结迁移结论，展示资产清单与报告产物（已生成）。"),
     MIGRATE_STATUS_ERROR: (
         "任务曾异常中断，当前支持断点续跑。当前动作：先读取 task_params 告知用户已采集进度，"
         "从上次中断的状态继续推进，不允许从头重新采集。"),
@@ -179,29 +161,27 @@ STATE_GUIDANCE: Dict[str, str] = {
 
 # 状态机对应的阶段性检索 kb_type 优先级（方向4：分层 RAG 定向检索）
 STAGE_KB_TYPES: Dict[str, List[str]] = {
-    MIGRATE_STATUS_OBJECT_SCANNING: ["rules", "doc"],
+    MIGRATE_STATUS_DATA_COLLECTION: ["rules", "doc"],
     MIGRATE_STATUS_ASSESSMENT_RUNNING: ["rules", "cases"],
-    MIGRATE_STATUS_SQL_TRANSFORM: ["cases", "rules"],
     MIGRATE_STATUS_SOLUTION_GENERATE: ["cases", "doc"],
+    MIGRATE_STATUS_CODE_MIGRATE: ["cases", "rules"],
     MIGRATE_STATUS_VERIFY_STAGE: ["doc", "cases"],
-    MIGRATE_STATUS_INIT: ["rules"],
-    MIGRATE_STATUS_DATA_SOURCE_SELECTED: ["rules"],
-    MIGRATE_STATUS_BASIC_INFO_COLLECTED: ["rules", "doc"],
 }
 
 
 def status_label(status: str) -> str:
     return {
-        MIGRATE_STATUS_INIT: "等待选择数据源",
-        MIGRATE_STATUS_DATA_SOURCE_SELECTED: "数据源已选定",
-        MIGRATE_STATUS_BASIC_INFO_COLLECTED: "基础信息已采集",
-        MIGRATE_STATUS_OBJECT_SCANNING: "对象扫描中",
-        MIGRATE_STATUS_ASSESSMENT_RUNNING: "兼容性评估中",
-        MIGRATE_STATUS_SQL_TRANSFORM: "SQL 转换中",
-        MIGRATE_STATUS_SOLUTION_GENERATE: "迁移方案生成中",
-        MIGRATE_STATUS_VERIFY_STAGE: "迁移验证中",
+        MIGRATE_STATUS_DATA_COLLECTION: "数据采集",
+        MIGRATE_STATUS_ASSESSMENT_RUNNING: "迁移评估",
+        MIGRATE_STATUS_SOLUTION_GENERATE: "迁移方案",
+        MIGRATE_STATUS_CODE_MIGRATE: "代码改造",
+        MIGRATE_STATUS_VERIFY_STAGE: "迁移验证",
         MIGRATE_STATUS_FINISHED: "已完成",
         MIGRATE_STATUS_ERROR: "异常中断（可续跑）",
+        # 旧值兼容（存量任务映射后一般不会出现）
+        MIGRATE_STATUS_INIT: "数据采集", MIGRATE_STATUS_DATA_SOURCE_SELECTED: "数据采集",
+        MIGRATE_STATUS_BASIC_INFO_COLLECTED: "数据采集", MIGRATE_STATUS_OBJECT_SCANNING: "数据采集",
+        MIGRATE_STATUS_SQL_TRANSFORM: "代码改造",
     }.get(status, status)
 
 
@@ -345,6 +325,7 @@ class MigrateStateService:
             "db_business_level": t.db_business_level, "db_capacity": t.db_capacity,
             "stop_window": t.stop_window, "object_count": t.object_count,
             "step_confirm": bool(getattr(t, "step_confirm", True)),
+            "strict_flow": bool(getattr(t, "strict_flow", True)),
             "error_msg": t.error_msg, "conv_id": t.conv_id,
             "created_at": t.created_at.isoformat() if t.created_at else None,
             "updated_at": t.updated_at.isoformat() if t.updated_at else None,
@@ -485,7 +466,7 @@ class MigrateStateService:
                                 source_ds_id=source_ds_id or "",
                                 source_ds_name=source_ds_name or "",
                                 task_name=task_name or "数据库迁移评估",
-                                status=MIGRATE_STATUS_INIT)
+                                status=MIGRATE_STATUS_DATA_COLLECTION)
             s.add(row)
             s.commit()
             s.refresh(row)
@@ -534,9 +515,7 @@ class MigrateStateService:
             # - 采集阶段（INIT→选源→基础信息）：参数齐备时可在单次提交内级联走完；
             # - 执行阶段（扫对象/评估/SQL转换/方案/验证）：单次调用最多推进一级，
             #   每阶段等待实际执行（扫描/评估/转换等）完成后由后端继续推进。
-            _COLLECTION_STATES = (MIGRATE_STATUS_INIT,
-                                  MIGRATE_STATUS_DATA_SOURCE_SELECTED,
-                                  MIGRATE_STATUS_BASIC_INFO_COLLECTED)
+            _COLLECTION_STATES = (MIGRATE_STATUS_DATA_COLLECTION,)
             advance = before
             flow_nodes = None  # 默认流程=DEFAULT_FLOW，无需查库
             try:
@@ -575,6 +554,17 @@ class MigrateStateService:
             if row is None:
                 raise MigrateStateError(f"迁移任务不存在: {task_db_id}")
             row.step_confirm = bool(value)
+            s.commit()
+            s.refresh(row)
+            return self.to_dict(row)
+
+    def set_strict_flow(self, task_db_id: int, value: bool) -> Dict[str, Any]:
+        """切换流程强校验：True=严格顺序，False=允许用户指派任意阶段专家。"""
+        with self.db.session() as s:
+            row = s.get(DbMigrateTask, task_db_id)
+            if row is None:
+                raise MigrateStateError(f"迁移任务不存在: {task_db_id}")
+            row.strict_flow = bool(value)
             s.commit()
             s.refresh(row)
             return self.to_dict(row)
@@ -619,7 +609,7 @@ class MigrateStateService:
             row = s.get(DbMigrateTask, task_db_id)
             if row is None:
                 raise MigrateStateError(f"迁移任务不存在: {task_db_id}")
-            row.status = MIGRATE_STATUS_INIT
+            row.status = MIGRATE_STATUS_DATA_COLLECTION
             row.source_ds_id = ""
             row.source_ds_name = ""
             row.source_db_type = ""
@@ -652,13 +642,12 @@ class MigrateStateService:
                 "target_db_type": row.target_db_type or "",
                 "db_business_level": row.db_business_level or "",
                 "db_capacity": row.db_capacity or "",
+                "stop_window": row.stop_window or "",
                 "object_count": row.object_count or 0,
                 "task_confirm": "确认",
             }
-            _COLLECTION_STATES = (MIGRATE_STATUS_INIT,
-                                  MIGRATE_STATUS_DATA_SOURCE_SELECTED,
-                                  MIGRATE_STATUS_BASIC_INFO_COLLECTED)
-            advance = MIGRATE_STATUS_INIT
+            _COLLECTION_STATES = (MIGRATE_STATUS_DATA_COLLECTION,)
+            advance = MIGRATE_STATUS_DATA_COLLECTION
             flow_nodes = None
             try:
                 flow_nodes = self.get_flow()

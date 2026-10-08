@@ -242,8 +242,8 @@ def test_custom_stream_events_on_call_agent(tmp_path):
     assert "system" in kinds and "sub_agent" in kinds
     sys_ev = next(e for e in custom_events if isinstance(e, dict) and e.get("type") == "system")
     sub_ev = next(e for e in custom_events if isinstance(e, dict) and e.get("type") == "sub_agent")
-    assert "正在调用" in sys_ev["message"] and "SQL 转换助手" in sys_ev["message"]
-    assert sub_ev["agent_name"] == "SQL 转换助手"
+    assert "正在调用" in sys_ev["message"] and "小转" in sys_ev["message"]
+    assert sub_ev["agent_name"] == "小转"
     assert sub_ev["reply"] == "子智能体回复：已转换 SQL"
     assert sub_ev["dispatcher_name"]  # 主 Agent 溯源名非空
 
@@ -497,6 +497,212 @@ def test_sub_agent_core_report_creates_one_document_and_chat_link(tmp_path):
     assert artifact_svc.read(files[0]["id"]) == report
 
 
+def test_collector_failure_report_creates_chinese_artifact(tmp_path):
+    """小采的结构化采集失败报告仍是核心产物，且使用中文文件名。"""
+    db = Database(str(tmp_path / "t.db"))
+    from db_loc_agent.bootstrap import bootstrap
+    bootstrap(db)
+    prompt_svc = PromptService(db)
+    artifact_svc = ArtifactService(db, str(tmp_path / "artifacts"))
+
+    call_tool = {"name": "call_agent",
+                 "args": {"agent_id": "migration_collector",
+                          "question": "请采集 src_o 的源库元数据"},
+                 "id": "call_collector_failure_1"}
+    report = (
+        "# Oracle 源库数据采集报告\n\n"
+        "## 一、采集状态：无法完成\n\n"
+        "| 数据源名称 | 类型 | 连接状态 |\n"
+        "|:---|:---|:---:|\n"
+        "| src_o | Oracle | 失败 |\n\n"
+        "数据源未配置，无法采集对象清单。"
+    )
+    llm = ScriptedLLM([
+        ("需要采集", [call_tool]),
+        (report, None),
+        ("数据采集报告已生成，请先确认采集结果。", None),
+    ])
+    graph = build_graph(
+        llm=llm, rag_search=lambda q, top_k=4, space_id=None: [],
+        prompt_service=prompt_svc, artifact_service=artifact_svc,
+        skill_service=None, parse_schema={}, max_iterations=3,
+        agent_service=AgentService(db),
+    )
+    custom_events = []
+    for mode, payload in graph.stream(
+            AgentState(user_input="数据迁移", conv_id=11,
+                       agent_id="migration_commander",
+                       task_state={"current_step": "DATA_COLLECTION",
+                                   "step_confirm": True, "pipeline_start": True}),
+            stream_mode=["custom", "updates"]):
+        if mode == "custom" and isinstance(payload, dict) and payload.get("type") == "sub_agent":
+            custom_events.append(payload)
+
+    event = custom_events[0]
+    files = event["artifacts"]
+    assert [f["path"].split("/")[-1] for f in files] == ["数据采集报告.md"]
+    assert report not in event["reply"]
+    assert "数据采集报告.md" in event["reply"]
+    assert artifact_svc.read(files[0]["id"]) == report
+
+
+def test_sub_agent_confirmation_form_is_not_written_as_artifact(tmp_path):
+    """关键信息确认不是核心交付物，UI 控制块不得写入右侧产物文件。"""
+    db = Database(str(tmp_path / "t.db"))
+    from db_loc_agent.bootstrap import bootstrap
+    bootstrap(db)
+    prompt_svc = PromptService(db)
+    artifact_svc = ArtifactService(db, str(tmp_path / "artifacts"))
+
+    call_tool = {"name": "call_agent",
+                 "args": {"agent_id": "migration_planner",
+                          "question": "请生成迁移方案"},
+                 "id": "call_planner_confirmation_1"}
+    form = {
+        "title": "迁移方案关键信息确认",
+        "fields": [{"name": "source_db_type", "label": "源数据库类型",
+                    "type": "text", "options": []}],
+        "submit": "确认并生成方案",
+    }
+    confirmation = (
+        "我理解您希望继续，但生成迁移实施方案需要以下关键输入信息，目前这些字段缺失：\n\n"
+        "## 缺失信息清单\n\n"
+        "| 缺失字段 | 用途 | 必填性 |\n|---|---|---|\n"
+        "| 源数据库类型 | 确定语法转换规则 | 必填 |\n\n"
+        "请选择以下信息：\n\n"
+        "<UI_RENDER>\n" + json.dumps(form, ensure_ascii=False) + "\n</UI_RENDER>\n\n"
+        "提供以上信息后，我将生成可执行方案。"
+    )
+    llm = ScriptedLLM([
+        ("需要方案", [call_tool]),
+        (confirmation, None),
+        ("方案专家等待关键信息确认。", None),
+    ])
+    graph = build_graph(
+        llm=llm, rag_search=lambda q, top_k=4, space_id=None: [],
+        prompt_service=prompt_svc, artifact_service=artifact_svc,
+        skill_service=None, parse_schema={}, max_iterations=3,
+        agent_service=AgentService(db),
+    )
+    custom_events = []
+    final = {}
+    for mode, payload in graph.stream(
+            AgentState(user_input="继续", conv_id=14,
+                       agent_id="migration_commander",
+                       task_state={"current_step": "SOLUTION_GENERATE",
+                                   "step_confirm": True, "pipeline_start": True}),
+            stream_mode=["custom", "updates"]):
+        if mode == "custom" and isinstance(payload, dict) and payload.get("type") == "sub_agent":
+            custom_events.append(payload)
+        elif mode == "updates" and isinstance(payload, dict) and "reply" in payload:
+            final = payload["reply"]
+
+    event = custom_events[0]
+    assert event["artifacts"] == []
+    assert "<UI_RENDER>" not in event["reply"]
+    assert event["ui_render"] == form
+    assert final["agent_calls"][0]["artifacts"] == []
+    assert artifact_svc.list_namespaces(conv_id=14) == []
+
+
+def test_stage_block_is_invisible_and_disables_next_agent_calls(tmp_path):
+    """数据采集未确认时评估专家不得执行，也不得把拦截事件渲染成执行动态。"""
+    db = Database(str(tmp_path / "t.db"))
+    from db_loc_agent.bootstrap import bootstrap
+    bootstrap(db)
+    prompt_svc = PromptService(db)
+    artifact_svc = ArtifactService(db, str(tmp_path / "artifacts"))
+
+    collector_tool = {"name": "call_agent",
+                      "args": {"agent_id": "migration_collector",
+                               "question": "请采集源库元数据"},
+                      "id": "call_collector_stage_1"}
+    assessor_tool = {"name": "call_agent",
+                     "args": {"agent_id": "migration_assessor",
+                              "question": "请评估迁移风险"},
+                     "id": "call_assessor_premature_1"}
+    llm = ScriptedLLM([
+        ("需要采集", [collector_tool]),
+        ("# 数据采集报告\n\n- 对象清单已采集", None),
+        ("尝试评估", [assessor_tool]),
+        ("数据采集阶段已停靠，请确认后继续。", None),
+    ])
+    graph = build_graph(
+        llm=llm, rag_search=lambda q, top_k=4, space_id=None: [],
+        prompt_service=prompt_svc, artifact_service=artifact_svc,
+        skill_service=None, parse_schema={}, max_iterations=4,
+        agent_service=AgentService(db),
+    )
+    custom_events = []
+    final = {}
+    for mode, payload in graph.stream(
+            AgentState(user_input="数据迁移", conv_id=12,
+                       agent_id="migration_commander",
+                       task_state={"current_step": "DATA_COLLECTION",
+                                   "step_confirm": True, "pipeline_start": True}),
+            stream_mode=["custom", "updates"]):
+        if mode == "custom" and isinstance(payload, dict):
+            custom_events.append(payload)
+        elif mode == "updates" and isinstance(payload, dict) and "reply" in payload:
+            final = payload["reply"]
+
+    assert [e.get("agent_id") for e in custom_events
+            if e.get("event") == "calling_agent"] == ["migration_collector"]
+    assert not any(e.get("event") == "stage_blocked" for e in custom_events)
+    assert [c["agent_id"] for c in final["agent_calls"]] == ["migration_collector"]
+    assert final["reply"] == "数据采集阶段已停靠，请确认后继续。"
+    tool_names = [s["function"]["name"] for s in llm._schemas]
+    assert "call_agent" not in tool_names
+    assert "call_agents_parallel" not in tool_names
+
+
+def test_free_flow_allows_out_of_order_stage_agent(tmp_path):
+    """关闭流程强校验后，指挥官可按用户指派提前调用后续阶段专家。"""
+    db = Database(str(tmp_path / "t.db"))
+    from db_loc_agent.bootstrap import bootstrap
+    bootstrap(db)
+    prompt_svc = PromptService(db)
+    artifact_svc = ArtifactService(db, str(tmp_path / "artifacts"))
+
+    call_tool = {"name": "call_agent",
+                 "args": {"agent_id": "migration_assessor",
+                          "question": "请直接评估迁移风险"},
+                 "id": "call_free_flow_assessor_1"}
+    class RecordingFreeFlowLLM(ScriptedLLM):
+        def __init__(self, steps):
+            super().__init__(steps)
+            self.seen_messages = []
+
+        def stream(self, messages, **kwargs):
+            self.seen_messages.append(list(messages))
+            yield from super().stream(messages, **kwargs)
+
+    llm = RecordingFreeFlowLLM([
+        ("用户指定评估", [call_tool]),
+        ("请先提供源库对象清单、目标库类型和停机窗口。", None),
+        ("评估专家已按用户指派执行。", None),
+    ])
+    graph = build_graph(
+        llm=llm, rag_search=lambda q, top_k=4, space_id=None: [],
+        prompt_service=prompt_svc, artifact_service=artifact_svc,
+        skill_service=None, parse_schema={}, max_iterations=3,
+        agent_service=AgentService(db),
+    )
+    final = graph.invoke(AgentState(
+        user_input="不用先采集，直接评估", conv_id=14,
+        agent_id="migration_commander",
+        task_state={"current_step": "DATA_COLLECTION",
+                    "step_confirm": True, "pipeline_start": True,
+                    "strict_flow": False}))
+
+    assert [call["agent_id"] for call in final["agent_calls"]] == ["migration_assessor"]
+    assert final["agent_calls"][0]["error"] == ""
+    system_messages = [str(messages[0].content)
+                       for messages in llm.seen_messages if messages]
+    assert any("自由流程模式" in content for content in system_messages)
+    assert any("不强制按状态机顺序" in content for content in system_messages)
+
+
 def test_commander_does_not_write_orchestration_index_artifact(tmp_path):
     """调度索引是过程数据，不是核心交付物，不得进入产物面板。"""
     db = Database(str(tmp_path / "t.db"))
@@ -555,6 +761,39 @@ def test_direct_core_agent_writes_only_business_document(tmp_path):
 
     filenames = [f["path"].split("/")[-1] for f in final["artifacts"]]
     assert filenames == ["评估报告.md"]
+
+
+def test_direct_collector_failure_report_creates_chinese_artifact(tmp_path):
+    """用户直接指派小采时，结构化失败报告同样落为中文采集产物。"""
+    db = Database(str(tmp_path / "t.db"))
+    from db_loc_agent.bootstrap import bootstrap
+    bootstrap(db)
+    prompt_svc = PromptService(db)
+    artifact_svc = ArtifactService(db, str(tmp_path / "artifacts"))
+    report = (
+        "# 数据采集报告\n\n"
+        "## 采集状态：无法完成\n\n"
+        "- 数据源 src_o 未配置\n"
+        "- 对象清单采集数量：0"
+    )
+
+    class OneReplyLLM(FakeLLM):
+        def parse(self, text):
+            return {"intent": "migration_collect", "agent_id": "migration_collector",
+                    "object_name": "src_o", "source_db": "oracle", "target_db": "dm",
+                    "skill_id": "", "confidence": 0.99}
+
+    graph = build_graph(
+        llm=OneReplyLLM(reply=report), rag_search=lambda q, top_k=4, space_id=None: [],
+        prompt_service=prompt_svc, artifact_service=artifact_svc,
+        skill_service=None, parse_schema={}, max_iterations=1,
+        agent_service=AgentService(db),
+    )
+    final = graph.invoke(AgentState(user_input="请采集 src_o", conv_id=13))
+
+    filenames = [f["path"].split("/")[-1] for f in final["artifacts"]]
+    assert filenames == ["数据采集报告.md"]
+    assert artifact_svc.read(final["artifacts"][0]["id"]) == report
 
 
 def test_core_sql_artifacts_use_chinese_filenames(tmp_path):

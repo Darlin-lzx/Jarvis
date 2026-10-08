@@ -35,6 +35,7 @@ _CHINESE_ARTIFACT_NAMES = {
     "governance_report.md": "治理报告.md",
     "verify_report.md": "验证报告.md",
     "generate.md": "智能体报告.md",
+    "collected_data.md": "数据采集报告.md",
 }
 
 
@@ -43,8 +44,28 @@ def _core_report_filename(configured_name: str) -> str:
     return _CHINESE_ARTIFACT_NAMES.get(configured_name, configured_name)
 
 
+def _is_core_delivery(agent_id: str, text: str) -> bool:
+    """判断 Agent 回复是否为核心交付物；小采的结构化失败报告也属于交付物。"""
+    stripped = (text or "").strip()
+    if not stripped:
+        return False
+    has_md = any(line.lstrip().startswith("#") for line in stripped.splitlines())
+    sql_blocks = re.findall(
+        r"```sql\s*\n(.*?)\n```", stripped, re.DOTALL | re.IGNORECASE)
+    if agent_id == "migration_collector" and has_md:
+        has_table = any(line.lstrip().startswith("|") for line in stripped.splitlines())
+        has_list = any(re.match(r"^\s*(?:[-*+]\s+|\d+[.)]\s+)", line)
+                       for line in stripped.splitlines())
+        if has_table or has_list:
+            return True
+    return ((has_md or bool(sql_blocks))
+            and not _NON_DELIVERY_RE.search(stripped))
+
+
 _NON_DELIVERY_RE = re.compile(
     r"我需要以下|需要明确|请提供上述|请提供.{0,12}参数|请给出.{0,12}选项|"
+    r"关键信息确认|缺失信息清单|请选择以下信息|提供以上信息后|"
+    r"需要以下关键.{0,8}信息|请确认以下关键.{0,8}信息|"
     r"无法.{0,6}评估|无法.{0,6}完成|暂时无法|若.{0,10}条件.{0,6}无法|"
     r"请通过.{0,10}提供|缺少.{0,8}参数|请补充.{0,8}信息|"
     r"暂.{0,4}无法确定|无法准确.{0,6}评估"
@@ -75,8 +96,10 @@ CORE_KEYS = {"intent", "agent_id", "confidence"}
 # 注意：若角色提示词自身已约定 UI_RENDER 格式（如 component/param_key 单组件格式），以角色提示词为准。
 UI_FORM_RULE = (
     "\n\n## 交互式表单（必须遵守）\n"
-    "当需要用户补充关键信息且有明确候选选项（如选择数据源、源库类型、目标库类型等）时，"
-    "禁止只输出纯文本提问，必须在回复中嵌入一个 UI 表单指令：\n"
+    "当需要用户补充或确认关键信息时，必须先在正文中逐项列出待确认字段；"
+    "禁止输出「请确认以上信息 / 请完成以上选择」却没有具体字段。\n"
+    "有明确候选选项（如选择数据源、源库类型、目标库类型等）时，"
+    "必须输出对应选项字段；无候选选项（如说明、SQL、对象范围）时，必须输出 textarea 字段：\n"
     "<UI_RENDER>\n"
     "{\"title\": \"请选择数据源\", \"fields\": [{\"name\": \"datasource\", \"label\": \"数据源\", "
     "\"type\": \"select\", \"options\": [\"<候选1>\", \"<候选2>\"]}], \"submit\": \"确认选择\"}\n"
@@ -87,16 +110,30 @@ UI_FORM_RULE = (
     "2. JSON 必须合法（双引号、无注释、无尾逗号），整个回复中最多一个 UI_RENDER 块；\n"
     "3. 候选 options 可使用系统占位符（如 {{system_data_source_list}} 表示已启用数据源列表，"
     "后端会自动替换为真实名称），或来自上下文中的真实清单，不得编造；\n"
-    "4. 无候选清单的自由文本信息（如粘贴 SQL）才用 textarea 字段或纯文本提问。"
+    "4. 无候选清单的自由文本信息（如粘贴 SQL、说明迁移范围）使用 textarea 字段，"
+    "不得使用空选项的 select/radio。"
 )
 
 # 控制指令块：<UI_RENDER>/<TASK_STATE>（正文中这些块会被后端剥离，仅用于流式提取与状态更新）
 _CONTROL_BLOCK_RE = re.compile(r"<(UI_RENDER|TASK_STATE)[^>]*>[\s\S]*?</\1[^>]*>", re.I)
+_UI_RENDER_BLOCK_RE = re.compile(r"<UI_RENDER\s*>([\s\S]*?)</UI_RENDER\s*>", re.I)
 
 
 def _strip_control_blocks(text: str) -> str:
     """从文本中剔除 <UI_RENDER>/<TASK_STATE> 指令块（防御：历史回灌时防止模型照抄该结构）。"""
     return _CONTROL_BLOCK_RE.sub("", text or "")
+
+
+def _extract_ui_render(text: str) -> Optional[Dict]:
+    """提取首个合法 UI_RENDER JSON；非法块保持剥离即可，不能进入产物正文。"""
+    for body in _UI_RENDER_BLOCK_RE.finditer(text or ""):
+        try:
+            obj = json.loads(body.group(1))
+        except json.JSONDecodeError:
+            continue
+        if isinstance(obj, dict):
+            return obj
+    return None
 
 
 def _extract_json_from_markdown(text: str) -> str:
@@ -393,26 +430,25 @@ class GraphRuntime:
         return out
 
     def _agent_name(self, agent_id: str) -> str:
-        """按 agent_id 取展示名（AGENTS 源码 / DB 表覆盖），未知给回 id"""
+        """按 agent_id 取展示名（优先别名 alias，退化为 name，未知给回 id）"""
         cfg = self.agent_svc.get(agent_id) or {}
-        return cfg.get("name") or agent_id
+        return cfg.get("alias") or cfg.get("name") or agent_id
 
     def _stage_allowed_agents(self, state: Dict) -> Optional[set]:
         """逐级确认模式下，返回当前迁移阶段允许调度的子 Agent。"""
         if state.get("agent_id") != "migration_commander":
             return None
         task_state = state.get("task_state") or {}
+        if not bool(task_state.get("strict_flow", True)):
+            return None
         if not bool(task_state.get("step_confirm", True)):
             return None
         stage = str(task_state.get("current_step") or "").split("|")[0]
         return {
-            "INIT": set(),
-            "DATA_SOURCE_SELECTED": set(),
-            "BASIC_INFO_COLLECTED": set(),
-            "OBJECT_SCANNING": set(),
+            "DATA_COLLECTION": {"migration_collector"},
             "ASSESSMENT_RUNNING": {"migration_assessor"},
-            "SQL_TRANSFORM": {"ddl_converter", "migration_transformer"},
             "SOLUTION_GENERATE": {"migration_planner"},
+            "CODE_MIGRATE": {"code_migrator"},
             "VERIFY_STAGE": {"migration_verifier"},
             "FINISHED": set(),
         }.get(stage)
@@ -423,7 +459,10 @@ class GraphRuntime:
             "ok": False,
             "agent_id": agent_id,
             "agent_name": self._agent_name(agent_id),
-            "error": f"状态机拦截：当前阶段仅允许调用 {names}，不能提前调用后续阶段 Agent",
+            "error": (
+                f"状态机拦截：当前阶段仅允许调用 {names}；{self._agent_name(agent_id)} 未执行。"
+                "请立即停止调用后续阶段 Agent，向用户展示当前阶段结果并等待显式确认。"
+            ),
         })
 
     def _sub_agent_tool_result(self, sub: Dict) -> Dict:
@@ -492,7 +531,7 @@ class GraphRuntime:
                         + "\n\n要求：你是业务解读专家而非基础语法识别器。"
                         "基础语法问题已由规则引擎打标，你只负责业务影响解读、改造建议与目标库转换。")
         from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
-        messages = [SystemMessage(content=system)]
+        messages = [SystemMessage(content=system + UI_FORM_RULE)]
         if sub_context:
             messages.append(SystemMessage(content=sub_context))
         messages.append(HumanMessage(content=question))
@@ -520,19 +559,18 @@ class GraphRuntime:
                 out = self._dispatch_tool(name, args, state=state)
                 messages.append(ToolMessage(content=out, tool_call_id=tc.get("id", ""), name=name))
         full_reply = "\n".join(chunks) or "（该 Agent 未给出回答）"
+        ui_render = _extract_ui_render(full_reply)
+        full_reply = _strip_control_blocks(full_reply)
         reply = full_reply
         produced: List[Dict] = []
         # 子 Agent 自行入库：只有业务交付物才落盘。Markdown 标题代表报告，
-        # SQL 代码块代表转换脚本；普通长对话、能力介绍和追问不生成产物。
+        # SQL 代码块代表转换脚本；小采的结构化失败报告也保留为采集产物。
         if (cfg.get("gen_artifact", False) and self.artifacts is not None
                 and state is not None):
             stripped = full_reply.strip()
-            has_md = any(line.lstrip().startswith("#") for line in stripped.splitlines())
             sql_blocks = re.findall(
                 r"```sql\s*\n(.*?)\n```", stripped, re.DOTALL | re.IGNORECASE)
-            is_delivery = ((has_md or bool(sql_blocks))
-                           and not _NON_DELIVERY_RE.search(stripped))
-            if is_delivery:
+            if _is_core_delivery(agent_id, stripped):
                 pr = state.get("parse_result") or {}
                 obj = primary_object_name(
                     pr.get("object_name") or question or state.get("user_input", ""))
@@ -562,7 +600,7 @@ class GraphRuntime:
                 except NamespaceError as e:
                     reply += f"\n\n（产物入库失败：{e}）"
         return {"ok": True, "agent_id": agent_id, "agent_name": cfg.get("name") or agent_id,
-                "reply": reply, "artifacts": produced}
+                "reply": reply, "artifacts": produced, "ui_render": ui_render}
 
     def _dispatch_tool(self, name: str, args: Dict, state: Optional[Dict]) -> str:
         """工具分发：返回工具结果 JSON 字符串（供主图与子 Agent 共用）"""
@@ -684,12 +722,15 @@ class GraphRuntime:
         # LLM 无法自动读取后端变量，必须由后端每轮拼进 system 上下文；
         # 否则指挥官「失忆」反复停留在第一步、重复向用户索要已收集参数。
         # 关键点：状态机阶段由后端确定性流转，LLM 只按指引推进当前阶段，无权跳转节点。
-        _M_EXEC_STATES = ("OBJECT_SCANNING", "ASSESSMENT_RUNNING", "SQL_TRANSFORM",
-                          "SOLUTION_GENERATE", "VERIFY_STAGE", "FINISHED")
-        _LEGACY_STEP_MAP = {  # 兼容旧会话历史（step1/2/3/complete → 新状态）
-            "step1": "INIT", "step2": "DATA_SOURCE_SELECTED",
-            "step3": "BASIC_INFO_COLLECTED", "complete": "OBJECT_SCANNING",
-            "step2_conflict": "DATA_SOURCE_SELECTED",
+        _M_EXEC_STATES = ("DATA_COLLECTION", "ASSESSMENT_RUNNING", "SOLUTION_GENERATE",
+                          "CODE_MIGRATE", "VERIFY_STAGE", "FINISHED")
+        _LEGACY_STEP_MAP = {  # 兼容旧会话历史（旧状态值/step → 新阶段）
+            "step1": "DATA_COLLECTION", "step2": "DATA_COLLECTION",
+            "step3": "DATA_COLLECTION", "complete": "DATA_COLLECTION",
+            "step2_conflict": "DATA_COLLECTION",
+            "INIT": "DATA_COLLECTION", "DATA_SOURCE_SELECTED": "DATA_COLLECTION",
+            "BASIC_INFO_COLLECTED": "DATA_COLLECTION", "OBJECT_SCANNING": "DATA_COLLECTION",
+            "SQL_TRANSFORM": "CODE_MIGRATE",
         }
         task_state_block = ""
         # 仅当用户本轮输入为迁移/任务指令时才注入任务状态并引导推进；非任务指令（你是谁/闲聊）
@@ -702,8 +743,9 @@ class GraphRuntime:
         if state.get("agent_id") == "migration_commander" and state.get("task_state") is not None \
                 and _task_directive:
             ts = state["task_state"] or {}
-            ts_step_raw = str(ts.get("current_step") or "INIT").split("|")[0]
+            ts_step_raw = str(ts.get("current_step") or "DATA_COLLECTION").split("|")[0]
             ts_step = _LEGACY_STEP_MAP.get(ts_step_raw, ts_step_raw)
+            strict_flow = bool(ts.get("strict_flow", True))
             warning = ts.get("last_warning")
             ts_params = ts.get("task_params") or {}
             if isinstance(ts_params, dict):
@@ -711,17 +753,24 @@ class GraphRuntime:
             else:
                 param_lines = str(ts_params)
             guidance = STATE_GUIDANCE.get(ts_step, "")
-            ack_rules = (
-                "1. 先读取 current_step（状态机阶段）与 task_params，判断采集/执行进行到哪一步、"
-                "已收集了哪些参数，禁止重复索要已收集的参数；\n"
-                "2. 所选数据源已由后端记录（source_ds_id 一旦赋值不再询问），禁止重复弹出数据源选择表单；\n"
-                "3. 状态跳转由后端状态机控制，你无权跳转节点，只能推进当前阶段："
-                "基础信息阶段收集参数、执行阶段依次编排对应子 Agent；\n"
-                "4. 需要用户补充当前阶段所需信息时，按当前动作指引输出交互式表单（UI_RENDER）；\n"
-                "5. 若本条回复完成了当前阶段的素材产出（如扫描清单、转换脚本），"
-                "可附加一个状态声明块提示后端（该块不会展示给用户，JSON 必须合法）：\n"
-                "<TASK_STATE>\n{\"task_params\": {\"stage_done\": \"true\"}}\n</TASK_STATE>\n"
-                "（注意：该声明不会改变状态机阶段，仅作后端推进素材的信号。）")
+            if strict_flow:
+                ack_rules = (
+                    "1. 先读取 current_step（状态机阶段）与 task_params，判断采集/执行进行到哪一步、"
+                    "已收集了哪些参数，禁止重复索要已收集的参数；\n"
+                    "2. 所选数据源已由后端记录（source_ds_id 一旦赋值不再询问），禁止重复弹出数据源选择表单；\n"
+                    "3. 状态跳转由后端状态机控制，你无权跳转节点，只能推进当前阶段："
+                    "基础信息阶段收集参数、执行阶段依次编排对应子 Agent；\n"
+                    "4. 需要用户补充当前阶段所需信息时，按当前动作指引输出交互式表单（UI_RENDER）；\n"
+                    "5. 若本条回复完成了当前阶段的素材产出（如扫描清单、转换脚本），"
+                    "可附加一个状态声明块提示后端（该块不会展示给用户，JSON 必须合法）：\n"
+                    "<TASK_STATE>\n{\"task_params\": {\"stage_done\": \"true\"}}\n</TASK_STATE>\n"
+                    "（注意：该声明不会改变状态机阶段，仅作后端推进素材的信号。）")
+            else:
+                ack_rules = (
+                    "1. 当前为自由流程模式：current_step 仅表示最近记录的进度，不是执行许可；\n"
+                    "2. 用户指定哪个阶段/专家，就优先调用对应子 Agent，不得以前序阶段未完成为由拒绝；\n"
+                    "3. 用户未明确指定阶段时，可按当前阶段执行；\n"
+                    "4. 已收集参数仍需复用，禁止重复索要。")
             warn_line = ""
             if warning:
                 warn_line = "\n⚠️ 后端拦截提示：%s" % str(warning)
@@ -746,8 +795,15 @@ class GraphRuntime:
                 str(_ts0.get("current_step") or "").split("|")[0],
                 str(_ts0.get("current_step") or "").split("|")[0])
             _continue = bool(re.search(r"继续|接着|下一步|开始执行|开始迁移", state.get("user_input", "")))
+            _strict_flow = bool(_ts0.get("strict_flow", True))
             pipeline_active = (_step0 in _M_EXEC_STATES
-                               and (bool(_ts0.get("pipeline_start")) or _continue))
+                               and (bool(_ts0.get("pipeline_start")) or _continue)
+                               and _strict_flow)
+            if not _strict_flow:
+                pipeline_block = (
+                    "\n\n## 自由流程模式（流程强校验已关闭）\n"
+                    "当前任务不强制按状态机顺序执行。用户指定哪个阶段/专家，就调用对应子 Agent；"
+                    "用户未明确指定时，可按当前阶段执行。不得因为前序阶段未完成而拒绝执行。")
         if pipeline_active:
             # 逐级确认开关（DB 配置化，来自任务 step_confirm）：开启=每级完成停驻等确认，关闭=一次性编排跑完
             _step_confirm = bool(_ts0.get("step_confirm", True))
@@ -813,6 +869,7 @@ class GraphRuntime:
         allow_agents = True   # 是否允许 call_agent（指挥官采集阶段被硬闸门关闭）；循环内会重新赋值
         nudge_used = False    # 「宣布要调用却没调用」的系统提醒每轮最多补一次，防止死循环
         plan_nudges = 0       # 流水线看门狗：计划未完成就收尾时的强制续跑提醒（最多 2 次）
+        stage_blocked = False # 逐级确认下一旦违规调用后续阶段，本轮立即关闭子 Agent 工具
         while iterations < self.max_iterations:
             iterations += 1
             llm = self.llm
@@ -829,7 +886,7 @@ class GraphRuntime:
                             _cmdr_step_raw.split("|")[0], _cmdr_step_raw.split("|")[0])
                         allow_agents = _cmdr_step in _M_EXEC_STATES
                     llm = llm.bind_tools(self._tool_schemas(
-                        include_agents=allow_agents,
+                        include_agents=allow_agents and not stage_blocked,
                         current_agent_id=state.get("agent_id", "")))
                 except Exception:
                     llm = self.llm
@@ -910,8 +967,7 @@ class GraphRuntime:
                     allowed_agents = self._stage_allowed_agents(state)
                     if allowed_agents is not None and sub_id not in allowed_agents:
                         blocked = self._blocked_agent_result(sub_id, allowed_agents)
-                        self._emit({"type": "system", "event": "stage_blocked",
-                                    "message": blocked["error"], "agent_id": sub_id})
+                        stage_blocked = True
                         out = json.dumps(blocked, ensure_ascii=False)
                     else:
                         # 调度事件：通知前端「正在调用子 Agent」（灰色系统事件，非业务答案）
@@ -932,10 +988,11 @@ class GraphRuntime:
                                     "agent_id": sub_id,
                                     "agent_name": sub_name,
                                     "dispatcher_id": state.get("agent_id", ""),
-                               "dispatcher_name": self._agent_name(state.get("agent_id", "")),
-                               "reply": sub.get("reply", ""),
-                               "error": sub.get("error", ""),
-                               "artifacts": sub.get("artifacts", [])})
+                                   "dispatcher_name": self._agent_name(state.get("agent_id", "")),
+                                   "reply": sub.get("reply", ""),
+                                   "error": sub.get("error", ""),
+                                   "artifacts": sub.get("artifacts", []),
+                                   "ui_render": sub.get("ui_render")})
                         out = json.dumps(self._sub_agent_tool_result(sub), ensure_ascii=False)
                 elif name == "call_agents_parallel":
                     # 并行编排：互相独立的子任务（如 数据搬迁 ∥ 代码改造）一次并行委派。
@@ -967,10 +1024,7 @@ class GraphRuntime:
                             for c in calls:
                                 sub_id = str(c["agent_id"])
                                 if sub_id not in allowed_agents:
-                                    self._emit({"type": "system", "event": "stage_blocked",
-                                                "message": self._blocked_agent_result(
-                                                    sub_id, allowed_agents)["error"],
-                                                "agent_id": sub_id})
+                                    stage_blocked = True
                         for c in runnable_calls:
                             self._emit({"type": "system", "event": "calling_agent",
                                         "message": f"正在调用【{self._agent_name(str(c['agent_id']))}】执行任务…（并行）",
@@ -1005,7 +1059,8 @@ class GraphRuntime:
                                         "dispatcher_name": self._agent_name(state.get("agent_id", "")),
                                         "reply": sub.get("reply", ""),
                                         "error": sub.get("error", ""),
-                                        "artifacts": sub.get("artifacts", [])})
+                                        "artifacts": sub.get("artifacts", []),
+                                        "ui_render": sub.get("ui_render")})
                         out = json.dumps({"parallel": True, "results": [
                             self._sub_agent_tool_result(sub) for sub in subs
                         ] + blocked_results}, ensure_ascii=False)
@@ -1143,8 +1198,7 @@ class GraphRuntime:
         text = state.get("reply", "")
         # 交付门控：反问/要参数类回复不落盘（与 _call_sub_agent 内联写盘一致）
         sql_blocks = re.findall(r"```sql\s*\n(.*?)\n```", text, re.DOTALL | re.IGNORECASE)
-        has_md = any(line.lstrip().startswith("#") for line in text.splitlines())
-        if _NON_DELIVERY_RE.search(text) or not (has_md or sql_blocks):
+        if not _is_core_delivery(agent_id, text):
             return state
         files: Dict[str, str] = {}
         for idx, block in enumerate(sql_blocks):

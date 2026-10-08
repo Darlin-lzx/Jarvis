@@ -23,4 +23,4 @@ def test_resolve_agent_unknown_falls_back(db):
 def test_list_agents(db):
     rows = list_agents(db)
     assert all("id" in r and "name" in r for r in rows)
-    assert len(rows) == 9
+    assert len(rows) == 11

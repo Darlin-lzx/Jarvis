@@ -13,16 +13,14 @@ import {
 
 /* ================= 状态机看板（任务详情头部主入口） ================= */
 
-/** 展示节点：将后端 9 阶段映射为用户可理解的 8 步大流程 */
+/** 展示节点：与后端 pipeline 一致的 6 步流程（数据采集→迁移评估→迁移方案→代码改造→迁移验证→完成） */
 export const BOARD_STAGES: { keys: MigrateStatus[]; label: string; desc: string }[] = [
-  { keys: ['INIT', 'DATA_SOURCE_SELECTED'], label: '选择数据源', desc: '从数据源列表中选择待迁移的源数据库连接' },
-  { keys: ['BASIC_INFO_COLLECTED'], label: '基础信息采集', desc: '采集源/目标库类型、业务等级、容量、停机窗口等参数' },
-  { keys: ['OBJECT_SCANNING'], label: '对象扫描', desc: '扫描表/视图/存储过程等对象，规则引擎打风险标签' },
-  { keys: ['ASSESSMENT_RUNNING'], label: '兼容性评估', desc: '评估专家结合规则命中做兼容性业务解读' },
-  { keys: ['SQL_TRANSFORM'], label: 'SQL 转换', desc: '转换专家将高风险对象改写为目标国产库兼容 SQL' },
-  { keys: ['SOLUTION_GENERATE'], label: '方案生成', desc: '汇总资产清单与转换结果，生成迁移方案并请求确认' },
-  { keys: ['VERIFY_STAGE'], label: '验证', desc: '验证专家校验迁移结果的一致性' },
-  { keys: ['FINISHED'], label: '完成', desc: '生成结构化资产与完整评估报告' },
+  { keys: ['DATA_COLLECTION'], label: '数据采集', desc: '采集源库元数据/表结构/对象清单（小采），并确认源/目标库、容量、停机窗口等参数' },
+  { keys: ['ASSESSMENT_RUNNING'], label: '迁移评估', desc: '评估专家（小评）结合规则命中做兼容性风险与工作量评估' },
+  { keys: ['SOLUTION_GENERATE'], label: '迁移方案', desc: '方案专家（小方）汇总采集与评估结果，生成国产化迁移落地方案' },
+  { keys: ['CODE_MIGRATE'], label: '代码改造', desc: '改造专家（小改）做 JDBC/ORM/存储过程应用代码适配' },
+  { keys: ['VERIFY_STAGE'], label: '迁移验证', desc: '验证专家（小测）校验语法与结构一致性' },
+  { keys: ['FINISHED'], label: '完成', desc: '生成结构化资产与完整报告' },
 ]
 
 export function stageIdxOf(status: string): number {
@@ -34,10 +32,9 @@ export function stageIdxOf(status: string): number {
 export function effectiveIdx(t: MigrateTaskDetail): number {
   if (t.status === 'ERROR') {
     if (t.source_ds_id && t.source_db_type && t.target_db_type
-      && (t.db_business_level || t.db_capacity || t.stop_window)) return stageIdxOf('OBJECT_SCANNING')
-    if (t.source_ds_id && t.source_db_type && t.target_db_type) return stageIdxOf('BASIC_INFO_COLLECTED')
-    if (t.source_ds_id) return stageIdxOf('DATA_SOURCE_SELECTED')
-    return stageIdxOf('INIT')
+      && (t.db_business_level || t.db_capacity || t.stop_window)) return stageIdxOf('ASSESSMENT_RUNNING')
+    if (t.source_ds_id) return stageIdxOf('DATA_COLLECTION')
+    return stageIdxOf('DATA_COLLECTION')
   }
   return stageIdxOf(t.status)
 }
@@ -155,7 +152,7 @@ export function StateBoard({ detail, onOpenStage, onAdvance, advancing }: {
       {/* 空状态 / 异常状态提示 */}
       {detail.status === 'INIT' && (
         <div className="mt-2 text-[11px] text-[#8b8b9e] bg-[#16161e52] rounded-lg px-3 py-2">
-          任务尚未启动：请先选择数据源，发起迁移任务。第一步节点上方高亮即当前可操作阶段。
+          任务尚未启动：请先选择数据源，发起迁移任务。第一步「数据采集」节点上方高亮即当前可操作阶段。
         </div>
       )}
       {errored && (
@@ -349,16 +346,16 @@ export function StageDrawer({ detail, stageIdx, onClose }: {
             </div>
             <div className="text-[11px] font-mono bg-[#12121a] border border-[#252530] rounded-lg p-3 space-y-1 leading-relaxed">
               {detail.status === 'INIT' && (
-                <div className="text-[#5a5a70]">[INFO] 等待用户选择数据源，任务未开始</div>
+                <div className="text-[#5a5a70]">[INFO] 等待用户选择数据源，任务未开始（数据采集阶段）</div>
               )}
               {stageIdx > 0 && detail.source_ds_name && (
-                <div className="text-[#8b8b9e]">[OK] 已完成「选择数据源」：{detail.source_ds_name}</div>
+                <div className="text-[#8b8b9e]">[OK] 数据采集 · 已选定源数据源：{detail.source_ds_name}</div>
               )}
               {stageIdx >= 1 && detail.target_db_type && (
-                <div className="text-[#8b8b9e]">[OK] 基础信息采集完成：目标 {detail.target_db_type} / 容量 {detail.db_capacity || '—'}</div>
+                <div className="text-[#8b8b9e]">[OK] 数据采集 · 参数齐备：目标 {detail.target_db_type} / 容量 {detail.db_capacity || '—'}</div>
               )}
               {stageIdx >= 2 && detail.object_count ? (
-                <div className="text-[#8b8b9e]">[OK] 对象扫描完成：共 {detail.object_count} 个对象，规则命中 {stats.total} 项资产</div>
+                <div className="text-[#8b8b9e]">[OK] 数据采集 · 对象扫描完成：共 {detail.object_count} 个对象，规则命中 {stats.total} 项资产</div>
               ) : null}
               {errored && (
                 <div className="text-red-400">[ERROR] {detail.error_msg || '节点执行失败，数据库连接超时'}</div>

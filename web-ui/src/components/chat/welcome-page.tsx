@@ -1549,7 +1549,7 @@ export function WelcomePage({ onConvCreated, activeAgent, setActiveAgent, quickM
 
           {/* 底部输入框 */}
           <div className="w-full p-3 border-t border-[#1e1e28] bg-[#0f0f14] flex-shrink-0 flex justify-center">
-            <div className="max-w-2xl mx-auto">
+            <div className="w-full max-w-[42rem] mx-auto">
               <div className="relative bg-[#16161e] border border-[#252530] rounded-xl focus-within:border-indigo-500/40 transition-colors">
                 {/* 隐藏文件上传 */}
                 <input ref={uploadInputRef} type="file" multiple className="hidden" onChange={handleFileChange} accept=".sql,.ddl,.docx,.md,.txt,.xlsx,.pdf" />

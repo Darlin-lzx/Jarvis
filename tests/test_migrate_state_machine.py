@@ -48,14 +48,14 @@ def test_migrate_state_machine_e2e(tmp_path):
     tasks = r.json()["data"]
     assert len(tasks) == 1, tasks
     t = tasks[0]
-    assert t["status"] == "DATA_SOURCE_SELECTED", t["status"]
+    assert t["status"] == "DATA_COLLECTION", t["status"]
     assert t["source_ds_id"] == "src_o"
     tid = t["task_id"]
     # 会话 task_state 已持久化（断点续跑依据）
     conv = c.get(f"/api/conversations/{cid}").json()["data"]
     ts = json.loads(conv.get("task_state") or "{}")
     assert ts.get("migrate_task_id") == tid
-    assert ts.get("current_step") == "DATA_SOURCE_SELECTED"
+    assert ts.get("current_step") == "DATA_COLLECTION"
     # 数据源防重复：同一会话再选其他源，不覆盖
     send("重新选数据源：src_b")
     t2 = c.get(f"/api/migrate/tasks/{tid}").json()["data"]
@@ -66,38 +66,38 @@ def test_migrate_state_machine_e2e(tmp_path):
     t3 = c.get(f"/api/migrate/tasks/{tid}").json()["data"]
     assert t3["target_db_type"] == "dm", t3["target_db_type"]  # 达梦→dm 归一化
     assert t3["source_db_type"] == "oracle"
-    assert t3["status"] == "BASIC_INFO_COLLECTED", t3["status"]
+    assert t3["status"] == "DATA_COLLECTION", t3["status"]
 
     # 第 3 轮：业务等级 + 容量 + 确认 → 对象扫描（自动扫描样例对象）
     send("业务等级：核心，容量：500GB，停机窗口：周六2小时，确认")
     t4 = c.get(f"/api/migrate/tasks/{tid}").json()["data"]
     assert t4["db_business_level"] == "核心"
-    # 确认后进入对象扫描阶段并自动完成扫描（样例对象兜底），停靠等待用户确认推进
-    assert t4["status"] == "OBJECT_SCANNING", t4["status"]
-    assert t4["object_count"] >= 1, "对象扫描应产出对象清单"
+    # 数据采集参数齐备并确认后 → 推进到迁移评估；数据采集阶段已自动扫描对象（样例兜底）
+    assert t4["status"] == "ASSESSMENT_RUNNING", t4["status"]
+    assert t4["object_count"] >= 1, "数据采集应产出对象清单"
 
     # 执行阶段手动闸门：不带确认词只传完成信号 → 不允许跨闸门
     r = c.post(f"/api/migrate/tasks/{tid}/advance", json={"object_count": 8})
     assert r.json()["data"]["advanced"] is False, "执行阶段无显式确认不得推进"
-    assert r.json()["data"]["to"] == "OBJECT_SCANNING"
+    assert r.json()["data"]["to"] == "ASSESSMENT_RUNNING"
 
     # 第 4 轮：用户显式“继续评估”→ 通过闸门进入评估执行
     send("继续评估")
     t5 = c.get(f"/api/migrate/tasks/{tid}").json()["data"]
-    assert t5["status"] == "ASSESSMENT_RUNNING", t5["status"]
+    assert t5["status"] == "SOLUTION_GENERATE", t5["status"]
 
     # 执行阶段单步推进：带确认词才放行一级，且每轮一级
     r = c.post(f"/api/migrate/tasks/{tid}/advance", json={"task_confirm": "继续"})
-    assert r.json()["data"]["to"] == "SQL_TRANSFORM", r.json()
+    assert r.json()["data"]["to"] == "CODE_MIGRATE", r.json()
     # 断点续跑：后续轮普通消息（无确认）停靠当前阶段，不重置回采集阶段
     send("评估结果我看了")
     t6 = c.get(f"/api/migrate/tasks/{tid}").json()["data"]
-    assert t6["status"] == "SQL_TRANSFORM", "无确认消息执行阶段应停靠当前阶段（断点续跑）"
+    assert t6["status"] == "CODE_MIGRATE", "无确认消息执行阶段应停靠当前阶段（断点续跑）"
     # 后续确认轮继续推进，且不回退采集阶段
     send("继续")
     t7 = c.get(f"/api/migrate/tasks/{tid}").json()["data"]
-    assert t7["status"] == "SOLUTION_GENERATE", t7["status"]
-    assert t7["status"] not in ("INIT", "DATA_SOURCE_SELECTED", "BASIC_INFO_COLLECTED")
+    assert t7["status"] == "VERIFY_STAGE", t7["status"]
+    assert t7["status"] not in ("DATA_COLLECTION",)
     print("MIGRATE E2E OK ->", t4["status"], "->", t7["status"])
 
 
@@ -121,7 +121,7 @@ def test_migrate_state_machine_conflict_via_chat(tmp_path):
     tid = c.get("/api/migrate/tasks").json()["data"][0]["task_id"]
     t = c.get(f"/api/migrate/tasks/{tid}").json()["data"]
     assert t["target_db_type"] in ("", None), "源=目标库类型应被后端拦截清空"
-    assert t["status"] == "DATA_SOURCE_SELECTED", "未收集到合法目标库前不应推进"
+    assert t["status"] == "DATA_COLLECTION", "未收集到合法目标库前不应推进"
     print("CONFLICT GUARD OK")
 
 
@@ -145,14 +145,14 @@ def test_migrate_task_reset_and_resume(tmp_path):
     r = c.post("/api/conversations", json={"title": "重置/续跑"})
     cid = r.json()["data"]["id"]
 
-    # 建立任务并推进到对象扫描（数据源+源库类型+目标库+容量确认）
+    # 建立任务并推进到迁移评估（数据源+源库类型+目标库+容量+确认）
     with c.stream("POST", "/api/chat/stream",
-                  json={"message": "国产化迁移，源数据源：src_r，source_db_type：oracle，目标库用达梦，容量 100GB，确认",
+                  json={"message": "国产化迁移，源数据源：src_r，source_db_type：oracle，目标库用达梦，容量 100GB，业务等级：一般，停机窗口：周六2小时，确认",
                         "conv_id": cid, "agent_id": "migration_commander"}) as resp:
         "".join(resp.iter_text())
     tid = c.get("/api/migrate/tasks").json()["data"][0]["task_id"]
     t0 = c.get(f"/api/migrate/tasks/{tid}").json()["data"]
-    assert t0["status"] == "OBJECT_SCANNING", t0["status"]
+    assert t0["status"] == "ASSESSMENT_RUNNING", t0["status"]
 
     # ---- 断点续跑：先把任务置为 ERROR，再调用 resume 恢复 ----
     with db.session() as s:
@@ -163,7 +163,7 @@ def test_migrate_task_reset_and_resume(tmp_path):
     r = c.post(f"/api/migrate/tasks/{tid}/resume")
     assert r.json()["success"] is True, r.json()
     resumed = r.json()["data"]
-    assert resumed["status"] in ("OBJECT_SCANNING", "ASSESSMENT_RUNNING"), resumed["status"]
+    assert resumed["status"] in ("ASSESSMENT_RUNNING",), resumed["status"]
     assert resumed["error_msg"] in ("", None), "续跑后错误应被清空"
     assert resumed["source_ds_id"] == "src_r", "续跑不清空已采集参数"
     # 非 ERROR 状态调用 resume 应报 400
@@ -174,7 +174,7 @@ def test_migrate_task_reset_and_resume(tmp_path):
     r = c.post(f"/api/migrate/tasks/{tid}/reset")
     assert r.json()["success"] is True, r.json()
     reset = r.json()["data"]
-    assert reset["status"] == "INIT", reset["status"]
+    assert reset["status"] == "DATA_COLLECTION", reset["status"]
     assert reset["source_ds_id"] in ("", None), "重置应清空源数据源"
     assert reset["target_db_type"] in ("", None), "重置应清空目标库"
     assert reset["db_capacity"] in ("", None), "重置应清空容量"
@@ -184,6 +184,34 @@ def test_migrate_task_reset_and_resume(tmp_path):
         n = len(list(s.scalars(_sq(DbMigrateAsset).where(DbMigrateAsset.task_id == tid))))
     assert n == 0, f"重置应清空该任务资产，实际 {n}"
     print("RESET/RESUME OK")
+
+
+def test_migrate_task_strict_flow_toggle(tmp_path):
+    """流程强校验是任务级开关：默认开启，可独立关闭且不影响逐级确认。"""
+    from db_loc_agent.app import create_app
+    from db_loc_agent.state_machine import MigrateStateService
+    from db_loc_agent.db import Database
+
+    app = create_app(
+        db_path=str(tmp_path / "t.db"),
+        artifact_root=str(tmp_path / "artifacts"),
+        config_override={"llm": {"provider": "ollama", "model": "qwen2.5",
+                                 "base_url": "http://127.0.0.1:1"}, "mysql_url": ""},
+        embedding_function=FakeEmbedding(),
+    )
+    c = _client(app)
+    db = Database(str(tmp_path / "t.db"))
+    svc = MigrateStateService(db)
+    task = svc.create(conv_id=1, space_id=1)
+
+    detail = c.get(f"/api/migrate/tasks/{task.id}").json()["data"]
+    assert detail["strict_flow"] is True
+    assert detail["step_confirm"] is True
+
+    r = c.post(f"/api/migrate/tasks/{task.id}/strict-flow", json={"strict_flow": False})
+    assert r.status_code == 200
+    assert r.json()["data"]["strict_flow"] is False
+    assert r.json()["data"]["step_confirm"] is True
 
 
 def test_migrate_task_multi_conversation_shared(tmp_path):
@@ -227,9 +255,9 @@ def test_migrate_task_multi_conversation_shared(tmp_path):
     assert tasks[0]["conv_id"] == cid_b, "复用后 conv_id 更新为最近活跃会话"
 
     # 会话 B 继续确认推进 → 不会回退、不会新建任务
-    send(cid_b, "业务等级：核心，容量：200GB，确认")
+    send(cid_b, "业务等级：核心，容量：200GB，停机窗口：周日2小时，确认")
     t2 = c.get(f"/api/migrate/tasks/{tid}").json()["data"]
-    assert t2["status"] in ("OBJECT_SCANNING", "ASSESSMENT_RUNNING"), t2["status"]
+    assert t2["status"] in ("ASSESSMENT_RUNNING",), t2["status"]
     tasks = c.get("/api/migrate/tasks").json()["data"]
     assert len(tasks) == 1, "多会话全程共享同一任务"
     print("MULTI-CONV SHARED OK ->", t2["status"])
@@ -267,9 +295,9 @@ def test_migrate_exec_lock_exclusive(tmp_path):
 
     # ---- 会话 A 推进（带确认）期间模拟持锁；会话 B 尝试同一任务被拒 ----
     # 会话 A：推进到对象扫描（获取锁 → 处理 → 释放）
-    send(cid_a, "目标库用达梦，source_db_type：oracle，业务等级：核心，容量：500GB，确认")
+    send(cid_a, "目标库用达梦，source_db_type：oracle，业务等级：核心，容量：500GB，停机窗口：周六2小时，确认")
     t = c.get(f"/api/migrate/tasks/{tid}").json()["data"]
-    assert t["status"] in ("OBJECT_SCANNING", "ASSESSMENT_RUNNING"), t["status"]
+    assert t["status"] in ("ASSESSMENT_RUNNING",), t["status"]
     # 阶段完成后锁已释放 → 其他会话可接手推进
     assert t["exec_lock"]["locked"] is False, "阶段完成后锁应已释放（串行协作）"
 
@@ -307,7 +335,7 @@ def test_migrate_exec_lock_exclusive(tmp_path):
     r = c.post(f"/api/migrate/tasks/{tid}/advance",
                json={"session_id": "conv-C", "task_confirm": "继续"})
     assert r.json()["success"] is True, "过期锁应被自动抢占"
-    assert r.json()["data"]["to"] in ("SOLUTION_GENERATE", "SQL_TRANSFORM", "VERIFY_STAGE"), r.json()
+    assert r.json()["data"]["to"] in ("SOLUTION_GENERATE", "CODE_MIGRATE", "VERIFY_STAGE"), r.json()
 
     # ---- 任务进入 ERROR：锁自动释放，任意会话可断点续跑 ----
     with db.session() as s:

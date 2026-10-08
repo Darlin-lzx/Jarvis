@@ -191,7 +191,7 @@ export function FlowBoard() {
 
       <div className="mt-2 flex items-center gap-1.5 text-[10px] text-[#5a5a70]">
         <ShieldCheck className="w-3 h-3" />
-        编排说明：新增节点仅从标准状态选择；首个节点建议保留「选择数据源」（INIT）。移除进行中的节点会让存量任务停驻该阶段。
+        编排说明：新增节点仅从标准状态选择；首个节点建议保留「数据采集」（migration_collector，别名小采）。移除进行中的节点会让存量任务停驻该阶段。
       </div>
     </div>
   )

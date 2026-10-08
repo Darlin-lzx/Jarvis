@@ -1,11 +1,10 @@
-import { useState, useEffect, useRef, type KeyboardEvent, type ChangeEvent } from 'react'
+import { useState, useRef, type KeyboardEvent, type ChangeEvent } from 'react'
 import { Button } from '@/components/ui/button'
 import { Textarea } from '@/components/ui/textarea'
-import { Square, AtSign, Plus, Bot, ChevronDown, Mic, Paperclip, Loader2, X, Hammer, Info } from 'lucide-react'
-import { agents as builtinAgents, agentDisplayName, skillGroups } from './agent-tabs'
+import { Square, AtSign, Plus, ChevronDown, Mic, Paperclip, Loader2, X, Info } from 'lucide-react'
+import { agentDisplayName } from './agent-tabs'
 import { ReferencePicker } from './reference-picker'
 import { api } from '@/lib/api'
-import { cn } from '@/lib/utils'
 import type { Agent, SendExtra, ChatReference, AttachmentItem } from '@/lib/types'
 
 interface ComposerProps {
@@ -13,16 +12,16 @@ interface ComposerProps {
   onStop?: () => void
   disabled: boolean
   activeAgent?: string
-  setActiveAgent?: (id: string) => void
   convId?: number | null
   spaceId?: number | null
-  /** 后端智能体列表（用于下拉选择） */
+  /** 后端智能体列表（仅用于展示当前指派名，不再提供切换入口） */
   agentList?: Agent[]
+  /** 当前迁移阶段（状态机，与 pipeline 一致） */
+  currentStage?: string
 }
 
-export function Composer({ onSend, onStop, disabled, activeAgent, setActiveAgent, convId, spaceId, agentList }: ComposerProps) {
-  // 使用后端智能体列表，如果未提供则降级为内置列表
-  const agents = agentList && agentList.length > 0 ? agentList : builtinAgents
+export function Composer({ onSend, onStop, disabled, activeAgent, convId, spaceId, agentList, currentStage }: ComposerProps) {
+  const agents = agentList && agentList.length > 0 ? agentList : []
   const currentAgent = agents.find(a => a.id === activeAgent)
   const [text, setText] = useState('')
   const [showRefPicker, setShowRefPicker] = useState(false)
@@ -30,42 +29,12 @@ export function Composer({ onSend, onStop, disabled, activeAgent, setActiveAgent
   const [attachments, setAttachments] = useState<AttachmentItem[]>([])
   const [uploading, setUploading] = useState(false)
   const [uploadNote, setUploadNote] = useState('')
-  const [showAgentDrp, setShowAgentDrp] = useState(false)
-  const [showSkillDrp, setShowSkillDrp] = useState(false)
   const uploadInputRef = useRef<HTMLInputElement>(null)
-  const agentDrpRef = useRef<HTMLDivElement>(null)
-  const skillDrpRef = useRef<HTMLDivElement>(null)
-  const [lastSkill, setLastSkill] = useState<string>(() => {
-    try { return localStorage.getItem('last_skill') || '' } catch { return '' }
-  })
-
-  // 点击外部关闭下拉
-  useEffect(() => {
-    const handleClickOutside = (event: MouseEvent) => {
-      if (agentDrpRef.current && !agentDrpRef.current.contains(event.target as Node)) {
-        setShowAgentDrp(false)
-      }
-      if (skillDrpRef.current && !skillDrpRef.current.contains(event.target as Node)) {
-        setShowSkillDrp(false)
-      }
-    }
-    if (showAgentDrp || showSkillDrp) {
-      document.addEventListener('mousedown', handleClickOutside)
-    }
-    return () => document.removeEventListener('mousedown', handleClickOutside)
-  }, [showAgentDrp, showSkillDrp])
-
-  // 技能下拉：选中即记忆（与 WelcomePage 共用 localStorage key 'last_skill'）
-  const selectSkill = (skill: string) => {
-    setLastSkill(skill)
-    try { localStorage.setItem('last_skill', skill) } catch { /* 忽略隐私模式异常 */ }
-    setShowSkillDrp(false)
-  }
 
   const handleSend = () => {
     const trimmed = text.trim()
     if (!trimmed && references.length === 0 && attachments.length === 0) return
-    onSend(lastSkill ? `[技能：${lastSkill}] ${trimmed}` : trimmed, {
+    onSend(trimmed, {
       references: references.length > 0 ? references : undefined,
       attachment_ids: attachments.length > 0 ? attachments.map(a => a.id) : undefined,
     })
@@ -135,14 +104,14 @@ export function Composer({ onSend, onStop, disabled, activeAgent, setActiveAgent
   }
 
   return (
-    <div className="px-4 pb-4 pt-2">
-      <div className="max-w-3xl mx-auto">
+    <div className="w-full px-4 pb-4 pt-2">
+      <div className="w-full max-w-[48rem] mx-auto">
         {/* 当前阶段提示条：任务采集阶段引导（输入框上方，文字起点与输入框 placeholder 左对齐） */}
         <div className="mb-2 flex items-center gap-1">
           <Info className="w-3 h-3 text-indigo-400 shrink-0" />
           <span className="text-[11px] text-[#8b8b9e] truncate">
-            当前处于【数据迁移任务・信息采集阶段】，智能体：
-            {agentDisplayName(agents.find(a => a.id === activeAgent) as { name?: string; alias?: string } | null)}
+            当前处于【数据迁移任务・{currentStage || '数据采集'}】，智能体：
+            {agentDisplayName(currentAgent || (activeAgent ? { name: activeAgent } : null))}
           </span>
         </div>
         <div className="relative bg-[#16161e] border border-[#252530] rounded-xl focus-within:border-indigo-500/40 transition-colors">
@@ -226,100 +195,6 @@ export function Composer({ onSend, onStop, disabled, activeAgent, setActiveAgent
                 {uploading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Plus className="w-4 h-4" />}
               </button>
               <div className="w-px h-4 bg-[#2a2a35] mx-1" />
-
-              {/* 智能体下拉：联动 activeAgent */}
-              <div className="relative" ref={agentDrpRef}>
-                <button
-                  className={cn(
-                    'flex items-center justify-center h-7 w-7 rounded-lg transition-colors',
-                    showAgentDrp ? 'text-indigo-400 bg-white/[0.05]' : 'text-[#9a9aa4] hover:text-[#cdd3e0] hover:bg-white/[0.05]'
-                  )}
-                  onClick={() => setShowAgentDrp(!showAgentDrp)}
-                  title={`智能体：${agentDisplayName(currentAgent)}`}
-                  aria-haspopup="menu"
-                  aria-expanded={showAgentDrp}
-                >
-                  <Bot className="w-4 h-4" />
-                </button>
-                {showAgentDrp && (
-                  <div className="absolute left-0 bottom-full mb-1 bg-[#1a1a24] border border-[#252530] rounded-lg shadow-xl z-50 w-44 py-1.5 overflow-hidden">
-                    <div className="px-3 pb-1 text-[11px] text-[#5a5a70]">内置智能体</div>
-                    {agents.slice(0, 2).map(a => (
-                      <button
-                        key={a.id}
-                        className={cn(
-                          'w-full flex items-center gap-2 px-3 py-2 text-[12px] transition-colors',
-                          a.id === activeAgent ? 'bg-indigo-500/10 text-indigo-400' : 'text-[#cdd3e0] hover:bg-white/[0.05]'
-                        )}
-                        onClick={() => { setActiveAgent?.(a.id); setShowAgentDrp(false) }}
-                      >
-                        <span className="w-4 h-4 rounded flex items-center justify-center text-[9px] font-bold shrink-0" style={{ backgroundColor: a.color + '20', color: a.color }}>
-                          {(agentDisplayName(a) || '智')[0]}
-                        </span>
-                        <span className="truncate">{agentDisplayName(a as { name?: string; alias?: string })}</span>
-                      </button>
-                    ))}
-                    <div className="px-3 pt-1.5 pb-1 text-[11px] text-[#5a5a70] border-t border-[#252530]">企业专属智能体</div>
-                    {agents.slice(2).map(a => (
-                      <button
-                        key={a.id}
-                        className={cn(
-                          'w-full flex items-center gap-2 px-3 py-2 text-[12px] transition-colors',
-                          a.id === activeAgent ? 'bg-indigo-500/10 text-indigo-400' : 'text-[#cdd3e0] hover:bg-white/[0.05]'
-                        )}
-                        onClick={() => { setActiveAgent?.(a.id); setShowAgentDrp(false) }}
-                      >
-                        <span className="w-4 h-4 rounded flex items-center justify-center text-[9px] font-bold shrink-0" style={{ backgroundColor: a.color + '20', color: a.color }}>
-                          {(agentDisplayName(a) || '智')[0]}
-                        </span>
-                        <span className="truncate">{agentDisplayName(a as { name?: string; alias?: string })}</span>
-                      </button>
-                    ))}
-                  </div>
-                )}
-              </div>
-
-              {/* 技能下拉：localStorage 记忆 */}
-              <div className="relative" ref={skillDrpRef}>
-                <button
-                  className="flex items-center gap-1 h-7 px-2.5 rounded-lg text-[12px] text-[#9a9aa4] hover:text-[#cdd3e0] hover:bg-white/[0.05] transition-colors"
-                  onClick={() => setShowSkillDrp(!showSkillDrp)}
-                  title="选择技能，发送消息时自动带入技能上下文"
-                >
-                  <Hammer className="w-3.5 h-3.5 text-indigo-400 shrink-0" />
-                  <span className={cn('max-w-[88px] truncate', !lastSkill && 'text-[#5a5a70]')}>{lastSkill || '技能'}</span>
-                  <ChevronDown className={cn('w-3 h-3 shrink-0 transition-transform', showSkillDrp && 'rotate-180')} />
-                </button>
-                {showSkillDrp && (
-                  <div className="absolute left-0 bottom-full mb-1 bg-[#1a1a24] border border-[#252530] rounded-lg shadow-xl z-50 w-52 py-1.5 overflow-hidden">
-                    {skillGroups.map(g => (
-                      <div key={g.label}>
-                        <div className="px-3 pt-1.5 pb-1 text-[11px] text-[#5a5a70]">{g.label}</div>
-                        {g.skills.map(s => (
-                          <button
-                            key={s.label}
-                            className={cn(
-                              'w-full text-left px-3 py-2 text-[12px] transition-colors',
-                              lastSkill === s.label ? 'bg-indigo-500/10 text-indigo-400' : 'text-[#cdd3e0] hover:bg-white/[0.05]'
-                            )}
-                            onClick={() => selectSkill(s.label)}
-                          >
-                            {s.label}
-                          </button>
-                        ))}
-                      </div>
-                    ))}
-                    {lastSkill && (
-                      <button
-                        className="w-full text-left px-3 pt-2 pb-1.5 text-[11px] text-[#5a5a70] hover:text-[#9a9aa4] border-t border-[#252530] transition-colors"
-                        onClick={() => selectSkill('')}
-                      >
-                        清除技能
-                      </button>
-                    )}
-                  </div>
-                )}
-              </div>
 
               <button className="flex items-center gap-1 text-[#4a4a5a] hover:text-[#9a9ab0] text-[12px] px-2 py-1 rounded hover:bg-white/[0.03] transition-colors">
                 <span>默认权限</span>
