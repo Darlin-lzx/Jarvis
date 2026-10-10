@@ -7,10 +7,12 @@
 """
 from __future__ import annotations
 
+import os
 import re
 import sqlite3
 import time
 from contextlib import contextmanager
+from datetime import date, datetime
 from typing import Any, Callable, Dict, List, Optional
 from urllib.parse import quote_plus
 
@@ -32,13 +34,16 @@ QUERY_CELL_LIMIT = 500  # 单格最大展示字符
 class DbTools:
     """数据源管理 + 只读查询工具。"""
 
-    DIALECTS = ("sqlite", "mysql", "postgresql", "oracle", "dm", "kingbase", "gaussdb")
+    DIALECTS = ("sqlite", "mysql", "postgresql", "oracle", "dm", "kingbase", "gaussdb",
+                "excel")
 
     def __init__(self, db: Optional[Database] = None, audit: Optional[Any] = None,
-                 obs_query: Optional[Callable[[str, str, int], None]] = None):
+                 obs_query: Optional[Callable[[str, str, int], None]] = None,
+                 circuit_breaker: Optional[Any] = None):
         self.db = db
         self.audit = audit  # 可选审计回调: audit(kind, name, sql_or_notes)
         self.obs_query = obs_query  # 可选观测回调: obs_query(ds_name, sql, latency_ms) 用于慢查询/性能基线
+        self.circuit_breaker = circuit_breaker
 
     # ---------- 配置 CRUD ----------
     def list(self, space_id: Optional[int] = None,
@@ -195,12 +200,27 @@ class DbTools:
             raise ValueError(f"数据源不存在: {name}")
         if not ds["enabled"]:
             raise ValueError(f"数据源已停用: {name}")
+        if ds["kind"] == "excel":
+            path = self._excel_path(ds)
+            if not path or not os.path.exists(path):
+                raise ValueError(f"Excel 文件不存在: {path or '(未配置)'}")
+            yield path
+            return
         cs = self._conn_str({**ds, "kind": ds["kind"], "location": ds["location"],
                              "username": ds["username"], "password": (self._pwd(name) or "")})
+        if self.circuit_breaker is not None:
+            self.circuit_breaker.check_allowed()
         engine = create_engine(cs, connect_args={"check_same_thread": False}
                                if ds["kind"] == "sqlite" else {}, server_side_cursors=False)
         try:
-            conn = engine.connect()
+            try:
+                conn = engine.connect()
+            except Exception:
+                if self.circuit_breaker is not None:
+                    self.circuit_breaker.record_failure()
+                raise
+            if self.circuit_breaker is not None:
+                self.circuit_breaker.record_success()
             tx = conn.begin()
             yield conn
             tx.rollback()  # 所有数据源操作只读：统一回滚
@@ -237,6 +257,19 @@ class DbTools:
             return {"ok": False, "columns": [], "rows": [], "row_count": 0, "message": str(e)}
         if limit <= 0 or limit > 500:
             limit = QUERY_ROW_LIMIT
+        ds = self.get(name)
+        if ds and ds.get("kind") == "excel":
+            if not ds.get("enabled"):
+                return {"ok": False, "columns": [], "rows": [], "row_count": 0,
+                        "message": "数据源已停用"}
+            path = self._excel_path(ds)
+            if not path or not os.path.exists(path):
+                return {"ok": False, "columns": [], "rows": [], "row_count": 0,
+                        "message": f"Excel 文件不存在: {path or '(未配置)'}"}
+            res = self._excel_query(path, q, limit)
+            if self.audit:
+                self.audit("query", name, f"excel:{path} | {q[:200]}")
+            return res
         t0 = time.time()
         try:
             with self.connect(name) as conn:
@@ -267,6 +300,128 @@ class DbTools:
         s = str(v)
         return s[:QUERY_CELL_LIMIT] + "…" if len(s) > QUERY_CELL_LIMIT else s
 
+    # ---------- Excel 数据源（kind="excel"，数据源不可连接时的替代采集） ----------
+    @staticmethod
+    def _excel_path(ds: Dict) -> str:
+        return (ds.get("location") or "").strip()
+
+    @staticmethod
+    def _load_excel(path: str):
+        import openpyxl
+        return openpyxl.load_workbook(path, read_only=True, data_only=True)
+
+    @staticmethod
+    def _infer_excel_type(samples: List[Any]) -> str:
+        """按样本值推断列类型（源库风格：NUMBER / DATE / VARCHAR2），用于生成 DDL 走规则引擎"""
+        vals = [v for v in samples if v is not None and str(v).strip() != ""]
+        if not vals:
+            return "VARCHAR2(255)"
+        ints = 0
+        floats = 0
+        dates = 0
+        for v in vals[:8]:
+            if isinstance(v, (int, float)):
+                if isinstance(v, bool):
+                    continue
+                if float(v).is_integer():
+                    ints += 1
+                else:
+                    floats += 1
+            elif isinstance(v, (datetime, date)):
+                dates += 1
+            # 字符串一律按文本处理：手机号/编码等长数字串不推断为数值
+        if dates >= max(1, len(vals) // 2):
+            return "DATE"
+        if ints == len(vals):
+            return "NUMBER(10)"
+        if ints + floats == len(vals):
+            return "NUMBER(10,2)"
+        return "VARCHAR2(255)"
+
+    @staticmethod
+    def _excel_tables(path: str) -> List[str]:
+        wb = DbTools._load_excel(path)
+        try:
+            return [ws.title for ws in wb.worksheets
+                    if ws.title and not ws.title.startswith("_")]
+        finally:
+            wb.close()
+
+    @staticmethod
+    def _excel_columns(path: str, sheet: str) -> List[Dict]:
+        """读取 sheet 表头行 + 每列类型推断，返回列定义（name/type/nullable/pk）"""
+        wb = DbTools._load_excel(path)
+        try:
+            ws = wb[sheet]
+            rows = ws.iter_rows(values_only=True)
+            header = next(rows, None)
+            if not header:
+                return []
+            sample_rows = []
+            for r in rows:
+                if len(sample_rows) >= 8:
+                    break
+                sample_rows.append(r)
+            cols: List[Dict] = []
+            for i, h in enumerate(header):
+                if h is None or str(h).strip() == "":
+                    continue
+                samples = [r[i] for r in sample_rows if i < len(r)]
+                cols.append({"name": str(h).strip(),
+                             "type": DbTools._infer_excel_type(samples),
+                             "nullable": True, "pk": False})
+            return cols
+        finally:
+            wb.close()
+
+    @staticmethod
+    def _excel_rows(path: str, sheet: str, limit: int = QUERY_ROW_LIMIT) -> Dict:
+        """读取 sheet 前 limit 行样本（首行为表头），返回 {columns, rows}"""
+        wb = DbTools._load_excel(path)
+        try:
+            ws = wb[sheet]
+            rows = ws.iter_rows(values_only=True)
+            header = next(rows, None)
+            if not header:
+                return {"columns": [], "rows": []}
+            columns = [str(h).strip() if h is not None else f"col{i+1}"
+                       for i, h in enumerate(header)]
+            data = []
+            for r in rows:
+                if len(data) >= limit:
+                    break
+                data.append([DbTools._fmt(v) for v in r])
+            return {"columns": columns, "rows": data}
+        finally:
+            wb.close()
+
+    def _excel_query(self, path: str, sql: str, limit: int) -> Dict:
+        """Excel 只读采样：从 sql 中识别目标 sheet（FROM 后标识符），读前 limit 行样本"""
+        m = re.search(r"\bFROM\s+([`\"\[]?)([\w\-]+)([`\"\]]?)?", sql, re.IGNORECASE)
+        sheet = (m.group(2) if m else "") or ""
+        if sheet and sheet.lower() == "select":
+            sheet = ""
+        try:
+            tables = self._excel_tables(path)
+        except Exception as e:
+            return {"ok": False, "columns": [], "rows": [], "row_count": 0,
+                    "message": f"读取 Excel 失败: {e}"}
+        if not tables:
+            return {"ok": False, "columns": [], "rows": [], "row_count": 0,
+                    "message": "Excel 中没有工作表"}
+        if sheet and sheet not in tables:
+            return {"ok": False, "columns": [], "rows": [], "row_count": 0,
+                    "message": f"工作表不存在: {sheet}（可选: {', '.join(tables[:10])}）"}
+        target = sheet or tables[0]
+        try:
+            res = self._excel_rows(path, target, limit)
+            return {"ok": True, "columns": res["columns"], "rows": res["rows"],
+                    "row_count": len(res["rows"]),
+                    "message": f"Excel 工作表 {target} 样本（前 {len(res['rows'])} 行）"}
+        except Exception as e:
+            return {"ok": False, "columns": [], "rows": [], "row_count": 0,
+                    "message": f"读取工作表失败: {e}"}
+
     def inspect_schema(self, name: str, object_name: str = "") -> Dict:
         """探查表/视图结构：列出对象，或指定对象时返回其列定义与类型"""
         ds = self.get(name)
@@ -275,6 +430,23 @@ class DbTools:
         if not ds["enabled"]:
             return {"ok": False, "message": f"数据源已停用: {name}"}
         kind = ds["kind"]
+        if kind == "excel":
+            try:
+                path = self._excel_path(ds)
+                if not path or not os.path.exists(path):
+                    return {"ok": False, "message": f"Excel 文件不存在: {path or '(未配置)'}"}
+                obj = (object_name or "").strip()
+                if not obj:
+                    tables = self._excel_tables(path)
+                    return {"ok": True, "scheme": "excel", "tables": tables, "views": [],
+                            "message": f"Excel 工作表 {len(tables)} 个（数据源不可连接时的替代采集）"}
+                if obj not in self._excel_tables(path):
+                    return {"ok": False, "message": f"工作表不存在: {obj}"}
+                cols = self._excel_columns(path, obj)
+                return {"ok": True, "scheme": "excel", "object": obj, "columns": cols,
+                        "message": f"工作表 {obj} 共 {len(cols)} 列（类型为按样本推断）"}
+            except Exception as e:
+                return {"ok": False, "message": f"读取 Excel 失败: {e}"}
         try:
             from sqlalchemy import MetaData, Table, inspect as sa_inspect
             with self.connect(name) as conn:
@@ -296,6 +468,23 @@ class DbTools:
     def explain(self, name: str, sql: str) -> Dict:
         """只读语法/执行计划校验：拒绝非 SELECT，返回查询计划摘要（不返回数据）"""
         q = self._validate_read_only(sql)
+        ds = self.get(name)
+        if ds and ds.get("kind") == "excel":
+            if not ds.get("enabled"):
+                return {"ok": False, "valid": False, "plan": [], "message": "数据源已停用"}
+            path = self._excel_path(ds)
+            if not path or not os.path.exists(path):
+                return {"ok": False, "valid": False, "plan": [], "message": f"Excel 文件不存在: {path or '(未配置)'}"}
+            try:
+                tables = self._excel_tables(path)
+                m = re.search(r"\bFROM\s+([`\"\[]?)([\w\-]+)([`\"\]]?)?", q, re.IGNORECASE)
+                target = (m.group(2) if m else "") or ""
+                if target and target not in tables:
+                    return {"ok": False, "valid": False, "plan": [], "message": f"工作表不存在: {target}"}
+                return {"ok": True, "valid": True, "plan": [f"EXCEL 工作表 {target or tables[0]} 采样"],
+                        "message": "语法有效（Excel 只读采样，未执行数据查询）"}
+            except Exception as e:
+                return {"ok": False, "valid": False, "plan": [], "message": f"读取 Excel 失败: {e}"}
         try:
             with self.connect(name) as conn:
                 plan_sql = f"EXPLAIN QUERY PLAN {q}"

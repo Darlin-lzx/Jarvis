@@ -39,7 +39,7 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
             <Label className="text-[11px] text-[#6a6a7a] font-medium">LLM 提供商</Label>
             <Select value={form.provider} onValueChange={v => setForm({ ...form, provider: v })}>
               <SelectTrigger className="bg-[#1a1a24] border-[#252530] rounded-lg"><SelectValue /></SelectTrigger>
-              <SelectContent><SelectItem value="ollama">Ollama（本地）</SelectItem><SelectItem value="deepseek">DeepSeek</SelectItem><SelectItem value="bailian">阿里云百炼</SelectItem></SelectContent>
+              <SelectContent><SelectItem value="ollama">Ollama（本地）</SelectItem><SelectItem value="deepseek">DeepSeek</SelectItem><SelectItem value="bailian">阿里云百炼</SelectItem><SelectItem value="zhipu">智谱 GLM</SelectItem></SelectContent>
             </Select>
           </div>
           <div className="space-y-2">
@@ -66,7 +66,7 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
           </div>
           <div className="space-y-2">
             <Label className="text-[11px] text-[#6a6a7a] font-medium">API Key</Label>
-            <Input className="bg-[#1a1a24] border-[#252530] rounded-lg" type="password" placeholder="deepseek/百炼 必填" value={form.api_key} onChange={e => setForm({ ...form, api_key: e.target.value })} />
+            <Input className="bg-[#1a1a24] border-[#252530] rounded-lg" type="password" placeholder="DeepSeek/百炼/智谱 必填" value={form.api_key} onChange={e => setForm({ ...form, api_key: e.target.value })} />
           </div>
           <div className="space-y-2">
             <Label className="text-[11px] text-[#6a6a7a] font-medium">Embedding 模型</Label>

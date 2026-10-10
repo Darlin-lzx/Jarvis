@@ -134,29 +134,44 @@ export function ConversationsPanel() {
     setSelectedIds(new Set())
   }
 
-  const handleBatchDelete = () => {
+  const handleBatchDelete = async () => {
     const targets = conversations.filter(c => selectedIds.has(c.id))
-    targets.forEach(c => { api.deleteConversation(c.id).then(() => load()).catch(() => load()) })
-    setSelectedIds(new Set())
+    if (!targets.length) return
+    try {
+      const results = await Promise.all(
+        targets.map(c => api.deleteConversation(c.id).catch(() => null)),
+      )
+      if (results.some(r => !r || !r.success)) {
+        window.alert('部分会话删除失败，已保留原选择，请稍后重试')
+        await load()
+        return
+      }
+      setSelectedIds(new Set())
+      await load()
+    } catch {
+      window.alert('批量删除会话失败，请稍后重试')
+      await load()
+    }
   }
 
-  const handleDelete = () => {
+  const handleDelete = async () => {
     if (!deleteTarget) return
     const cid = deleteTarget.id
     setDeleting(true)
-    if (deleteWithArtifacts) {
-      // 同步删除该会话所有产物记录
-      api.listArtifacts(cid).then(r => {
-        if (r.success) (r.data as ArtifactItem[]).forEach(a => api.deleteArtifact(a.id).catch(() => null))
-      }).finally(() => {
-        api.deleteConversation(cid).finally(() => {
-          setDeleting(false); setDeleteTarget(null); setDeleteWithArtifacts(false); load()
-        })
-      })
-    } else {
-      api.deleteConversation(cid).finally(() => {
-        setDeleting(false); setDeleteTarget(null); setDeleteWithArtifacts(false); load()
-      })
+    try {
+      const r = await api.deleteConversation(cid)
+      if (!r.success) {
+        window.alert(r.message || '删除会话失败，请稍后重试')
+        setDeleting(false)
+        return
+      }
+      setDeleteTarget(null)
+      setDeleteWithArtifacts(false)
+      await load()
+    } catch {
+      window.alert('删除会话失败，请稍后重试')
+    } finally {
+      setDeleting(false)
     }
   }
 

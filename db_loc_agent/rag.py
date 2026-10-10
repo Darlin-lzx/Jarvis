@@ -3,6 +3,9 @@ from __future__ import annotations
 
 import json
 import re
+import time
+from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -10,6 +13,14 @@ import faiss
 import numpy as np
 
 from db_loc_agent.db import Database, DocumentRecord
+
+CONFIDENCE_SCORES = {
+    "verified": 1.0,
+    "human_authority": 1.0,
+    "pending_review": 0.6,
+    "model_generated": 0.4,
+}
+DEFAULT_BUSINESS_DOMAIN = "db_migrate"
 
 
 def split_markdown(text: str, max_chars: int = 1200) -> List[str]:
@@ -114,9 +125,16 @@ class RAGStore:
             self._index = faiss.IndexFlatIP(dim)
             return
         vecs = self._embed(contents)
-        self._index = faiss.IndexFlatIP(vecs.shape[1])
+        self._index = self._create_index(vecs.shape[1])
         self._index.add(vecs)
         self._save()
+
+    @staticmethod
+    def _create_index(dim: int) -> faiss.Index:
+        """新索引用 HNSW；存量 Flat 索引继续兼容读取。"""
+        index = faiss.IndexHNSWFlat(dim, 16, faiss.METRIC_INNER_PRODUCT)
+        index.hnsw.efConstruction = 200
+        return index
 
     def _settle_index(self, dim: int) -> None:
         """确保索引维度为 dim；不一致时重建，避免 faiss.search 维度断言崩溃。"""
@@ -144,7 +162,7 @@ class RAGStore:
     def _ensure_index(self, dim: int) -> None:
         if self._index is None:
             self._dim = dim
-            self._index = faiss.IndexFlatIP(dim)
+            self._index = self._create_index(dim)
             self._metadata = []
             return
         if self._index.d != dim:
@@ -165,7 +183,12 @@ class RAGStore:
 
     def add_document(self, doc_id: int, name: str, source_type: str, doc_path: str,
                      space_id: Optional[int] = None,
-                     kb_type: Optional[str] = None) -> Dict:
+                     kb_type: Optional[str] = None,
+                     business_domain: str = DEFAULT_BUSINESS_DOMAIN,
+                     target_db: str = "", stage: str = "", object_type: str = "",
+                     confidence: str = "verified", source: str = "upload",
+                     source_ref: str = "",
+                     effective_time: Optional[datetime] = None) -> Dict:
         text = Path(doc_path).read_text(encoding="utf-8")
         chunks = self._split(source_type, text)
         if chunks:
@@ -176,7 +199,14 @@ class RAGStore:
             metas = [
                 {"doc_id": str(doc_id), "doc_name": Path(doc_path).name,
                  "chunk_index": i, "type": source_type, "content": chunk,
-                 "space_id": space_id, "kb_type": kb_type or "doc"}
+                 "space_id": space_id, "kb_type": kb_type or "doc",
+                 "business_domain": business_domain or DEFAULT_BUSINESS_DOMAIN,
+                 "target_db": target_db or "", "stage": stage or "",
+                 "object_type": object_type or "",
+                 "confidence": confidence if confidence in CONFIDENCE_SCORES else "verified",
+                 "source": source or "upload", "source_ref": source_ref or "",
+                 "effective_time": effective_time.isoformat() if effective_time else None,
+                 "negative_feedback_count": 0, "review_required": False}
                 for i, chunk in enumerate(chunks)
             ]
             self._index.add(vecs)
@@ -186,43 +216,92 @@ class RAGStore:
             row = s.get(DocumentRecord, doc_id)
             if row:
                 row.chunk_count = len(chunks)
+                row.business_domain = business_domain or DEFAULT_BUSINESS_DOMAIN
+                row.target_db = target_db or ""
+                row.stage = stage or ""
+                row.object_type = object_type or ""
+                row.confidence = confidence if confidence in CONFIDENCE_SCORES else "verified"
+                row.source = source or "upload"
+                row.source_ref = source_ref or ""
+                row.effective_time = effective_time
                 s.commit()
         return {"doc_id": doc_id, "chunks": len(chunks)}
 
     def search(self, query: str, top_k: int = 4,
                space_id: Optional[int] = None,
                kb_types: Optional[List[str]] = None,
-               source_db: str = "", target_db: str = "") -> List[Dict]:
-        """向量检索（分层知识库）。
+               source_db: str = "", target_db: str = "",
+               business_domain: str = DEFAULT_BUSINESS_DOMAIN,
+               stage: str = "", object_type: str = "",
+               candidate_k: int = 20, min_similarity: float = 0.35) -> List[Dict]:
+        """兼容旧调用方，返回增强检索结果列表。"""
+        return self._search_core(
+            query, top_k=top_k, space_id=space_id, kb_types=kb_types,
+            source_db=source_db, target_db=target_db,
+            business_domain=business_domain, stage=stage,
+            object_type=object_type, candidate_k=candidate_k,
+            min_similarity=min_similarity,
+        )["results"]
+
+    def _search_core(self, query: str, top_k: int = 4,
+                     space_id: Optional[int] = None,
+                     kb_types: Optional[List[str]] = None,
+                     source_db: str = "", target_db: str = "",
+                     business_domain: str = DEFAULT_BUSINESS_DOMAIN,
+                     stage: str = "", object_type: str = "",
+                     candidate_k: int = 20,
+                     min_similarity: float = 0.35) -> Dict:
+        """过滤、Top20 语义候选、可信度与域匹配融合排序。
 
         - space_id 非 None 时仅返回该空间的分块（无 space_id 的历史分块视为全局文档）；
         - kb_types（方向4 分层）：rules 规则库 / cases 案例库 / doc 归档文档，按任务阶段定向检索；
         - source_db / target_db：元数据关键词过滤（源库类型/目标国产库类型），缩小检索范围；
         - 关键词混合：候选命中检索词的分块权重加成（规则库关键词检索兜底，结果可复现）。
         """
+        started = time.monotonic()
         if self._index is None or self._index.ntotal == 0:
-            return []
+            return {"results": [], "degraded": False, "elapsed_ms": 0,
+                    "no_hit_reason": "empty_index"}
         try:
-            q = self._embed([query])
+            with ThreadPoolExecutor(max_workers=1, thread_name_prefix="rag-search") as pool:
+                q = pool.submit(self._embed, [query]).result(timeout=0.5)
             if q.shape[1] != self._index.d:
                 # 索引由旧模型构建（维度不匹配）：用当前模型重建后重试
                 self._settle_index(q.shape[1])
                 if self._index is None or self._index.ntotal == 0:
-                    return []
-            # 带空间过滤时扩大候选池，过滤后仍能凑满 top_k
-            k = min(top_k * 6 if (space_id is not None or kb_types) else top_k,
-                    self._index.ntotal)
-            scores, idxs = self._index.search(q, k)
-        except Exception:
+                    return {"results": [], "degraded": False, "elapsed_ms": 0,
+                            "no_hit_reason": "empty_index"}
+            if isinstance(self._index, faiss.IndexHNSWFlat):
+                self._index.hnsw.efSearch = 128
+            has_post_filter = any((space_id is not None, bool(kb_types), bool(target_db),
+                                   bool(business_domain), bool(stage), bool(object_type)))
+            search_k = min(max(candidate_k * 5 if has_post_filter else candidate_k, candidate_k),
+                           self._index.ntotal)
+            scores, idxs = self._index.search(q, search_k)
+        except Exception as e:
             # 检索失败（embedding 服务不可用等）时安全降级为空，避免阻断整个对话
-            return []
+            return {"results": [], "degraded": True,
+                    "elapsed_ms": round((time.monotonic() - started) * 1000, 2),
+                    "no_hit_reason": f"vector_search_failed:{type(e).__name__}"}
+        with self.db.session() as s:
+            enabled_doc_ids = {str(row[0]) for row in s.query(DocumentRecord.id).filter(
+                DocumentRecord.enabled == True)}
+        domain_filters = {
+            "target_db": (target_db or "").lower(),
+            "stage": (stage or "").lower(),
+            "object_type": (object_type or "").lower(),
+        }
+        expected_dimensions = [value for value in domain_filters.values() if value]
         out = []
         ql = query.lower()
         q_tokens = [t for t in re.split(r"[\s,，。；;：:()<>=]+", ql) if len(t) >= 2]
+        semantic_candidates = 0
         for rank, j in enumerate(idxs[0]):
             if j < 0 or j >= len(self._metadata):
                 continue
             meta = self._metadata[j]
+            if meta.get("doc_id") not in enabled_doc_ids:
+                continue
             if space_id is not None:
                 meta_space = meta.get("space_id")
                 if meta_space is not None and int(meta_space) != int(space_id):
@@ -231,28 +310,123 @@ class RAGStore:
                 # 元数据过滤：无 kb_type 的旧分块视为 doc
                 if (meta.get("kb_type") or "doc") not in kb_types:
                     continue
+            meta_domain = (meta.get("business_domain") or DEFAULT_BUSINESS_DOMAIN).lower()
+            if business_domain and meta_domain != business_domain.lower():
+                continue
+            matched_dimensions = []
+            if expected_dimensions:
+                for dimension, expected in domain_filters.items():
+                    actual = (meta.get(dimension) or "").lower()
+                    if actual == expected:
+                        matched_dimensions.append(dimension)
+                    elif actual and expected:
+                        continue
+                # 业务元数据允许为空（历史知识），但一旦填写就必须匹配。
+                if len(matched_dimensions) != len(expected_dimensions):
+                    continue
             if source_db or target_db:
                 meta_db = (meta.get("kb_type") or "") + " " + (meta.get("content") or "")
                 if source_db and source_db.lower() not in meta_db.lower():
                     if target_db and target_db.lower() not in meta_db.lower():
                         continue
+            if semantic_candidates >= candidate_k:
+                continue
+            semantic_candidates += 1
             content = meta.get("content", "") or ""
+            similarity = max(0.0, min(1.0, float(scores[0][rank])))
+            if similarity < min_similarity:
+                continue
+            confidence = (meta.get("confidence") if meta.get("confidence") in
+                          CONFIDENCE_SCORES else "verified")
+            confidence_score = CONFIDENCE_SCORES[confidence]
+            domain_match = (
+                len(matched_dimensions) / len(expected_dimensions)
+                if expected_dimensions else 1.0
+            )
+            fused_score = (
+                0.4 * domain_match
+                + 0.3 * confidence_score
+                + 0.3 * similarity
+            )
             kw_hits = sum(1 for t in q_tokens if t in content.lower())
-            score = round(float(scores[0][rank]), 4)
-            # 关键词混合：命中检索词的分块权重加成（保证词典级命中稳定排前，结果可复现）
-            if kw_hits:
-                score = round(score + 0.05 * kw_hits, 4)
+            exact = bool(q_tokens) and all(t in content.lower() for t in q_tokens)
             out.append({
+                "doc_id": int(meta.get("doc_id", 0) or 0),
                 "chunk_id": f"{meta['doc_id']}-{meta['chunk_index']}",
                 "doc_name": meta.get("doc_name", ""),
                 "chunk_index": meta.get("chunk_index", 0),
                 "type": meta.get("type", ""),
                 "kb_type": meta.get("kb_type", "doc"),
+                "business_domain": meta_domain,
+                "target_db": meta.get("target_db", "") or "",
+                "stage": meta.get("stage", "") or "",
+                "object_type": meta.get("object_type", "") or "",
+                "confidence": confidence,
+                "confidence_score": confidence_score,
+                "source": meta.get("source", "") or "",
+                "source_ref": meta.get("source_ref", "") or "",
+                "effective_time": meta.get("effective_time"),
+                "negative_feedback_count": int(meta.get("negative_feedback_count", 0) or 0),
+                "review_required": bool(meta.get("review_required", False)),
+                "needs_review": bool(meta.get("review_required", False))
+                or confidence in ("pending_review", "model_generated"),
+                "domain_match": round(domain_match, 4),
+                "matched_dimensions": matched_dimensions,
+                "similarity": round(similarity, 4),
                 "content": content,
-                "score": score,
+                "score": round(fused_score, 4),
+                "fused_score": round(fused_score, 4),
+                "keyword_hits": kw_hits,
+                "match_type": "exact" if exact else "semantic",
             })
-        out.sort(key=lambda x: -x["score"])
-        return out[:top_k]
+        out.sort(key=lambda x: (-x["fused_score"], -x["similarity"], -x["keyword_hits"]))
+        elapsed_ms = round((time.monotonic() - started) * 1000, 2)
+        return {
+            "results": out[:top_k],
+            "degraded": False,
+            "elapsed_ms": elapsed_ms,
+            "no_hit_reason": None if out else "no_match",
+        }
+
+    def record_feedback(self, doc_id: int, feedback: str, reason: str = "") -> Dict:
+        """记录检索结果反馈：负反馈降级并标记复核，正反馈可转 verified。"""
+        feedback = feedback.lower()
+        if feedback not in ("positive", "negative"):
+            raise ValueError("feedback must be positive or negative")
+        with self.db.session() as s:
+            row = s.get(DocumentRecord, doc_id)
+            if not row:
+                raise ValueError(f"document not found: {doc_id}")
+            current = row.confidence if row.confidence in CONFIDENCE_SCORES else "verified"
+            if feedback == "negative":
+                row.negative_feedback_count = int(row.negative_feedback_count or 0) + 1
+                if current == "verified":
+                    row.confidence = "pending_review"
+                elif current in ("pending_review", "human_authority"):
+                    row.confidence = "model_generated"
+                row.review_required = True
+            elif current == "pending_review":
+                row.confidence = "verified"
+                row.review_required = False
+            s.commit()
+            result = {
+                "doc_id": row.id,
+                "confidence": row.confidence,
+                "negative_feedback_count": row.negative_feedback_count,
+                "review_required": row.review_required,
+                "feedback": feedback,
+                "reason": reason,
+            }
+        sid = str(doc_id)
+        for meta in self._metadata:
+            if meta.get("doc_id") != sid:
+                continue
+            meta["confidence"] = result["confidence"]
+            meta["negative_feedback_count"] = result["negative_feedback_count"]
+            meta["review_required"] = result["review_required"]
+        if any(meta.get("doc_id") == sid for meta in self._metadata):
+            self._save()
+        return result
 
     def delete_document(self, doc_id: int) -> None:
         if self._index is None:

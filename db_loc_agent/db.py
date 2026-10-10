@@ -124,6 +124,18 @@ class DocumentRecord(Base):
     space_id: Any = Column(Integer, nullable=True, comment="归属空间，NULL=空间级/全局文档")
     sub_system_id: Any = Column(Integer, nullable=True, comment="可选归属子系统")
     kb_type: Any = Column(String(20), default="doc", comment="分层知识库类型：rules规则库/cases案例库/doc归档实施文档/运维手册；分层定向检索用")
+    business_domain: Any = Column(String(50), default="db_migrate", index=True,
+                                  comment="业务域：db_migrate/sql_audit/code_migrate/db_inspect")
+    target_db: Any = Column(String(50), default="", comment="目标库类型，如 dm/kingbase/oceanbase")
+    stage: Any = Column(String(50), default="", comment="阶段，如 collect/assess/transform/sync/verify")
+    object_type: Any = Column(String(50), default="", comment="对象类型，如 table/function/procedure/datatype")
+    confidence: Any = Column(String(20), default="verified",
+                             comment="可信度：verified/pending_review/model_generated/human_authority")
+    source: Any = Column(String(20), default="upload", comment="来源：upload/human/model/artifact")
+    source_ref: Any = Column(String(200), default="", comment="来源溯源标识")
+    effective_time: Any = Column(DateTime, nullable=True, comment="知识时效时间")
+    negative_feedback_count: Any = Column(Integer, default=0, comment="负反馈次数")
+    review_required: Any = Column(Boolean, default=False, comment="是否待人工复核")
     created_at: Any = Column(DateTime, default=utcnow)
 
 
@@ -140,6 +152,9 @@ class ArtifactRecord(Base):
     sub_system_id: Any = Column(Integer, nullable=True)
     task_id: Any = Column(Integer, nullable=True, index=True)
     kb_doc_id: Any = Column(Integer, nullable=True, comment="已入库知识库文档 ID，NULL=未入库")
+    version: Any = Column(Integer, default=1, comment="同任务同对象产物版本号")
+    parent_version: Any = Column(Integer, nullable=True, comment="父版本号")
+    trace_id: Any = Column(String(64), default="", index=True, comment="全局链路追踪 ID")
     created_at: Any = Column(DateTime, default=utcnow)
 
 
@@ -162,6 +177,37 @@ class ChatTrace(Base):
     content: Any = Column(Text, default="")
     agent_id: Any = Column(String(64), default="")
     created_at: Any = Column(DateTime, default=utcnow)
+
+
+class MigrateStateEvent(Base):
+    """迁移状态机事件：记录每次状态/节点推进及用户确认行为"""
+    __tablename__ = "migrate_state_events"
+    id: Any = Column(Integer, primary_key=True)
+    task_id: Any = Column(Integer, ForeignKey("db_migrate_task.id"), index=True)
+    conv_id: Any = Column(Integer, nullable=True, index=True)
+    event_type: Any = Column(String(40), index=True,
+                             comment="TASK_STARTED/USER_INPUT/NODE_SUCCESS/NODE_FAILED/TASK_COMPLETED")
+    from_status: Any = Column(String(40), default="")
+    to_status: Any = Column(String(40), default="")
+    node_id: Any = Column(String(64), default="", index=True)
+    message: Any = Column(String(1000), default="")
+    trace_id: Any = Column(String(64), default="", index=True)
+    created_at: Any = Column(DateTime, default=utcnow)
+
+
+class TraceLog(Base):
+    """全局执行链路日志：LLM/DB/Agent/产物/状态等阶段统一追踪"""
+    __tablename__ = "trace_logs"
+    id: Any = Column(Integer, primary_key=True)
+    trace_id: Any = Column(String(64), index=True)
+    conv_id: Any = Column(Integer, nullable=True, index=True)
+    task_id: Any = Column(Integer, nullable=True, index=True)
+    phase: Any = Column(String(32), default="", index=True)
+    span: Any = Column(String(64), default="")
+    level: Any = Column(String(16), default="info")
+    message: Any = Column(Text, default="")
+    duration_ms: Any = Column(Integer, nullable=True)
+    created_at: Any = Column(DateTime, default=utcnow, index=True)
 
 
 class DataSource(Base):
@@ -423,6 +469,8 @@ class DbMigrateTask(Base):
     id: Any = Column(Integer, primary_key=True)
     space_id: Any = Column(Integer, ForeignKey("spaces.id"), nullable=True, comment="所属空间 ID")
     sub_system_id: Any = Column(Integer, nullable=True, comment="所属子系统 ID")
+    project_task_id: Any = Column(Integer, nullable=True, index=True,
+                                  comment="所属业务任务 ID（状态机归属，避免与会话 ID 混淆）")
     task_name: Any = Column(String(200), default="数据库迁移评估", comment="任务名称")
     status: Any = Column(String(40), default=MIGRATE_STATUS_INIT, index=True, comment="状态机状态")
     source_ds_id: Any = Column(String(100), default="", comment="已选数据源 ID（一旦赋值，不再询问用户）")
@@ -440,6 +488,10 @@ class DbMigrateTask(Base):
     lock_owner_user_id: Any = Column(String(100), default="", comment="锁持有者用户 ID（展示用）")
     lock_expire_time: Any = Column(DateTime, nullable=True, comment="锁超时时间（超时自动释放，防页面关闭死锁）")
     conv_id: Any = Column(Integer, nullable=True, index=True, comment="绑定会话 ID（对话驱动）")
+    task_type: Any = Column(String(40), default="database_migration", index=True,
+                            comment="任务类型（预留平台化扩展）")
+    trace_id: Any = Column(String(64), default="", index=True, comment="全局链路追踪 ID")
+    plugin_version: Any = Column(String(40), default="", comment="编排/插件版本")
     step_confirm: Any = Column(Boolean, default=True, comment="逐级确认：True=每个执行阶段完成后停驻等待用户确认，False=一次性编排跑完")
     strict_flow: Any = Column(Boolean, default=True, comment="流程强校验：True=严格按状态机顺序，False=允许按用户指派自由选择阶段")
     created_at: Any = Column(DateTime, default=utcnow)
@@ -552,7 +604,8 @@ class Database:
                   "task_state": "TEXT DEFAULT ''"}),
                 ("artifacts",
                  {"space_id": "INTEGER", "sub_system_id": "INTEGER", "task_id": "INTEGER",
-                  "kb_doc_id": "INTEGER"}),
+                  "kb_doc_id": "INTEGER", "version": "INTEGER DEFAULT 1",
+                  "parent_version": "INTEGER", "trace_id": "VARCHAR(64) DEFAULT ''"}),
                 ("spaces",
                  {"enabled_agents": "TEXT DEFAULT '[]'"}),
                 ("space_subsystems",
@@ -562,13 +615,27 @@ class Database:
                  {"space_id": "INTEGER", "sub_system_id": "INTEGER"}),
                 ("kb_documents",
                  {"space_id": "INTEGER", "sub_system_id": "INTEGER",
-                  "kb_type": "VARCHAR(20) DEFAULT 'doc'"}),
+                  "kb_type": "VARCHAR(20) DEFAULT 'doc'",
+                  "business_domain": "VARCHAR(50) DEFAULT 'db_migrate'",
+                  "target_db": "VARCHAR(50) DEFAULT ''",
+                  "stage": "VARCHAR(50) DEFAULT ''",
+                  "object_type": "VARCHAR(50) DEFAULT ''",
+                  "confidence": "VARCHAR(20) DEFAULT 'verified'",
+                  "source": "VARCHAR(20) DEFAULT 'upload'",
+                  "source_ref": "VARCHAR(200) DEFAULT ''",
+                  "effective_time": "DATETIME",
+                  "negative_feedback_count": "INTEGER DEFAULT 0",
+                  "review_required": "BOOLEAN DEFAULT 0"}),
                 ("db_migrate_task",
                  {"exec_lock_session_id": "VARCHAR(100) DEFAULT ''",
+                  "project_task_id": "INTEGER",
                   "lock_owner_user_id": "VARCHAR(100) DEFAULT ''",
                   "lock_expire_time": "DATETIME",
                   "step_confirm": "BOOLEAN DEFAULT 1",
-                  "strict_flow": "BOOLEAN DEFAULT 1"}),
+                  "strict_flow": "BOOLEAN DEFAULT 1",
+                  "task_type": "VARCHAR(40) DEFAULT 'database_migration'",
+                  "trace_id": "VARCHAR(64) DEFAULT ''",
+                  "plugin_version": "VARCHAR(40) DEFAULT ''"}),
                 ("prompts",
                  {"type": "VARCHAR(20) DEFAULT 'task_instruction'"}),
             ):

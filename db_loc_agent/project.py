@@ -20,7 +20,7 @@ class ProjectError(Exception):
         self.message = message
 
 
-DEFAULT_SPACE_NAME = "临时会话"
+DEFAULT_SPACE_NAME = "默认空间"
 
 
 class ProjectService:
@@ -54,13 +54,17 @@ class ProjectService:
             for (sid,) in s.execute(select(ProjectTask.sub_system_id)
                                     .where(ProjectTask.sub_system_id.isnot(None))):
                 task_counts[sid] = task_counts.get(sid, 0) + 1
+            space_task_counts: Dict[int, int] = {}
+            for space_id, count in s.execute(select(ProjectTask.space_id, func.count(ProjectTask.id))
+                                             .group_by(ProjectTask.space_id)):
+                space_task_counts[int(space_id)] = int(count)
         by_space: Dict[int, List[SpaceSubsystem]] = {}
         for x in subs:
             by_space.setdefault(x.space_id, []).append(x)
         result = []
         for sp in spaces:
             d = self._space_dict(sp, by_space.get(sp.id, []))
-            d["task_count"] = sum(task_counts.get(ss["id"], 0) for ss in d["subsystems"])
+            d["task_count"] = space_task_counts.get(sp.id, 0)
             for ss in d["subsystems"]:
                 ss["task_count"] = task_counts.get(ss["id"], 0)
             result.append(d)
@@ -80,7 +84,7 @@ class ProjectService:
         with self.db.session() as s:
             sp = s.scalar(select(Space).where(Space.name == DEFAULT_SPACE_NAME))
             if sp is None:
-                sp = Space(name=DEFAULT_SPACE_NAME, description="系统临时会话目录（新建会话默认落在此）")
+                sp = Space(name=DEFAULT_SPACE_NAME, description="系统默认目录（新建会话默认落在此）")
                 s.add(sp)
                 s.commit()
                 space_id = sp.id
@@ -228,8 +232,6 @@ class ProjectService:
             q = select(ProjectTask)
             if space_id:
                 q = q.where(ProjectTask.space_id == space_id)
-            if sub_system_id:
-                q = q.where(ProjectTask.sub_system_id == sub_system_id)
             if status:
                 q = q.where(ProjectTask.status == status)
             tasks = list(s.scalars(q.order_by(ProjectTask.id.desc())))
@@ -277,15 +279,10 @@ class ProjectService:
         name = (name or "").strip()
         if not name:
             raise ProjectError(400, "任务名称不能为空")
-        if not sub_system_id:
-            raise ProjectError(400, "请选择所属子系统")
         with self.db.session() as s:
             if not s.get(Space, space_id):
                 raise ProjectError(404, "空间不存在")
-            ss = s.get(SpaceSubsystem, sub_system_id)
-            if not ss or ss.space_id != space_id:
-                raise ProjectError(400, "子系统不属于所选空间")
-            t = ProjectTask(space_id=space_id, sub_system_id=sub_system_id, name=name,
+            t = ProjectTask(space_id=space_id, sub_system_id=None, name=name,
                             description=description or "",
                             kb_ids=json.dumps(kb_ids or [], ensure_ascii=False),
                             agent_id=agent_id or "", creator=creator or "")
@@ -319,15 +316,32 @@ class ProjectService:
 
     def delete_task(self, task_id: int) -> None:
         """删除任务：级联删除其下全部会话（含消息/trace/本地产物），知识库已入库副本保留"""
-        from db_loc_agent.db import ChatTrace, Message
+        from db_loc_agent.db import (
+            ChatTrace, DbMigrateAsset, DbMigrateTask, Message,
+            MigrateStateEvent, Task,
+        )
         with self.db.session() as s:
             t = s.get(ProjectTask, task_id)
             if not t:
                 raise ProjectError(404, "任务不存在")
+            migrate_task_ids = {
+                row.id for row in s.scalars(select(DbMigrateTask).where(
+                    DbMigrateTask.project_task_id == task_id))
+            }
             # 级联删除该任务下的会话（含其消息/trace/产物记录与本地文件）
             for c in s.scalars(select(Conversation).where(Conversation.task_id == task_id)):
+                migrate_task_ids.update(s.scalars(select(DbMigrateTask.id).where(
+                    DbMigrateTask.conv_id == c.id)))
+                try:
+                    state = json.loads((c.task_state or "").strip() or "{}")
+                    migrate_id = state.get("migrate_task_id") if isinstance(state, dict) else None
+                    if isinstance(migrate_id, int):
+                        migrate_task_ids.add(migrate_id)
+                except (TypeError, ValueError, json.JSONDecodeError):
+                    pass
                 s.query(Message).filter(Message.conv_id == c.id).delete(synchronize_session=False)
                 s.query(ChatTrace).filter(ChatTrace.conv_id == c.id).delete(synchronize_session=False)
+                s.query(Task).filter(Task.conv_id == c.id).delete(synchronize_session=False)
                 for a in s.scalars(select(ArtifactRecord).where(ArtifactRecord.conv_id == c.id)):
                     if a.path:
                         try:
@@ -337,6 +351,16 @@ class ProjectService:
                             pass
                     s.delete(a)
                 s.delete(c)
+            for migrate_task_id in migrate_task_ids:
+                s.query(DbMigrateAsset).filter(
+                    DbMigrateAsset.task_id == migrate_task_id
+                ).delete(synchronize_session=False)
+                s.query(MigrateStateEvent).filter(
+                    MigrateStateEvent.task_id == migrate_task_id
+                ).delete(synchronize_session=False)
+                s.query(DbMigrateTask).filter(
+                    DbMigrateTask.id == migrate_task_id
+                ).delete(synchronize_session=False)
             # 任务其它未删会话残留产物：task_id 解绑保留
             for a in s.scalars(select(ArtifactRecord).where(ArtifactRecord.task_id == task_id)):
                 a.task_id = None
@@ -362,21 +386,16 @@ class ProjectService:
                 name = str(payload.get("name") or conv.title or "新任务").strip()
                 if not name:
                     raise ProjectError(400, "任务名称不能为空")
-                sub_id = payload.get("sub_system_id") or conv.sub_system_id
-                if sub_id:
-                    ss = s.get(SpaceSubsystem, int(sub_id))
-                    if not ss or ss.space_id != conv.space_id:
-                        raise ProjectError(400, "子系统不属于会话所在空间")
-                task = ProjectTask(space_id=conv.space_id, sub_system_id=sub_id or None,
+                task = ProjectTask(space_id=conv.space_id, sub_system_id=None,
                                    name=name, description=str(payload.get("description", "")),
                                    agent_id=str(payload.get("agent_id") or conv.agent_id or ""))
                 s.add(task)
                 s.flush()
             conv.task_id = task.id
-            conv.sub_system_id = task.sub_system_id or conv.sub_system_id
+            conv.sub_system_id = None
             for art in s.scalars(select(ArtifactRecord).where(ArtifactRecord.conv_id == conv_id)):
                 art.task_id = task.id
                 art.space_id = task.space_id
-                art.sub_system_id = task.sub_system_id
+                art.sub_system_id = None
             s.commit()
             return {"task_id": task.id, "task_name": task.name}

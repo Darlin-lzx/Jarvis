@@ -5,7 +5,8 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { cn } from '@/lib/utils'
 import { api } from '@/lib/api'
-import type { Conversation, Space, UserProfile } from '@/lib/types'
+import type { BizTask, Conversation, Space, UserProfile } from '@/lib/types'
+import { DeleteTaskDialog } from '@/components/project/delete-task-dialog'
 
 /* ---- 分组式菜单定义 ---- */
 interface MenuGroup {
@@ -69,12 +70,10 @@ export interface WorkspaceGroup {
   children: WorkspaceChild[]
 }
 
-/** 任务页筛选（左侧空间/子系统点击联动，传入 App 后渲染 TaskListPage） */
+/** 任务页筛选（左侧空间点击联动，传入 App 后渲染 TaskListPage） */
 export interface TaskFilter {
   spaceId: number
   spaceName: string
-  subId?: number
-  subName?: string
 }
 
 interface AgentInfo {
@@ -95,9 +94,12 @@ interface SidebarProps {
   activeTab: string
   onTabChange: (tab: string) => void
   onSelectSpace?: (g: WorkspaceGroup) => void
+  onCreateTask?: (group: WorkspaceGroup) => void
+  onSelectTask?: (spaceId: number, taskId: number) => void
+  onTaskDeleted?: (taskId: number) => void
   onQuickQA?: () => void
-  onSelectSubSystem?: (g: WorkspaceGroup, child: WorkspaceChild) => void
   activeFilter?: TaskFilter | null
+  activeTaskId?: number | null
   activeAgent?: string
   agents?: AgentInfo[]
   /** 变化时触发侧边栏空间/任务数重新加载 */
@@ -132,33 +134,31 @@ function saveToStorage<T>(key: string, value: T) {
   try { localStorage.setItem(key, JSON.stringify(value)) } catch {}
 }
 
-/* 后端 Space（含 subsystems）→ 侧边栏空间组结构 */
-function toWorkspaceGroup(s: Space): WorkspaceGroup {
+/* 后端 Space + 全量任务 → 侧边栏空间/任务组结构 */
+function toWorkspaceGroup(s: Space, tasks: BizTask[]): WorkspaceGroup {
   return {
     id: String(s.id),
     name: s.name,
     taskCount: s.task_count,
-    children: (s.subsystems || []).map(sub => ({
-      id: String(sub.id),
-      name: sub.name,
-      taskCount: sub.task_count,
+    children: tasks.filter(t => t.space_id === s.id).map(task => ({
+      id: String(task.id),
+      name: task.name,
     })),
   }
 }
 
-export function Sidebar({ searchKw: _searchKw, onSearch: _onSearch, onNew, onSelect, onDelete, activeTab, onTabChange, onSelectSpace, onQuickQA, onSelectSubSystem, activeFilter, activeAgent: _activeAgent, agents: _agents, refreshKey, conversations, onRenameConv }: SidebarProps) {
+export function Sidebar({ searchKw: _searchKw, onSearch: _onSearch, onNew, onSelect, onDelete, activeTab, onTabChange, onSelectSpace, onCreateTask, onSelectTask, onTaskDeleted, onQuickQA, activeFilter, activeTaskId, activeAgent: _activeAgent, agents: _agents, refreshKey, conversations, onRenameConv }: SidebarProps) {
   const [groups, setGroups] = useState<WorkspaceGroup[]>([])
   const [tempSpace, setTempSpace] = useState<Space | null>(null)
   const [spacesLoading, setSpacesLoading] = useState(true)
   const [expandedSections, setExpandedSections] = useState<Record<string, boolean>>(() => loadFromStorage(EXPANDED_KEY, defaultExpanded))
   const [menuOpen, setMenuOpen] = useState<{ key: string; x: number; y: number } | null>(null)
   const [editingGroup, setEditingGroup] = useState<string | null>(null)
-  const [editingChild, setEditingChild] = useState<string | null>(null)
   const [editName, setEditName] = useState('')
-  const [addingChildTo, setAddingChildTo] = useState<string | null>(null)
-  const [addingChildName, setAddingChildName] = useState('')
   const [tempEditId, setTempEditId] = useState<number | null>(null)
   const [tempEditName, setTempEditName] = useState('')
+  const [deleteTarget, setDeleteTarget] = useState<{ id: number; name: string } | null>(null)
+  const [deletingTaskId, setDeletingTaskId] = useState<number | null>(null)
   const menuRef = useRef<HTMLDivElement>(null)
   const startTempRename = (c: Conversation) => {
     setTempEditId(c.id)
@@ -199,17 +199,20 @@ export function Sidebar({ searchKw: _searchKw, onSearch: _onSearch, onNew, onSel
     return () => window.removeEventListener('resize', onResize)
   }, [])
 
-  // 从后端加载空间列表（数据源与会话页空间下拉一致）
+  // 空间和任务分接口加载，前端按 space_id 组装三层目录
   const reloadSpaces = () => {
     setSpacesLoading(true)
-    api.listSpaces().then(r => {
-      if (r.success) {
-        const all = r.data || []
+    Promise.all([api.listSpaces(), api.listTasks()])
+      .then(([spaceRes, taskRes]) => {
+        if (!spaceRes.success) return
+        const all = spaceRes.data || []
+        const tasks = taskRes.success ? (taskRes.data || []) : []
         const temp = all.find(s => s.name === '临时会话') || null
         setTempSpace(temp)
-        setGroups(all.filter(s => s !== temp).map(toWorkspaceGroup))
-      }
-    }).catch(() => {}).finally(() => setSpacesLoading(false))
+        setGroups(all.filter(s => s !== temp).map(space => toWorkspaceGroup(space, tasks)))
+      })
+      .catch(() => {})
+      .finally(() => setSpacesLoading(false))
   }
 
   useEffect(() => { reloadSpaces() }, [refreshKey])
@@ -292,66 +295,34 @@ export function Sidebar({ searchKw: _searchKw, onSearch: _onSearch, onNew, onSel
     setMenuOpen(null)
   }
 
-  const startAddChild = (groupId: string) => {
-    setAddingChildTo(groupId)
-    setAddingChildName('')
-    setExpandedSections(prev => ({ ...prev, [groupId]: true }))
-    setMenuOpen(null)
+  const deleteTaskFromSidebar = (taskId: number, name: string) => {
+    setDeleteTarget({ id: taskId, name })
   }
 
-  const confirmAddChild = async () => {
-    if (addingChildTo && addingChildName.trim()) {
-      const spaceId = Number(addingChildTo)
-      const name = addingChildName.trim()
-      const r = await api.createSubsystem(spaceId, { name })
-      if (r.success && r.data) {
-        const newChildId = String(r.data.id)
-        setGroups(prev => prev.map(g =>
-          g.id === addingChildTo ? { ...g, children: [...g.children, { id: newChildId, name }] } : g
-        ))
+  const confirmDeleteTaskFromSidebar = async (taskId: number) => {
+    setDeletingTaskId(taskId)
+    try {
+      const r = await api.deleteTask(taskId)
+      if (!r.success) {
+        window.alert('删除失败，请稍后重试')
+        return
       }
+      setGroups(prev => prev.map(group => ({
+        ...group,
+        children: group.children.filter(child => Number(child.id) !== taskId),
+      })))
+      onTaskDeleted?.(taskId)
+    } catch {
+      window.alert('删除失败，请稍后重试')
+    } finally {
+      setDeletingTaskId(null)
+      setDeleteTarget(null)
     }
-    setAddingChildTo(null)
-    setAddingChildName('')
-  }
-
-  const startRenameChild = (groupId: string, childId: string) => {
-    const g = groups.find(x => x.id === groupId)
-    const c = g?.children.find(x => x.id === childId)
-    if (c) {
-      setEditingChild(childId)
-      setEditName(c.name)
-    }
-    setMenuOpen(null)
-  }
-
-  const confirmRenameChild = async (groupId: string) => {
-    if (editingChild && editName.trim()) {
-      const g = groups.find(x => x.id === groupId)
-      if (g && editingChild) {
-        const r = await api.updateSubsystem(Number(groupId), Number(editingChild), { name: editName.trim() })
-        if (r.success) {
-          setGroups(prev => prev.map(x =>
-            x.id === groupId ? { ...x, children: x.children.map(c => c.id === editingChild ? { ...c, name: editName.trim() } : c) } : x
-          ))
-        }
-      }
-    }
-    setEditingChild(null)
-  }
-
-  const deleteChild = async (groupId: string, childId: string) => {
-    const r = await api.deleteSubsystem(Number(groupId), Number(childId))
-    if (!r.success) return
-    setGroups(prev => prev.map(g =>
-      g.id === groupId ? { ...g, children: g.children.filter(c => c.id !== childId) } : g
-    ))
-    setMenuOpen(null)
   }
 
   const handleEditKeyDown = (e: React.KeyboardEvent, action: () => void) => {
     if (e.key === 'Enter') { e.preventDefault(); action() }
-    if (e.key === 'Escape') { setEditingGroup(null); setEditingChild(null); setAddingChildTo(null) }
+    if (e.key === 'Escape') setEditingGroup(null)
   }
 
   /* ========== 折叠态：图标窄条（48px），保留高频入口 ========== */
@@ -607,6 +578,18 @@ export function Sidebar({ searchKw: _searchKw, onSearch: _onSearch, onNew, onSel
                         <span className="truncate">{group.name}</span>
                       )}
                     </button>
+                    <button
+                      className="p-1 rounded text-[#5a5a70] opacity-0 group-hover:opacity-100 hover:text-indigo-400 hover:bg-white/[0.05] transition-all shrink-0"
+                      title="新增任务"
+                      onClick={e => {
+                        e.stopPropagation()
+                        setMenuOpen(null)
+                        setExpandedSections(prev => ({ ...prev, [group.id]: true }))
+                        onCreateTask?.(group)
+                      }}
+                    >
+                      <Plus className="w-3 h-3" />
+                    </button>
                     <div className="relative">
                       <button
                         className="opacity-70 group-hover:opacity-100 text-[#b9b9c8] hover:text-[#8b8b9e] p-1 rounded hover:bg-white/[0.03] transition-all shrink-0"
@@ -623,13 +606,6 @@ export function Sidebar({ searchKw: _searchKw, onSearch: _onSearch, onNew, onSel
                           >
                             <Pencil className="w-3 h-3" />
                             重命名
-                          </button>
-                          <button
-                            className="w-full flex items-center gap-2 px-3 py-1.5 text-[12px] text-[#cdd3e0] hover:bg-white/[0.05] transition-colors"
-                            onClick={() => startAddChild(group.id)}
-                          >
-                            <FolderOpen className="w-3 h-3" />
-                            新增项目
                           </button>
                           <div className="border-t border-[#2a2a35] my-1" />
                           <button
@@ -650,91 +626,33 @@ export function Sidebar({ searchKw: _searchKw, onSearch: _onSearch, onNew, onSel
                       {group.children.map(child => (
                         <div key={child.id} className="group/child flex items-center relative">
                           <div className="absolute left-[-12px] top-1/2 w-3 h-px bg-[#2a2a35]/60" />
-                          {editingChild === child.id ? (
-                            <Input
-                              className="flex-1 h-5 text-[11px] bg-[#1a1a24] border-indigo-500/40 px-1.5 rounded min-w-0"
-                              value={editName}
-                              onChange={e => setEditName(e.target.value)}
-                              onBlur={() => confirmRenameChild(group.id)}
-                              onKeyDown={e => handleEditKeyDown(e, () => confirmRenameChild(group.id))}
-                            />
-                          ) : (
-                            <button
-                              className={cn(
-                                'flex-1 flex items-center gap-1.5 px-2 py-1 rounded text-[11px] transition-colors truncate min-w-0',
-                                onSelectSubSystem
-                                  ? (activeFilter?.spaceId === Number(group.id) && activeFilter?.subId === Number(child.id)
-                                      ? 'bg-indigo-500/15 text-indigo-300'
-                                      : 'text-[#b9b9c8] hover:text-[#e4e4e9] hover:bg-white/[0.03]')
-                                  : 'text-[#b9b9c8] hover:text-[#b9b9c8] hover:bg-white/[0.03]'
-                              )}
-                              onClick={() => onSelectSubSystem?.(group, child)}
-                            >
-                              <span className="truncate">{child.name}</span>
-                              {typeof child.taskCount === 'number' && (
-                                <span className="ml-auto shrink-0 text-[9px] text-[#8b8b9e] bg-white/[0.04] rounded-full px-1.5 py-px">
-                                  {child.taskCount}
-                                </span>
-                              )}
-                            </button>
-                          )}
-                          <div className="relative">
-                            <button
-                              className="opacity-70 group-hover/child:opacity-100 text-[#b9b9c8] hover:text-[#8b8b9e] p-0.5 rounded hover:bg-white/[0.03] transition-all shrink-0"
-                              onClick={e => { e.stopPropagation(); openMenu(`c-${child.id}`, e) }}
-                            >
-                              <MoreHorizontal className="w-2.5 h-2.5" />
-                            </button>
-                            {menuOpen?.key === `c-${child.id}` && createPortal(
-                              <div ref={menuRef} className="fixed z-[100] bg-[#1e1e28] border border-[#2a2a35] rounded-lg shadow-xl py-1 min-w-[100px]"
-                                style={{ left: menuOpen.x, top: menuOpen.y }}>
-                                <button
-                                  className="w-full flex items-center gap-2 px-3 py-1.5 text-[11px] text-[#cdd3e0] hover:bg-white/[0.05] transition-colors"
-                                  onClick={() => startRenameChild(group.id, child.id)}
-                                >
-                                  <Pencil className="w-2.5 h-2.5" />
-                                  重命名
-                                </button>
-                                <button
-                                  className="w-full flex items-center gap-2 px-3 py-1.5 text-[11px] text-red-400 hover:bg-red-500/10 transition-colors"
-                                  onClick={() => deleteChild(group.id, child.id)}
-                                >
-                                  <Trash2 className="w-2.5 h-2.5" />
-                                  删除
-                                </button>
-                              </div>,
-                              document.body
+                          <button
+                            className={cn(
+                              'flex-1 flex items-center gap-1.5 px-2 py-1 rounded text-[11px] transition-colors truncate min-w-0',
+                              activeTaskId === Number(child.id)
+                                ? 'bg-indigo-500/15 text-indigo-300'
+                                : 'text-[#b9b9c8] hover:text-[#e4e4e9] hover:bg-white/[0.03]'
                             )}
-                          </div>
+                            onClick={() => onSelectTask?.(Number(group.id), Number(child.id))}
+                          >
+                            <span className="truncate">{child.name}</span>
+                          </button>
+                          <button
+                            className="p-1 rounded text-[#5a5a70] opacity-0 group-hover/child:opacity-100 hover:text-red-400 hover:bg-white/[0.05] transition-all disabled:opacity-40 disabled:cursor-not-allowed"
+                            title="删除任务"
+                            disabled={deletingTaskId === Number(child.id)}
+                            onClick={e => {
+                              e.stopPropagation()
+                              deleteTaskFromSidebar(Number(child.id), child.name)
+                            }}
+                          >
+                            <Trash2 className="w-3 h-3" />
+                          </button>
                         </div>
                       ))}
                     </div>
                   )}
 
-                  {addingChildTo === group.id && (
-                    <div className="flex items-center gap-1 px-2">
-                      <Input
-                        className="flex-1 h-5 text-[11px] bg-[#1a1a24] border-indigo-500/40 px-1.5 rounded"
-                        placeholder="项目名称"
-                        value={addingChildName}
-                        onChange={e => setAddingChildName(e.target.value)}
-                        onKeyDown={e => handleEditKeyDown(e, confirmAddChild)}
-                        autoFocus
-                      />
-                      <button
-                        className="text-[10px] text-indigo-400 hover:text-indigo-300 px-1"
-                        onClick={confirmAddChild}
-                      >
-                        确定
-                      </button>
-                      <button
-                        className="text-[10px] text-[#8b8b9e] hover:text-[#8b8b9e] px-1"
-                        onClick={() => { setAddingChildTo(null); setAddingChildName('') }}
-                      >
-                        取消
-                      </button>
-                    </div>
-                  )}
                 </div>
               ))}
             </div>
@@ -801,6 +719,16 @@ export function Sidebar({ searchKw: _searchKw, onSearch: _onSearch, onNew, onSel
           </div>
         </div>
       </div>
+
+      <DeleteTaskDialog
+        open={!!deleteTarget}
+        taskName={deleteTarget?.name || ''}
+        deleting={deleteTarget ? deletingTaskId === deleteTarget.id : false}
+        onCancel={() => setDeleteTarget(null)}
+        onConfirm={() => {
+          if (deleteTarget) confirmDeleteTaskFromSidebar(deleteTarget.id)
+        }}
+      />
     </aside>
   )
 }

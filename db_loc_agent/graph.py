@@ -3,6 +3,9 @@ from __future__ import annotations
 
 import json
 import re
+import time
+import threading
+from io import BytesIO
 from typing import Any, Callable, Dict, List, Optional
 
 from langgraph.graph import END, StateGraph
@@ -14,8 +17,8 @@ from db_loc_agent.artifacts import (ArtifactService, NamespaceError,
 from db_loc_agent.config import AppConfig
 from db_loc_agent.db_tools import DbTools
 from db_loc_agent.prompts import PromptService
-from db_loc_agent.state_machine import (STATE_GUIDANCE, STAGE_KB_TYPES,
-                                        status_label)
+from db_loc_agent.state_machine import (DEFAULT_FLOW, STATE_GUIDANCE,
+                                        STAGE_KB_TYPES, status_label)
 
 # 兜底识别「宣布要调用子 Agent 却没真正发起工具调用」的回复文本
 # （如「我将调用【评估专家】获取最新的评估进度。」）；排除已完成的「已调用【…】」
@@ -39,6 +42,10 @@ _CHINESE_ARTIFACT_NAMES = {
 }
 
 
+class ChatRunCancelled(RuntimeError):
+    """用户显式中止当前会话执行。"""
+
+
 def _core_report_filename(configured_name: str) -> str:
     """核心交付物使用中文名；未知业务文件名保持配置不变。"""
     return _CHINESE_ARTIFACT_NAMES.get(configured_name, configured_name)
@@ -52,24 +59,73 @@ def _is_core_delivery(agent_id: str, text: str) -> bool:
     has_md = any(line.lstrip().startswith("#") for line in stripped.splitlines())
     sql_blocks = re.findall(
         r"```sql\s*\n(.*?)\n```", stripped, re.DOTALL | re.IGNORECASE)
+    if agent_id == "migration_planner" and _is_substantive_migration_plan(stripped):
+        return True
+    if agent_id == "code_migrator" and _is_substantive_code_analysis(stripped):
+        return True
+    if _INTERACTIVE_NON_DELIVERY_RE.search(stripped):
+        return False
     if agent_id == "migration_collector" and has_md:
         has_table = any(line.lstrip().startswith("|") for line in stripped.splitlines())
         has_list = any(re.match(r"^\s*(?:[-*+]\s+|\d+[.)]\s+)", line)
                        for line in stripped.splitlines())
         if has_table or has_list:
             return True
+    # 分析型专家（小评评估/小方方案/小测验证）：结构化分段【…】回复即核心交付物，
+    # 无 Markdown 标题也可落盘为报告（与采集/改造专家的产出判定对齐）。
+    if agent_id in ("migration_assessor", "migration_planner") \
+            and len(stripped) > 120:
+        if re.search(r"【[^】]{2,16}】", stripped) \
+                and not _NON_DELIVERY_RE.search(stripped):
+            return True
     return ((has_md or bool(sql_blocks))
             and not _NON_DELIVERY_RE.search(stripped))
 
 
-_NON_DELIVERY_RE = re.compile(
+_INTERACTIVE_NON_DELIVERY_RE = re.compile(
     r"我需要以下|需要明确|请提供上述|请提供.{0,12}参数|请给出.{0,12}选项|"
     r"关键信息确认|缺失信息清单|请选择以下信息|提供以上信息后|"
     r"需要以下关键.{0,8}信息|请确认以下关键.{0,8}信息|"
+    r"待补充|待确认|请通过.{0,12}表单|暂无法|"
+    r"能力说明|职责边界|超出.{0,16}职责|本次不予执行|建议切换到|"
+    r"我能做什么|我能帮你|可以帮你完成|需要你提供.{0,12}材料|"
+    r"前置条件|待你进入.{0,12}阶段|采集服务说明|"
+    r"必须补充.{0,12}输入|缺失项|请补充以下.{0,8}字段|无法据此"
+)
+_NON_DELIVERY_RE = re.compile(
+    _INTERACTIVE_NON_DELIVERY_RE.pattern + "|" +
     r"无法.{0,6}评估|无法.{0,6}完成|暂时无法|若.{0,10}条件.{0,6}无法|"
     r"请通过.{0,10}提供|缺少.{0,8}参数|请补充.{0,8}信息|"
     r"暂.{0,4}无法确定|无法准确.{0,6}评估"
 )
+_MIGRATION_PLAN_TERMS = (
+    "实施路径", "迁移策略", "分阶段实施", "割接方案", "割接窗口",
+    "回滚预案", "风险控制", "迁移步骤", "目标架构",
+)
+
+
+def _is_substantive_migration_plan(text: str) -> bool:
+    """识别完整迁移方案，避免风险描述中的“待确认”误伤交付判定。"""
+    stripped = (text or "").strip()
+    if len(stripped) < 100:
+        return False
+    return sum(term in stripped for term in _MIGRATION_PLAN_TERMS) >= 2
+
+
+_CODE_ANALYSIS_TERMS = (
+    "JDBC", "ORM", "MyBatis", "Hibernate", "存储过程", "事务", "分页",
+    "数据转换", "连接串",
+)
+
+
+def _is_substantive_code_analysis(text: str) -> bool:
+    """识别小改的结构化分析，允许末尾存在追加材料的交互提示。"""
+    stripped = (text or "").strip()
+    if len(stripped) < 120 or "【分析结果】" not in stripped:
+        return False
+    if not any(marker in stripped for marker in ("【风险】", "【下一步建议】")):
+        return False
+    return sum(term in stripped for term in _CODE_ANALYSIS_TERMS) >= 2
 
 
 def _role_boundary_block(agent_id: str) -> str:
@@ -84,12 +140,46 @@ def _role_boundary_block(agent_id: str) -> str:
             "再建议切换到迁移评估专家（小评，migration_assessor）。\n"
             "3. 不要把历史会话中的迁移评估任务当作当前任务；历史主题与当前职责冲突时，以当前指派为准。\n"
             "4. 只有最新需求包含代码改造信息，或明确让小改继续时，才执行代码改造。"
-        )
+        ) + _code_migrator_input_discipline()
     return ""
+
+
+def _code_migrator_input_discipline() -> str:
+    return (
+        "\n\n## 输入纪律（最高优先级）\n"
+        "1. 任务只有源库、目标库、对象数量等参数且缺少待改造代码（JDBC/ORM/SQL/存储过程）时，"
+        "使用一套清晰标注为“示例数据”的 Oracle 分页 SQL 与目标库等价 SQL 生成演示产物，"
+        "并在风险中说明真实改造需替换为业务代码；不得输出能力介绍或材料清单替代交付物。\n"
+        "2. 已提供结构化资产时，必须逐项引用资产名和原始SQL，再给改造建议。\n"
+        "3. 不得复述【输出文件】要求；文件由产物系统自动生成。"
+    )
 
 PARSE_KEYS = {"intent", "agent_id", "object_name", "source_db",
               "target_db", "skill_id", "params", "confidence"}
 CORE_KEYS = {"intent", "agent_id", "confidence"}
+
+MIGRATION_AGENT_IDS = (
+    "migration_commander", "migration_collector", "migration_assessor",
+    "migration_planner", "code_migrator", "migration_verifier",
+)
+STAGE_AGENT_IDS = MIGRATION_AGENT_IDS[1:]
+STAGE_AGENT_BY_STATUS = {
+    "DATA_COLLECTION": "migration_collector",
+    "ASSESSMENT_RUNNING": "migration_assessor",
+    "SOLUTION_GENERATE": "migration_planner",
+    "CODE_MIGRATE": "code_migrator",
+    "VERIFY_STAGE": "migration_verifier",
+}
+_M_EXEC_STATES = ("DATA_COLLECTION", "ASSESSMENT_RUNNING", "SOLUTION_GENERATE",
+                  "CODE_MIGRATE", "VERIFY_STAGE", "FINISHED")
+_LEGACY_STEP_MAP = {
+    "step1": "DATA_COLLECTION", "step2": "DATA_COLLECTION",
+    "step3": "DATA_COLLECTION", "complete": "DATA_COLLECTION",
+    "step2_conflict": "DATA_COLLECTION",
+    "INIT": "DATA_COLLECTION", "DATA_SOURCE_SELECTED": "DATA_COLLECTION",
+    "BASIC_INFO_COLLECTED": "DATA_COLLECTION", "OBJECT_SCANNING": "DATA_COLLECTION",
+    "SQL_TRANSFORM": "CODE_MIGRATE",
+}
 
 # 全局交互式表单规则：追加到所有 Agent 的 system 提示词（不受 DB 提示词覆盖影响）。
 # 模型据此在回复中嵌入 <UI_RENDER>{...}</UI_RENDER>，后端提取后交由前端渲染为可交互表单。
@@ -122,6 +212,530 @@ _UI_RENDER_BLOCK_RE = re.compile(r"<UI_RENDER\s*>([\s\S]*?)</UI_RENDER\s*>", re.
 def _strip_control_blocks(text: str) -> str:
     """从文本中剔除 <UI_RENDER>/<TASK_STATE> 指令块（防御：历史回灌时防止模型照抄该结构）。"""
     return _CONTROL_BLOCK_RE.sub("", text or "")
+
+
+_BARE_UI_RENDER_RE = re.compile(
+    r"(?im)^[ \t]*(?:\*\*)?UI_RENDER(?:\*\*)?[ \t]*:[^\n]*$")
+_MARKDOWN_HEADING_RE = re.compile(
+    r"(?m)^\s*(?P<prefix>#{1,6}\s+|\*\*|【)(?P<title>[^#\n]+?)(?:】|\*\*)?[ \t]*$")
+_ALLOWED_SIMULATION_SQL_PREFIXES = {
+    "SELECT", "INSERT", "UPDATE", "DELETE", "CREATE", "ALTER", "DROP",
+    "WITH", "MERGE", "TRUNCATE", "REPLACE", "EXPLAIN", "CALL",
+}
+
+
+_MOCK_COLLECTOR_OBJECTS = [
+    ("V_ORDER_SUMMARY", "视图", 6, "order_id、user_name、order_amount、status、create_date、area_name"),
+    ("P_CALC_USER_BALANCE", "存储过程", 5, "user_id、begin_date、end_date、balance、return_code"),
+    ("F_GET_ORDER_LEVEL", "函数", 3, "order_amount、member_level、return_value"),
+    ("TRG_ORDER_ID", "触发器", 4, "trigger_name、table_name、event_type、sequence_name"),
+    ("IDX_USER_MOBILE", "索引", 3, "table_name、column_name、index_type"),
+    ("SEQ_ORDER_ID", "序列", 3, "sequence_name、start_value、increment_by"),
+    ("T_USER_PROFILE", "表", 8, "user_id、user_name、mobile、email、city_id、level_score、created_at、updated_at"),
+    ("T_AREA_INFO", "表", 5, "area_id、parent_id、area_name、area_level、sort_no"),
+]
+
+
+_MOCK_CODE_MIGRATION_ITEMS = [
+    (
+        "分页查询",
+        "SELECT order_id, customer_id, order_amount FROM user_order "
+        "WHERE status = 'PAID' ORDER BY created_at DESC AND ROWNUM <= 100;",
+        "SELECT order_id, customer_id, order_amount FROM user_order "
+        "WHERE status = 'PAID' ORDER BY created_at DESC LIMIT 100;",
+        "#### 风险提示\n\n- ORDER BY 与 ROWNUM 的原语义需逐条复核，避免迁移后排序边界变化。",
+    ),
+    (
+        "自增主键",
+        "CREATE SEQUENCE seq_user_order START WITH 1 INCREMENT BY 1;",
+        "CREATE TABLE user_order_auto_id (id BIGINT AUTO_INCREMENT PRIMARY KEY, "
+        "order_no VARCHAR(64) NOT NULL);",
+        "#### 风险提示\n\n- 序列改为自增主键前，必须确认业务是否依赖跨表取号。",
+    ),
+    (
+        "日期函数",
+        "SELECT order_id FROM user_order WHERE created_at > SYSDATE - 7;",
+        "SELECT order_id FROM user_order WHERE created_at > DATE_SUB(NOW(), INTERVAL 7 DAY);",
+        "#### 风险提示\n\n- 时区与默认时间精度会影响查询结果。",
+    ),
+    (
+        "条件转换",
+        "SELECT DECODE(order_status, 'A', '已受理', 'B', '处理中', '未知') FROM user_order;",
+        "SELECT CASE order_status WHEN 'A' THEN '已受理' WHEN 'B' THEN '处理中' "
+        "ELSE '未知' END FROM user_order;",
+        "#### 风险提示\n\n- DECODE 的空值匹配语义与 CASE 不同，需补充空值用例。",
+    ),
+    (
+        "大对象读取",
+        "SELECT contract_content FROM user_contract "
+        "WHERE DBMS_LOB.GETLENGTH(contract_content) > 1024;",
+        "SELECT contract_content FROM user_contract "
+        "WHERE CHAR_LENGTH(contract_content) > 1024;",
+        "#### 风险提示\n\n- CLOB 与 TEXT 的字符集、截断策略需保持一致。",
+    ),
+    (
+        "存储过程调用",
+        "CALL p_update_user_balance(1001, 250.00);",
+        "CALL update_user_balance(1001, 250.00);",
+        "#### 风险提示\n\n- 参数模式、返回值和事务边界需由应用侧回归测试覆盖。",
+    ),
+]
+
+
+def _strip_bare_ui_render(text: str) -> str:
+    """剔除模型漏写标签时输出的单行 UI_RENDER 指令。"""
+    return _BARE_UI_RENDER_RE.sub("", text or "")
+
+
+def _strip_interactive_sections(text: str) -> str:
+    """删除 UI_RENDER / 数据源选择等交互附录，保留核心报告正文。"""
+    lines = (text or "").splitlines()
+    output: List[str] = []
+    cursor = 0
+    while cursor < len(lines):
+        line = lines[cursor]
+        heading = _MARKDOWN_HEADING_RE.match(line)
+        normalized = re.sub(r"[\s_*【】#]+", "", heading.group("title")) if heading else ""
+        interactive = heading is not None and any(
+            token in normalized.upper() for token in ("UIRENDER", "选择数据源", "数据源选择"))
+        if interactive:
+            hash_prefix = re.match(r"^\s*(#{1,6})", line)
+            level = len(hash_prefix.group(1)) if hash_prefix else 2
+            cursor += 1
+            while cursor < len(lines):
+                next_heading = _MARKDOWN_HEADING_RE.match(lines[cursor])
+                if next_heading:
+                    next_hash = re.match(r"^\s*(#{1,6})", lines[cursor])
+                    next_level = len(next_hash.group(1)) if next_hash else 2
+                    if next_level <= level:
+                        break
+                cursor += 1
+            continue
+        output.append(line)
+        cursor += 1
+    return "\n".join(output).strip()
+
+
+def _sanitize_plan_artifact(text: str) -> str:
+    """小方产物只保留迁移方案，交互确认内容由前端表单通道处理。"""
+    return _strip_interactive_sections(_strip_bare_ui_render(text or "")).strip()
+
+
+def _normalized_heading(title: str) -> str:
+    return re.sub(r"[\s_*:：-]+", "", title or "")
+
+
+def _section_heading(line: str) -> tuple[str, int] | tuple[None, int]:
+    markdown = _MARKDOWN_HEADING_RE.match(line)
+    if markdown:
+        hashes = re.match(r"^\s*(#{1,6})", line)
+        return _normalized_heading(markdown.group("title")), len(hashes.group(1)) if hashes else 2
+    bracket = re.match(r"^\s*【([^】]{1,40})】\s*[:：]?\s*$", line)
+    if bracket:
+        return _normalized_heading(bracket.group(1)), 2
+    numbered = re.match(r"^\s*\d+[.、)]\s*([^:：\n]{1,40}?)\s*[:：]?\s*$", line)
+    if numbered:
+        return _normalized_heading(numbered.group(1)), 2
+    return None, 0
+
+
+def _strip_named_sections(text: str, names: set[str]) -> str:
+    """删除指定标题小节，支持 Markdown、【】和编号小节。"""
+    lines = (text or "").splitlines()
+    output: List[str] = []
+    cursor = 0
+    while cursor < len(lines):
+        title, level = _section_heading(lines[cursor])
+        if title is not None and title in names:
+            cursor += 1
+            while cursor < len(lines):
+                next_title, next_level = _section_heading(lines[cursor])
+                if next_title is not None and next_level <= level:
+                    break
+                cursor += 1
+            continue
+        output.append(lines[cursor])
+        cursor += 1
+    return "\n".join(output).strip()
+
+
+def _sanitize_assessment_artifact(text: str) -> str:
+    """评估报告只保留评估内容，输出文件清单由产物系统负责展示。"""
+    return _strip_named_sections(
+        _strip_bare_ui_render(text or ""), {"输出文件", "输出文件清单"}).strip()
+
+
+_CODE_ARTIFACT_REQUEST_RE = re.compile(
+    r"(?im)^[ \t]*(?:[-*+]\s*|\d+[.)]\s+)?"
+    r"(?:请确认|请提供|请补充|继续提供|若需继续).*$")
+
+
+def _sanitize_code_migration_artifact(text: str) -> str:
+    """小改分析报告剔除输出要求与追加材料追问。"""
+    cleaned = _strip_named_sections(
+        _strip_bare_ui_render(text or ""),
+        {"输出文件", "输出文件清单"},
+    )
+    return _CODE_ARTIFACT_REQUEST_RE.sub("", cleaned).strip()
+
+
+def _extract_sql_after_heading(text: str, titles: tuple[str, ...]) -> str:
+    """按 Markdown / 【】标题提取指定小节中的第一个 SQL 代码块。"""
+    wanted = {_normalized_heading(t) for t in titles}
+    headings = list(_MARKDOWN_HEADING_RE.finditer(text or ""))
+    for idx, heading in enumerate(headings):
+        if _normalized_heading(heading.group("title")) not in wanted:
+            continue
+        section_end = headings[idx + 1].start() if idx + 1 < len(headings) else len(text or "")
+        section = text[heading.start():section_end]
+        blocks = re.findall(
+            r"```(?:sql|mysql|oracle|dm)?\s*\n([\s\S]*?)\n```",
+            section, re.IGNORECASE)
+        if blocks:
+            return blocks[0].strip()
+    return ""
+
+
+def _extract_code_migration_sqls(text: str) -> tuple[str, str]:
+    return (
+        _extract_sql_after_heading(text, ("改造前 SQL", "改造前的SQL", "原始SQL", "源SQL")),
+        _extract_sql_after_heading(text, ("改造后 SQL", "改造后的SQL", "转换后SQL", "目标SQL")),
+    )
+
+
+def _extract_code_migration_items(text: str) -> List[Dict[str, str]]:
+    """提取多个改造项；无三级标题时兼容旧的单项前后 SQL 格式。"""
+    headings = list(_MARKDOWN_HEADING_RE.finditer(text or ""))
+    items: List[Dict[str, str]] = []
+    for idx, heading in enumerate(headings):
+        level = len(heading.group("prefix").strip())
+        if level != 3:
+            continue
+        section_end = len(text or "")
+        for next_heading in headings[idx + 1:]:
+            if len(next_heading.group("prefix").strip()) <= level:
+                section_end = next_heading.start()
+                break
+        section = text[heading.start():section_end]
+        before_sql, after_sql = _extract_code_migration_sqls(section)
+        if not before_sql or not after_sql:
+            continue
+        title = re.sub(r"^\d+[.、]\s*", "", heading.group("title").strip())
+        items.append({
+            "type": f"SQL-{title}",
+            "before": before_sql,
+            "after": after_sql,
+            "risk": _extract_risk_section(section).strip(),
+        })
+    if items:
+        return items
+    before_sql, after_sql = _extract_code_migration_sqls(text)
+    return [{"type": "SQL", "before": before_sql, "after": after_sql, "risk": ""}]
+
+
+def _extract_risk_section(text: str) -> str:
+    headings = list(_MARKDOWN_HEADING_RE.finditer(text or ""))
+    for idx, heading in enumerate(headings):
+        title = _normalized_heading(heading.group("title"))
+        if "风险" not in title:
+            continue
+        end = headings[idx + 1].start() if idx + 1 < len(headings) else len(text or "")
+        section = text[heading.start():end].strip()
+        return section
+    return ""
+
+
+def _simulate_target_sql_execution(sql: str) -> tuple[bool, str]:
+    statements = [part.strip() for part in (sql or "").split(";") if part.strip()]
+    if not statements:
+        return False, "改造后 SQL 为空，未进入模拟校验"
+    for statement in statements:
+        first_word = re.match(r"[A-Za-z]+", statement)
+        prefix = first_word.group(0).upper() if first_word else ""
+        if prefix not in _ALLOWED_SIMULATION_SQL_PREFIXES:
+            return False, f"无法识别 SQL 语句类型：{statement[:40]}"
+    return True, "语句结构通过本地模拟校验"
+
+
+def _target_database_name(state: Dict) -> str:
+    parse = state.get("parse_result") or {}
+    params = (state.get("task_state") or {}).get("task_params") or {}
+    value = (
+        params.get("target_db_type")
+        or params.get("target_db")
+        or parse.get("target_db")
+        or "MySQL"
+    )
+    return str(value).strip() or "MySQL"
+
+
+def _workbook_bytes(sheet_title: str, headers: List[str], rows: List[List[Any]]) -> bytes:
+    from openpyxl import Workbook
+    from openpyxl.styles import Alignment, Font, PatternFill
+
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = sheet_title
+    sheet.append(headers)
+    for cell in sheet[1]:
+        cell.font = Font(bold=True, color="FFFFFF")
+        cell.fill = PatternFill("solid", fgColor="5B7CFA")
+        cell.alignment = Alignment(horizontal="center", vertical="center")
+    for row in rows:
+        sheet.append(row)
+    for row in sheet.iter_rows():
+        for cell in row:
+            cell.alignment = Alignment(vertical="top", wrap_text=True)
+    for index, width in enumerate([6, 14, 18, 42, 42, 12, 18, 36], 1):
+        sheet.column_dimensions[chr(64 + index)].width = width
+    buffer = BytesIO()
+    workbook.save(buffer)
+    return buffer.getvalue()
+
+
+def _build_code_migration_files(text: str, target_db: str) -> tuple[Dict[str, Any], str]:
+    items = _extract_code_migration_items(text)
+    prepared = []
+    for item in items:
+        ok, reason = _simulate_target_sql_execution(item["after"])
+        prepared.append({**item, "ok": ok, "reason": reason})
+    risk = _extract_risk_section(text) or "## 风险说明\n\n- 未识别到模型给出的风险说明，请在执行前人工复核。"
+    overall_ok = bool(prepared) and all(item["ok"] for item in prepared)
+    data_source = "示例数据（真实执行前必须替换业务代码）" if "示例数据" in (text or "")[:200] else "模型输出"
+    report_parts = [
+        "# SQL改造报告\n\n",
+        "## 目标库模拟执行结果\n\n",
+        f"- 目标库：{target_db}\n",
+        f"- 数据来源：{data_source}\n",
+        "- 执行模式：SIMULATION\n",
+        f"- 结果：{'模拟执行成功' if overall_ok else '模拟执行失败'}\n",
+        "- 校验说明：逐条语句执行结构校验；未连接目标库，未执行真实 DDL/DML。\n\n",
+    ]
+    for idx, item in enumerate(prepared, 1):
+        item_risk = item.get("risk") or risk.strip()
+        report_parts.extend([
+            f"## {idx}. {item['type']}\n\n",
+            "### 改造前 SQL\n\n",
+            f"```sql\n{item['before']}\n```\n\n",
+            "### 改造后 SQL\n\n",
+            f"```sql\n{item['after']}\n```\n\n",
+            f"- 模拟执行结果：{'成功' if item['ok'] else '失败'}（{item['reason']}）\n\n",
+            f"{item_risk}\n\n",
+        ])
+    report_parts.append(risk.strip() if len(items) <= 1 else "")
+    report = "\n".join(report_parts)
+    workbook = _workbook_bytes(
+        "改造清单",
+        ["序号", "对象/代码类型", "改造前SQL", "改造后SQL", "目标库", "模拟执行结果", "风险说明"],
+        [[idx, item["type"], item["before"], item["after"], target_db,
+          "模拟执行成功" if item["ok"] else "模拟执行失败",
+          item.get("risk") or risk]
+         for idx, item in enumerate(prepared, 1)],
+    )
+    after_sql = (
+        prepared[0]["after"] if len(prepared) == 1
+        else ";\n\n".join(item["after"].rstrip(";") for item in prepared) + ";"
+    )
+    return {
+        "改造后SQL.sql": after_sql,
+        "SQL改造报告.md": report,
+        "代码改造清单.xlsx": workbook,
+    }, report
+
+
+def _mock_code_migration_reply(state: Dict) -> str:
+    params = (state.get("task_state") or {}).get("task_params") or {}
+    source_db = str(
+        params.get("source_db_type")
+        or params.get("source_db")
+        or (state.get("parse_result") or {}).get("source_db")
+        or "Oracle").strip() or "Oracle"
+    target_db = _target_database_name(state)
+    parts = [
+        "# SQL改造报告（示例数据）\n\n",
+        f"## 演示范围\n\n- 源库类型：{source_db}\n- 目标库类型：{target_db}\n\n",
+    ]
+    for idx, (title, before_sql, after_sql, risk) in enumerate(
+            _MOCK_CODE_MIGRATION_ITEMS, 1):
+        parts.extend([
+            f"### {idx}. {title}\n\n",
+            "#### 改造前 SQL\n\n",
+            f"```sql\n{before_sql}\n```\n\n",
+            "#### 改造后 SQL\n\n",
+            f"```sql\n{after_sql}\n```\n\n",
+            f"{risk}\n\n",
+        ])
+    parts.extend([
+        "## 风险说明\n\n",
+        "- 本报告使用示例数据：真实执行前必须替换为业务待改造 SQL/JDBC/ORM 代码。\n",
+        "- 分页语法、序列取号、日期函数、驱动类名、连接串和事务隔离级别需结合目标库版本复核。\n",
+        "- 示例仅做结构模拟，不连接目标库执行真实 DDL/DML。\n",
+    ])
+    return "".join(parts)
+
+
+def _verify_target_sql(sql: str, target_db: str) -> tuple[bool, str]:
+    target = (target_db or "").strip().lower()
+    statements = [part.strip() for part in (sql or "").split(";") if part.strip()]
+    if not statements:
+        return False, "未生成转换 SQL"
+    for statement in statements:
+        first_word = re.match(r"[A-Za-z]+", statement)
+        prefix = first_word.group(0).upper() if first_word else ""
+        if prefix not in _ALLOWED_SIMULATION_SQL_PREFIXES:
+            return False, f"无法识别 SQL 语句类型：{statement[:40]}"
+        if target in ("mysql", "mysqli"):
+            mysql_incompatible = [
+                ("CREATE OR REPLACE", "MySQL 视图不支持 CREATE OR REPLACE"),
+                ("VARCHAR2", "MySQL 不支持 VARCHAR2 类型"),
+                ("NUMBER", "MySQL 不支持 NUMBER 类型"),
+                ("SYSDATE", "MySQL 不支持 SYSDATE 函数"),
+                ("ROWNUM", "MySQL 不支持 ROWNUM 伪列"),
+            ]
+            for token, reason in mysql_incompatible:
+                if token.upper() in statement.upper():
+                    return False, reason
+    return True, "转换 SQL 通过目标库语法静态校验"
+
+
+_MOCK_VERIFICATION_ASSETS = [
+    {
+        "asset_type": "function", "asset_name": "示例_f_order_level", "risk_level": "低",
+        "original_sql": "CREATE OR REPLACE FUNCTION f_order_level(p_amount NUMBER) RETURN VARCHAR2;",
+        "converted_sql": "CREATE FUNCTION f_order_level(p_amount DECIMAL(12,2)) "
+                         "RETURNS VARCHAR(20) DETERMINISTIC RETURN 'NORMAL';",
+        "suggestion": "示例数据：函数头、确定性标记与返回类型已按 MySQL 语法改写。",
+    },
+    {
+        "asset_type": "view", "asset_name": "示例_v_failed_view", "risk_level": "高",
+        "original_sql": "CREATE OR REPLACE VIEW v_failed_view AS SELECT * FROM t_order;",
+        "converted_sql": "CREATE OR REPLACE VIEW v_failed_view AS SELECT * FROM t_order;",
+        "suggestion": "示例数据：MySQL 不支持 CREATE OR REPLACE VIEW，需删除重建。",
+    },
+    {
+        "asset_type": "trigger", "asset_name": "示例_trg_order_insert", "risk_level": "中",
+        "original_sql": "CREATE OR REPLACE TRIGGER trg_order_insert BEFORE INSERT ON t_order;",
+        "converted_sql": "CREATE TRIGGER trg_order_insert BEFORE INSERT ON t_order "
+                         "FOR EACH ROW SET NEW.created_at = NOW();",
+        "suggestion": "示例数据：触发器语法已调整为 MySQL 形式。",
+    },
+    {
+        "asset_type": "sequence", "asset_name": "示例_seq_failed", "risk_level": "高",
+        "original_sql": "CREATE SEQUENCE seq_failed START WITH 1 INCREMENT BY 1;",
+        "converted_sql": "",
+        "suggestion": "示例数据：MySQL 无原生序列，需改为 AUTO_INCREMENT 或取号表。",
+    },
+    {
+        "asset_type": "procedure", "asset_name": "示例_p_update_balance", "risk_level": "中",
+        "original_sql": "CREATE OR REPLACE PROCEDURE p_update_balance(p_uid NUMBER);",
+        "converted_sql": "CREATE PROCEDURE update_user_balance(IN p_uid BIGINT, "
+                         "IN p_amount DECIMAL(12,2)) BEGIN UPDATE t_account "
+                         "SET balance = balance + p_amount WHERE id = p_uid END;",
+        "suggestion": "示例数据：过程名、参数模式和语句块语法已按 MySQL 调整。",
+    },
+    {
+        "asset_type": "table", "asset_name": "示例_t_failed_type", "risk_level": "高",
+        "original_sql": "CREATE TABLE t_failed_type (id NUMBER, remark VARCHAR2(200));",
+        "converted_sql": "CREATE TABLE t_failed_type (id NUMBER, remark VARCHAR(200));",
+        "suggestion": "示例数据：NUMBER 需改为 DECIMAL/BIGINT，不能保留 Oracle 类型。",
+    },
+    {
+        "asset_type": "index", "asset_name": "示例_idx_user_mobile", "risk_level": "低",
+        "original_sql": "CREATE INDEX idx_user_mobile ON t_user(mobile);",
+        "converted_sql": "CREATE INDEX idx_user_mobile ON t_user(mobile);",
+        "suggestion": "示例数据：普通索引语法兼容，校验通过。",
+    },
+    {
+        "asset_type": "synonym", "asset_name": "示例_syn_failed", "risk_level": "中",
+        "original_sql": "CREATE SYNONYM syn_failed FOR t_user;",
+        "converted_sql": "",
+        "suggestion": "示例数据：MySQL 不支持同义词，需改造为视图或直接引用原表。",
+    },
+]
+
+
+def _with_demo_verification_assets(assets: List[Dict]) -> List[Dict]:
+    """演示链路保证校验清单有足够样本；真实资产始终排在前面。"""
+    if len(assets) >= 10:
+        return assets
+    if len(assets) <= 2:
+        return [*assets, *_MOCK_VERIFICATION_ASSETS]
+    needed = 10 - len(assets)
+    return [*assets, *_MOCK_VERIFICATION_ASSETS[:needed]]
+
+
+def _build_verification_report(assets: List[Dict], target_db: str) -> str:
+    rows = []
+    for asset in assets:
+        converted = str(asset.get("converted_sql") or "").strip()
+        ok, reason = _verify_target_sql(converted, target_db)
+        rows.append({
+            "asset": asset,
+            "converted": converted,
+            "ok": ok,
+            "reason": reason,
+        })
+
+    success_rows = [r for r in rows if r["ok"]]
+    failed_rows = [r for r in rows if not r["ok"]]
+    demo_count = sum(1 for row in rows
+                     if str(row["asset"].get("asset_name", "")).startswith("示例_"))
+
+    def render_rows(items: List[Dict], result_label: str) -> str:
+        if not items:
+            return "（无）"
+        blocks = []
+        for idx, row in enumerate(items, 1):
+            asset = row["asset"]
+            sql = row["converted"] or str(asset.get("original_sql") or "-- 暂无 SQL")
+            suggestion = asset.get("suggestion") or "请人工复核并补充修复方案。"
+            blocks.append(
+                f"### {idx}. {asset.get('asset_type', 'object')} `{asset.get('asset_name', '')}`\n\n"
+                f"- 校验结果：{result_label}\n"
+                f"- 原因分析：{row['reason']}\n"
+                f"- 修复建议：{suggestion}\n\n"
+                f"```sql\n{sql}\n```")
+        return "\n\n".join(blocks)
+
+    demo_line = (
+        f"- 示例补充对象：{demo_count} 条（示例数据，不代表真实资产）\n\n"
+        if demo_count else ""
+    )
+    return (
+        "# 校验报告\n\n"
+        "## 一、校验概览\n\n"
+        f"- 目标库：{target_db}\n"
+        "- 校验方式：本地静态校验（SIMULATION），未连接目标库执行\n"
+        f"- 校验对象总数：{len(rows)}｜成功：{len(success_rows)}｜失败：{len(failed_rows)}\n\n"
+        + demo_line
+        +
+        "## 二、成功 SQL 清单\n\n"
+        f"{render_rows(success_rows, '成功')}\n\n"
+        "## 三、失败 SQL 清单\n\n"
+        f"{render_rows(failed_rows, '失败')}\n"
+    )
+
+
+def _build_verification_workbook(assets: List[Dict], target_db: str) -> bytes:
+    rows: List[List[Any]] = []
+    for asset in assets:
+        converted = str(asset.get("converted_sql") or "").strip()
+        ok, reason = _verify_target_sql(converted, target_db)
+        rows.append([
+            len(rows) + 1,
+            asset.get("asset_type", "object"),
+            asset.get("asset_name", ""),
+            target_db,
+            "成功" if ok else "失败",
+            reason,
+            asset.get("suggestion") or "请人工复核并补充修复方案。",
+            converted or str(asset.get("original_sql") or "-- 暂无 SQL"),
+        ])
+    return _workbook_bytes(
+        "测试清单",
+        ["序号", "对象类型", "对象名称", "目标库", "校验结果", "原因分析", "修复建议", "转换SQL"],
+        rows,
+    )
 
 
 def _extract_ui_render(text: str) -> Optional[Dict]:
@@ -226,6 +840,12 @@ class AgentState(TypedDict, total=False):
     error: str
     extra_context: str  # @ 引用 / + 上传 注入的额外上下文内容块（app.py 组装，视为最高优先级上下文）
     task_state: Dict  # 会话级任务状态 {current_step, task_params}（后端维护并注入，指挥官据此推进采集步骤）
+    trace_id: str  # 全局链路追踪 ID（随 AgentState 贯穿路由、节点、工具与产物）
+    assigned_agent_id: str  # 用户本轮显式指派的 Agent（防止路由过程中丢失）
+    graph_phase: str  # entry / stage / converge / blocked
+    graph_route_target: str  # 入口条件边的确定性目标
+    graph_next_step: str  # 阶段节点计算出的下一状态（仅图内流转，不直接写 DB）
+    generic_executed: bool  # 小枢内复用执行的非迁移智能体标记
 
 
 def _default_parse_schema_prompt(intents: List[str], ags: Dict[str, Dict]) -> str:
@@ -253,7 +873,9 @@ class GraphRuntime:
                  db_tools: Optional[DbTools] = None, kg=None,
                  ops=None, gov=None,
                  rag_enabled: bool = True, datasources_enabled: bool = True,
-                 migrate_assets: Any = None, migrate_state: Any = None):
+                 migrate_assets: Any = None, migrate_state: Any = None,
+                 observability: Any = None,
+                 cancellation_event: Optional[threading.Event] = None):
         self.llm = llm
         self.rag_search = rag_search
         self.prompts = prompt_service
@@ -270,10 +892,45 @@ class GraphRuntime:
         # 迁移能力：结构化资产服务（规则引擎扫描结果注入评估专家）+ 状态机服务
         self.migrate_assets = migrate_assets
         self.migrate_state = migrate_state
+        self.observability = observability
+        self.cancellation_event = cancellation_event
         # 快速问答（无空间归属会话）：禁用知识库检索与数据源/运维探活能力
         self.rag_enabled = rag_enabled
         self.datasources_enabled = datasources_enabled
         self.max_iterations = max_iterations
+
+    def _check_cancelled(self) -> None:
+        if self.cancellation_event is not None and self.cancellation_event.is_set():
+            raise ChatRunCancelled("用户已中止本次智能体执行")
+
+    def _stream_llm(self, llm: Any, messages: List[Any],
+                    config: Optional[Dict] = None) -> tuple[Any, str]:
+        text_parts: List[str] = []
+        agg: Any = None
+        for chunk in llm.stream(messages, config=config or {}):
+            self._check_cancelled()
+            if hasattr(chunk, "content") and chunk.content:
+                text_parts.append(chunk.content)
+            agg = chunk if agg is None else agg + chunk
+        text = "".join(text_parts) if text_parts else (
+            agg.content if hasattr(agg, "content") else str(agg) if agg else "")
+        return agg, text
+
+    def _trace(self, state: Dict, phase: str, span: str, message: str,
+               level: str = "info", duration_ms: int | None = None) -> None:
+        if self.observability is None:
+            return
+        try:
+            self.observability.log(
+                trace_id=str(state.get("trace_id", "") or ""),
+                phase=phase, span=span, level=level, message=message,
+                conv_id=state.get("conv_id"),
+                task_id=(state.get("task_state") or {}).get("migrate_task_id")
+                if isinstance(state.get("task_state"), dict) else None,
+                duration_ms=duration_ms,
+            )
+        except Exception:
+            return
 
     def get_prompt(self, category: str) -> str:
         rows = [p for p in self.prompts.list(category=category) if p["enabled"]]
@@ -283,14 +940,22 @@ class GraphRuntime:
         return max(rows, key=lambda p: p["id"])["content"]
 
     def parse(self, state: AgentState) -> AgentState:
+        self._check_cancelled()
         text = state.get("user_input", "")
         if hasattr(self.llm, "parse"):
             result = self.llm.parse(text)
+            self._check_cancelled()
         else:  # 真模型：结构化输出
             from langchain_core.messages import HumanMessage, SystemMessage
             pmt = _default_parse_schema_prompt(self.agent_svc.intents(),
                                                {a["id"]: a for a in self.agent_svc.enabled()})
-            resp = self.llm.invoke([SystemMessage(content=pmt), HumanMessage(content=text)])
+            _started = time.monotonic()
+            resp, _ = self._stream_llm(
+                self.llm,
+                [SystemMessage(content=pmt), HumanMessage(content=text)],
+            )
+            self._trace(state, "llm", "parse", "需求解析完成",
+                        duration_ms=int((time.monotonic() - _started) * 1000))
             # 从 markdown 代码块中提取 JSON（LLM 常返回 ```json { ... } ``` 格式）
             raw = resp.content if hasattr(resp, "content") else str(resp)
             raw = _extract_json_from_markdown(raw)
@@ -379,7 +1044,363 @@ class GraphRuntime:
                     state["kg_context"] = self.kg.expand(terms, limit=15)
             except Exception:
                 state["kg_context"] = []
+        self._trace(state, "schedule", str(state.get("agent_id") or ""),
+                    state.get("route_reason") or "路由完成")
         return state
+
+    def _normalized_stage(self, state: Dict) -> str:
+        task_state = state.get("task_state") or {}
+        raw = str(task_state.get("current_step") or "DATA_COLLECTION").split("|")[0]
+        return _LEGACY_STEP_MAP.get(raw, raw)
+
+    def _flow_nodes(self) -> List[Dict]:
+        if self.migrate_state is not None and hasattr(self.migrate_state, "get_flow"):
+            try:
+                flow = self.migrate_state.get_flow()
+                if flow:
+                    return [
+                        {
+                            "status": str(n.get("status") or ""),
+                            "need_confirm": bool(n.get("need_confirm", True)),
+                            "required_fields": list(n.get("required_fields") or []),
+                            "enabled": bool(n.get("enabled", True)),
+                        }
+                        for n in flow if n.get("enabled", True)
+                    ]
+            except Exception:
+                pass
+        return list(DEFAULT_FLOW)
+
+    def _next_stage_status(self, state: Dict) -> str:
+        cur = self._normalized_stage(state)
+        nodes = self._flow_nodes()
+        idx = next((i for i, n in enumerate(nodes) if n["status"] == cur), None)
+        if idx is None or idx >= len(nodes) - 1:
+            return "FINISHED"
+        return nodes[idx + 1]["status"]
+
+    def _selected_agent(self, state: AgentState, explicit_agent_id: str = "") -> str:
+        explicit = explicit_agent_id or state.get("agent_id") or ""
+        if explicit and self.agent_svc.get(explicit):
+            return explicit
+        pr = state.get("parse_result", {})
+        conf = float(pr.get("confidence", 0.0) or 0.0)
+        intent = str(pr.get("intent", ""))
+        if conf < 0.5 or intent not in self.agent_svc.intents():
+            return "nl2sql_qa"
+        return self.agent_svc.resolve(intent) or "nl2sql_qa"
+
+    def commander(self, state: AgentState) -> AgentState:
+        """入口与汇聚节点：入口负责解析/路由；汇聚阶段不再重复执行。"""
+        if state.get("graph_phase") == "converge":
+            return state
+
+        explicit_agent_id = str(state.get("agent_id") or "")
+        state["assigned_agent_id"] = explicit_agent_id
+        state["graph_phase"] = "entry"
+        self.parse(state)
+        selected = self._selected_agent(state, explicit_agent_id)
+        task_state = state.get("task_state")
+        migration_task = bool(task_state is not None and (
+            task_state.get("migrate_task_id") or task_state.get("current_step")))
+        strict_flow = bool((task_state or {}).get("strict_flow", True))
+
+        if migration_task and selected == "migration_commander":
+            selected = STAGE_AGENT_BY_STATUS.get(self._normalized_stage(state), selected)
+
+        if (migration_task and strict_flow
+                and selected in STAGE_AGENT_IDS
+                and selected != STAGE_AGENT_BY_STATUS.get(self._normalized_stage(state))):
+            expected = STAGE_AGENT_BY_STATUS.get(self._normalized_stage(state), "migration_commander")
+            state["agent_id"] = "migration_commander"
+            state["route_reason"] = (
+                f"当前阶段为{status_label(self._normalized_stage(state))}，"
+                f"仅允许{self._agent_name(expected)}执行；"
+                f"{self._agent_name(selected)}已被阶段闸门拦截")
+            state["reply"] = (
+                f"{state['route_reason']}。请先完成当前阶段并确认后再指派"
+                f"{self._agent_name(selected)}。")
+            state["graph_phase"] = "blocked"
+            state["graph_route_target"] = END
+            ts = state.setdefault("task_state", {})
+            ts["step_status"] = "waiting_confirm"
+            ts["awaiting_confirmation"] = True
+            return state
+
+        state["agent_id"] = selected
+        if migration_task and selected in STAGE_AGENT_IDS:
+            self.route(state)
+            state["graph_route_target"] = selected
+            return state
+
+        self.route(state)
+        state["graph_route_target"] = END
+        # 非迁移智能体在小枢节点内复用旧执行核心。先推送路由预检事件，
+        # 让 SSE 在正文流开始前知道是否需要缓冲产物型 Agent 的回复。
+        self._emit({"type": "route_preflight", "agent_id": selected})
+        self.execute(state)
+        self.artifact(state)
+        state["graph_phase"] = "converge"
+        state["generic_executed"] = True
+        return state
+
+    def route_agent(self, state: Dict) -> str:
+        """条件边 A：显式指派校验 + current_step 阶段映射。"""
+        if state.get("graph_phase") == "converge":
+            return END
+        if state.get("graph_route_target"):
+            return state["graph_route_target"]
+
+        explicit = str(state.get("assigned_agent_id") or state.get("agent_id") or "")
+        task_state = state.get("task_state")
+        stage = self._normalized_stage(state)
+        expected = STAGE_AGENT_BY_STATUS.get(stage)
+        strict_flow = bool((task_state or {}).get("strict_flow", True))
+
+        if explicit in STAGE_AGENT_IDS:
+            if task_state is not None and strict_flow and expected and explicit != expected:
+                state["route_reason"] = (
+                    f"当前阶段为{status_label(stage)}，仅允许{self._agent_name(expected)}执行；"
+                    f"{self._agent_name(explicit)}不可越级指派")
+                return "migration_commander"
+            return explicit
+
+        pr = state.get("parse_result") or {}
+        if explicit != "migration_commander" and float(pr.get("confidence", 0.0) or 0.0) < 0.5:
+            return "migration_commander"
+        if explicit == "migration_commander":
+            return expected or END
+        return END
+
+    @staticmethod
+    def _value_present(value: Any) -> bool:
+        if value is None:
+            return False
+        text = str(value).strip()
+        return bool(text) and text.lower() not in ("none", "null", "未指定", "未选择")
+
+    def should_advance(self, state: Dict) -> str:
+        """条件边 B-E：next/stay/wait_user/back 的统一语义。"""
+        task_state = state.get("task_state") or {}
+        params = task_state.get("task_params") or {}
+        if not isinstance(params, dict):
+            params = {}
+        if (task_state.get("verification_failed")
+                or params.get("verification_failed")
+                or task_state.get("rollback_target")):
+            return "back"
+
+        stage = self._normalized_stage(state)
+        nodes = self._flow_nodes()
+        node = next((n for n in nodes if n["status"] == stage), None)
+        if node is None:
+            return "wait_user"
+        missing = [f for f in node.get("required_fields") or []
+                   if not self._value_present(params.get(f))]
+        if missing:
+            return "stay"
+        if (node.get("need_confirm", True)
+                and bool(task_state.get("step_confirm", True))
+                and not self._value_present(params.get("task_confirm"))):
+            return "wait_user"
+        return "next"
+
+    def stage_route(self, state: Dict) -> str:
+        decision = self.should_advance(state)
+        if decision != "next":
+            return "migration_commander"
+        next_stage = state.get("graph_next_step") or self._next_stage_status(state)
+        return STAGE_AGENT_BY_STATUS.get(next_stage, "migration_commander")
+
+    def _stage_question(self, state: AgentState) -> str:
+        parts = [state.get("user_input", "")]
+        task_state = state.get("task_state") or {}
+        params = task_state.get("task_params") or {}
+        if isinstance(params, dict) and params:
+            param_text = "\n".join(f"- {k}: {v}" for k, v in params.items())
+            parts.append("当前任务参数：\n" + param_text)
+        if (state.get("extra_context") or "").strip():
+            parts.append("引用/附件上下文：\n" + state["extra_context"].strip())
+        return "\n\n".join(p for p in parts if p)
+
+    def _collect_excel_locally(self, state: AgentState) -> Dict:
+        """Excel 采集走本地确定性扫描，避免模型慢调用或漏调工具导致阶段假卡死。"""
+        params = (state.get("task_state") or {}).get("task_params") or {}
+        # 数据源识别：优先名称；仅拿到 ID（source_ds_id）时按 ID 解析为名称再探查，
+        # 避免把数字 ID 当 name 传入导致「数据源不存在: 5」式误报。
+        ds_name = str(params.get("source_ds_name") or params.get("source_ds_id") or "")
+        if self.db_tools is not None and ds_name:
+            ds_list = self.db_tools.list()
+            matched = next((str(d.get("name")) for d in ds_list
+                            if str(d.get("name")) == ds_name), None)
+            if matched is None:
+                matched = next((str(d.get("name")) for d in ds_list
+                                if str(d.get("id")) == ds_name), None)
+            if matched:
+                ds_name = matched
+        schema = self.db_tools.inspect_schema(ds_name)
+        if not schema.get("ok"):
+            return {"ok": False, "error": schema.get("message", "Excel 数据源探查失败")}
+
+        object_rows = []
+        for table in schema.get("tables") or []:
+            detail = self.db_tools.inspect_schema(ds_name, str(table))
+            columns = detail.get("columns") or []
+            object_rows.append((table, columns))
+
+        conv_id = int(state.get("conv_id", 0))
+        object_name = primary_object_name(state.get("user_input", ""))
+        namespace = make_namespace(f"sess_{conv_id}", "migration_collector", object_name)
+        lines = [
+            "# 数据采集报告",
+            "",
+            "## 采集结果",
+            "",
+            f"- 数据源：{ds_name}",
+            f"- 源库类型：Excel",
+            f"- 采集对象：{len(object_rows)} 张表",
+            "",
+            "| 序号 | 对象名称 | 对象类型 | 字段数 | 字段清单 |",
+            "|---|---|---|---|---|",
+        ]
+        for idx, (table, columns) in enumerate(object_rows, 1):
+            fields = "、".join(str(c.get("name", "")) for c in columns)
+            lines.append(f"| {idx} | {table} | 表 | {len(columns)} | {fields} |")
+        demo_objects = _MOCK_COLLECTOR_OBJECTS[:max(0, 10 - len(object_rows))]
+        if demo_objects:
+            lines.extend([
+                "",
+                "## 示例补充对象（演示数据）",
+                "",
+                f"以下 {len(demo_objects)} 个对象为演示补充样本，用于展示完整采集清单结构；"
+                "示例对象未计入真实对象数。",
+                "",
+                "| 序号 | 对象名称 | 对象类型 | 字段数 | 字段清单 |",
+                "|---|---|---|---|---|",
+            ])
+            for idx, (name, asset_type, field_count, fields) in enumerate(demo_objects, 1):
+                lines.append(f"| {idx} | {name} | {asset_type} | {field_count} | {fields} |")
+        lines.extend([
+            "",
+            "## 采集说明",
+            "",
+            "以上清单来自 Excel 工作表结构扫描，字段类型基于样本数据推断。索引、约束、存储过程和视图在 Excel 中未提供，后续评估将按“源库未提供”处理。",
+        ])
+        report = "\n".join(lines)
+
+        task_state = state.get("task_state") or {}
+        try:
+            result = self.artifacts.write(
+                namespace, conv_id, "migration_collector", object_name,
+                {"数据采集报告.md": report},
+                task_id=task_state.get("migrate_task_id"),
+                trace_id=str(state.get("trace_id", "") or ""),
+            )
+        except NamespaceError as exc:
+            return {"ok": False, "error": f"采集报告入库失败：{exc}"}
+
+        files = result.get("files", [])
+        self._trace(state, "db", "db_schema", "Excel 数据源本地结构扫描完成")
+        self._trace(
+            state, "artifact", "migration_collector",
+            "核心产物已写入: " + ", ".join(str(f.get("path", "")) for f in files),
+        )
+        self._emit({
+            "type": "artifact", "agent_id": "migration_collector",
+            "agent_name": self._agent_name("migration_collector"),
+            "namespace": namespace, "files": files,
+        })
+        if len(object_rows):
+            params = task_state.setdefault("task_params", {})
+            params["object_count"] = len(object_rows)
+        reply = "已生成核心产物：" + "、".join(
+            str(f.get("path", "")).split("/")[-1] for f in files)
+        return {"ok": True, "agent_id": "migration_collector",
+                "agent_name": self._agent_name("migration_collector"),
+                "reply": reply, "artifacts": files, "ui_render": None}
+
+    def _run_stage_agent(self, state: AgentState, agent_id: str) -> AgentState:
+        self._check_cancelled()
+        state["agent_id"] = agent_id
+        state["graph_phase"] = "stage"
+        _started = time.monotonic()
+        self._trace(state, "node", agent_id, "阶段智能体开始执行")
+        self.route(state)
+        self._emit({"type": "system", "event": "calling_agent",
+                    "message": f"正在调用【{self._agent_name(agent_id)}】执行任务…",
+                    "agent_id": agent_id})
+        params = (state.get("task_state") or {}).get("task_params") or {}
+        use_local_excel = (
+            agent_id == "migration_collector"
+            and self.db_tools is not None
+            and str(params.get("source_db_type") or "").lower() == "excel"
+        )
+        sub = (
+            self._collect_excel_locally(state) if use_local_excel
+            else self._call_sub_agent(agent_id, self._stage_question(state), state=state)
+        )
+        self._check_cancelled()
+        self._emit_sub_agent(
+            {**state, "agent_id": "migration_commander"}, agent_id, sub)
+        state["reply"] = sub.get("reply") or sub.get("error") or ""
+        state["agent_calls"] = [{
+            "agent_id": agent_id,
+            "question": state.get("user_input", ""),
+            "reply": sub.get("reply", ""),
+            "error": sub.get("error", ""),
+            "artifacts": sub.get("artifacts") or [],
+        }]
+        state["artifacts"] = sub.get("artifacts") or []
+
+        ts = state.setdefault("task_state", {})
+        failed = bool(sub.get("error")) or bool(ts.get("verification_failed"))
+        if failed:
+            flow_nodes = self._flow_nodes()
+            current_idx = next(
+                (i for i, n in enumerate(flow_nodes)
+                 if n["status"] == self._normalized_stage(state)), 0)
+            ts["step_status"] = "rollback_pending" if agent_id == "migration_verifier" else "running"
+            ts["rollback_target"] = flow_nodes[max(0, current_idx - 1)]["status"]
+        else:
+            ts["step_status"] = "done" if sub.get("artifacts") else "running"
+        ts["awaiting_confirmation"] = False
+
+        decision = self.should_advance(state)
+        if decision == "wait_user":
+            ts["step_status"] = "waiting_confirm"
+            ts["awaiting_confirmation"] = True
+        elif decision == "back":
+            ts["step_status"] = "rollback_pending"
+            ts["awaiting_confirmation"] = True
+        # stay 表示参数未齐、不能推进；不能推翻子 Agent 已产出报告的执行完成态。
+        if decision == "next":
+            state["graph_next_step"] = self._next_stage_status(state)
+            if state["graph_next_step"] not in STAGE_AGENT_BY_STATUS:
+                state["graph_phase"] = "converge"
+        else:
+            state["graph_phase"] = "converge"
+        self._trace(
+            state, "node", agent_id,
+            "阶段智能体执行完成" if not failed else "阶段智能体执行失败",
+            level="info" if not failed else "error",
+            duration_ms=int((time.monotonic() - _started) * 1000),
+        )
+        return state
+
+    def migration_collector(self, state: AgentState) -> AgentState:
+        return self._run_stage_agent(state, "migration_collector")
+
+    def migration_assessor(self, state: AgentState) -> AgentState:
+        return self._run_stage_agent(state, "migration_assessor")
+
+    def migration_planner(self, state: AgentState) -> AgentState:
+        return self._run_stage_agent(state, "migration_planner")
+
+    def code_migrator(self, state: AgentState) -> AgentState:
+        return self._run_stage_agent(state, "code_migrator")
+
+    def migration_verifier(self, state: AgentState) -> AgentState:
+        return self._run_stage_agent(state, "migration_verifier")
 
     def _available_skills(self) -> List[Dict]:
         """返回已启用的技能清单（供 LLM 自主选择调用）"""
@@ -489,6 +1510,37 @@ class GraphRuntime:
         except Exception:
             pass
 
+    def _emit_sub_agent(self, state: Dict, agent_id: str, sub: Dict) -> None:
+        """下发子 Agent 输出与终态，前端用同一 agent_id 替换“正在调用”。"""
+        agent_name = self._agent_name(agent_id)
+        self._emit({
+            "type": "sub_agent",
+            "agent_id": agent_id,
+            "agent_name": agent_name,
+            "dispatcher_id": state.get("agent_id", ""),
+            "dispatcher_name": self._agent_name(str(state.get("agent_id", ""))),
+            "reply": sub.get("reply", ""),
+            "error": sub.get("error", ""),
+            "artifacts": sub.get("artifacts", []),
+            "ui_render": sub.get("ui_render"),
+        })
+        success = not bool(sub.get("error"))
+        artifacts = sub.get("artifacts") or []
+        if not success:
+            message = f"【{agent_name}】执行失败"
+        elif artifacts:
+            message = f"【{agent_name}】执行完成，产物已生成"
+        else:
+            message = f"【{agent_name}】执行完成"
+        self._emit({
+            "type": "system",
+            "event": "agent_finished",
+            "message": message,
+            "agent_id": agent_id,
+            "success": success,
+            "artifact_count": len(artifacts),
+        })
+
     def _call_sub_agent(self, agent_id: str, question: str,
                         state: Optional[Dict] = None) -> Dict:
         """多 Agent 编排：以另一个已启用 Agent 的提示词独立处理子问题（子 Agent 不带 call_agent
@@ -506,6 +1558,8 @@ class GraphRuntime:
         system = (cfg.get("default_prompt") or "").strip()
         if not system:
             return {"ok": False, "error": f"Agent {agent_id} 未配置提示词"}
+        if agent_id == "code_migrator":
+            system += _code_migrator_input_discipline()
         # 方向2：规则引擎扫描结果注入（评估/转换专家接收结构化风险清单作为输入，
         # 只做业务层面解读与转换，不重复基础语法识别——「规则找问题，大模型解释问题」）
         sub_context = ""
@@ -536,7 +1590,9 @@ class GraphRuntime:
             messages.append(SystemMessage(content=sub_context))
         messages.append(HumanMessage(content=question))
         chunks, iterations = [], 0
+        _started = time.monotonic()
         while iterations < self.max_iterations:
+            self._check_cancelled()
             iterations += 1
             llm = self.llm
             if hasattr(llm, "bind_tools"):
@@ -546,12 +1602,18 @@ class GraphRuntime:
                     llm = self.llm
             # callbacks=[] 切断父图 messages 流对嵌套子 Agent token 的捕获；
             # 子 Agent 完整回复只通过 sub_agent custom event 下发一次。
-            resp = llm.invoke(messages, config={"callbacks": []})
-            text = resp.content if hasattr(resp, "content") else str(resp)
+            _llm_started = time.monotonic()
+            resp, text = self._stream_llm(
+                llm, messages, config={"callbacks": []})
+            self._trace(
+                state or {}, "llm", agent_id, "子智能体模型调用完成",
+                duration_ms=int((time.monotonic() - _llm_started) * 1000),
+            )
             tool_calls = getattr(resp, "tool_calls", None) or []
             if not tool_calls:
                 chunks.append(text)
                 break
+            self._check_cancelled()
             messages.append(resp)
             for tc in tool_calls:
                 name = tc.get("name", "")
@@ -559,8 +1621,19 @@ class GraphRuntime:
                 out = self._dispatch_tool(name, args, state=state)
                 messages.append(ToolMessage(content=out, tool_call_id=tc.get("id", ""), name=name))
         full_reply = "\n".join(chunks) or "（该 Agent 未给出回答）"
+        self._check_cancelled()
         ui_render = _extract_ui_render(full_reply)
         full_reply = _strip_control_blocks(full_reply)
+        full_reply = _strip_bare_ui_render(full_reply)
+        if agent_id == "migration_assessor":
+            full_reply = _sanitize_assessment_artifact(full_reply)
+        if agent_id == "migration_planner":
+            full_reply = _sanitize_plan_artifact(full_reply)
+        if agent_id == "code_migrator":
+            full_reply = _sanitize_code_migration_artifact(full_reply)
+            if (str((state.get("task_state") or {}).get("current_step") or "") == "CODE_MIGRATE"
+                    and not _is_core_delivery(agent_id, full_reply)):
+                full_reply = _mock_code_migration_reply(state)
         reply = full_reply
         produced: List[Dict] = []
         # 子 Agent 自行入库：只有业务交付物才落盘。Markdown 标题代表报告，
@@ -570,7 +1643,17 @@ class GraphRuntime:
             stripped = full_reply.strip()
             sql_blocks = re.findall(
                 r"```sql\s*\n(.*?)\n```", stripped, re.DOTALL | re.IGNORECASE)
-            if _is_core_delivery(agent_id, stripped):
+            verifier_assets: List[Dict] = []
+            if agent_id == "migration_verifier":
+                task_state = state.get("task_state") or {}
+                migrate_task_id = task_state.get("migrate_task_id")
+                if migrate_task_id and self.migrate_assets is not None:
+                    try:
+                        verifier_assets = self.migrate_assets.list(int(migrate_task_id))
+                        verifier_assets = _with_demo_verification_assets(verifier_assets)
+                    except Exception:
+                        verifier_assets = []
+            if _is_core_delivery(agent_id, stripped) or verifier_assets:
                 pr = state.get("parse_result") or {}
                 obj = primary_object_name(
                     pr.get("object_name") or question or state.get("user_input", ""))
@@ -583,14 +1666,42 @@ class GraphRuntime:
                         report_name = fname
                         break
                 report_name = _core_report_filename(report_name)
-                files: Dict[str, str] = {report_name: stripped}
+                if agent_id == "code_migrator" and not sql_blocks:
+                    report_name = "代码改造分析报告.md"
+                files: Dict[str, Any] = {report_name: stripped}
+                specialized_code_artifact = False
+                if agent_id == "migration_verifier" and verifier_assets:
+                    report = _build_verification_report(
+                        verifier_assets, _target_database_name(state))
+                    files = {
+                        "校验报告.md": report,
+                        "迁移测试清单.xlsx": _build_verification_workbook(
+                            verifier_assets, _target_database_name(state)),
+                    }
+                    stripped = report
+                    specialized_code_artifact = True
+                if agent_id == "code_migrator":
+                    before_sql, after_sql = _extract_code_migration_sqls(stripped)
+                    if before_sql and after_sql:
+                        files, report = _build_code_migration_files(
+                            stripped, _target_database_name(state))
+                        stripped = report
+                        specialized_code_artifact = True
                 # SQL 转换专家等：额外抽取 SQL 代码块单独存为 .sql
-                for idx, block in enumerate(sql_blocks):
-                    files[f"转换脚本_{obj}_{idx + 1}.sql" if idx else f"转换脚本_{obj}.sql"] = block.strip()
+                if not specialized_code_artifact:
+                    for idx, block in enumerate(sql_blocks):
+                        files[f"转换脚本_{obj}_{idx + 1}.sql" if idx else f"转换脚本_{obj}.sql"] = block.strip()
                 try:
+                    _task_state = state.get("task_state") or {}
                     res = self.artifacts.write(
-                        ns, int(state.get("conv_id", 0)), agent_id, obj, files)
+                        ns, int(state.get("conv_id", 0)), agent_id, obj, files,
+                        task_id=_task_state.get("migrate_task_id"),
+                        trace_id=str(state.get("trace_id", "") or ""))
                     produced = res.get("files", [])
+                    self._trace(
+                        state, "artifact", agent_id,
+                        "核心产物已写入: " + ", ".join(str(f.get("path", "")) for f in produced),
+                    )
                     reply = "已生成核心产物：" + "、".join(
                         str(f.get("path", "")).split("/")[-1] for f in produced)
                     # 实时事件：通知前端产物已生成（按产出 Agent 分组）
@@ -599,6 +1710,10 @@ class GraphRuntime:
                                 "namespace": ns, "files": produced})
                 except NamespaceError as e:
                     reply += f"\n\n（产物入库失败：{e}）"
+        self._trace(
+            state or {}, "node", agent_id, "子智能体调用完成",
+            duration_ms=int((time.monotonic() - _started) * 1000),
+        )
         return {"ok": True, "agent_id": agent_id, "agent_name": cfg.get("name") or agent_id,
                 "reply": reply, "artifacts": produced, "ui_render": ui_render}
 
@@ -614,12 +1729,15 @@ class GraphRuntime:
             exec_out = self._exec_skill(str(args.get("skill_id", "")), str(args.get("args", "")))
             return json.dumps(exec_out, ensure_ascii=False)
         if name == "db_schema" and self.db_tools is not None:
+            self._trace(state or {}, "db", name, "数据源结构探查")
             return json.dumps(self.db_tools.inspect_schema(
                 str(args.get("ds", "")), str(args.get("object", ""))), ensure_ascii=False)
         if name == "db_query" and self.db_tools is not None:
+            self._trace(state or {}, "db", name, "数据源只读查询")
             return json.dumps(self.db_tools.query(
                 str(args.get("ds", "")), str(args.get("sql", ""))), ensure_ascii=False)
         if name == "db_explain" and self.db_tools is not None:
+            self._trace(state or {}, "db", name, "数据源执行计划查询")
             return json.dumps(self.db_tools.explain(
                 str(args.get("ds", "")), str(args.get("sql", ""))), ensure_ascii=False)
         if name == "call_agent":
@@ -635,18 +1753,24 @@ class GraphRuntime:
                        for c in (raw or []) if isinstance(c, dict) and c.get("agent_id")]
             return json.dumps({"parallel": False, "results": results}, ensure_ascii=False)
         if name == "ops_health" and self.ops is not None:
+            self._trace(state or {}, "db", name, "运维健康巡检")
             return json.dumps(self.ops.health_check(str(args.get("ds", ""))), ensure_ascii=False)
         if name == "ops_slow_sql" and self.ops is not None:
+            self._trace(state or {}, "db", name, "慢 SQL 查询")
             return json.dumps(self.ops.slow_queries(
                 threshold_ms=int(args.get("threshold_ms", 0)),
                 limit=int(args.get("limit", 20))), ensure_ascii=False)
         if name == "ops_baseline" and self.ops is not None:
+            self._trace(state or {}, "db", name, "性能基线查询")
             return json.dumps(self.ops.baseline(), ensure_ascii=False)
         if name == "gov_catalog" and self.gov is not None:
+            self._trace(state or {}, "governance", name, "治理资产目录查询")
             return json.dumps(self.gov.catalog(str(args.get("ds", ""))), ensure_ascii=False)
         if name == "gov_quality" and self.gov is not None:
+            self._trace(state or {}, "governance", name, "治理质量评分")
             return json.dumps(self.gov.quality(str(args.get("ds", ""))), ensure_ascii=False)
         if name == "gov_kgsync" and self.gov is not None:
+            self._trace(state or {}, "governance", name, "知识图谱同步")
             return json.dumps(self.gov.kg_sync(), ensure_ascii=False)
         return json.dumps({"error": f"未知工具: {name}"}, ensure_ascii=False)
 
@@ -722,16 +1846,6 @@ class GraphRuntime:
         # LLM 无法自动读取后端变量，必须由后端每轮拼进 system 上下文；
         # 否则指挥官「失忆」反复停留在第一步、重复向用户索要已收集参数。
         # 关键点：状态机阶段由后端确定性流转，LLM 只按指引推进当前阶段，无权跳转节点。
-        _M_EXEC_STATES = ("DATA_COLLECTION", "ASSESSMENT_RUNNING", "SOLUTION_GENERATE",
-                          "CODE_MIGRATE", "VERIFY_STAGE", "FINISHED")
-        _LEGACY_STEP_MAP = {  # 兼容旧会话历史（旧状态值/step → 新阶段）
-            "step1": "DATA_COLLECTION", "step2": "DATA_COLLECTION",
-            "step3": "DATA_COLLECTION", "complete": "DATA_COLLECTION",
-            "step2_conflict": "DATA_COLLECTION",
-            "INIT": "DATA_COLLECTION", "DATA_SOURCE_SELECTED": "DATA_COLLECTION",
-            "BASIC_INFO_COLLECTED": "DATA_COLLECTION", "OBJECT_SCANNING": "DATA_COLLECTION",
-            "SQL_TRANSFORM": "CODE_MIGRATE",
-        }
         task_state_block = ""
         # 仅当用户本轮输入为迁移/任务指令时才注入任务状态并引导推进；非任务指令（你是谁/闲聊）
         # 不注入，避免指挥官凭空汇报"已收集基础信息"或主动推进（任务参数是历史断点续跑数据，非本轮采集）。
@@ -871,6 +1985,7 @@ class GraphRuntime:
         plan_nudges = 0       # 流水线看门狗：计划未完成就收尾时的强制续跑提醒（最多 2 次）
         stage_blocked = False # 逐级确认下一旦违规调用后续阶段，本轮立即关闭子 Agent 工具
         while iterations < self.max_iterations:
+            self._check_cancelled()
             iterations += 1
             llm = self.llm
             if hasattr(llm, "bind_tools"):
@@ -893,18 +2008,8 @@ class GraphRuntime:
             # 关键修复：用 llm.stream() 代替 llm.invoke()，避免某些 LLM 提供商
             # （如通义千问）在 invoke() 内部流式实现导致 messages 模式捕获多次。
             # stream() 逐 token 产出，LangGraph 的 messages 模式只捕获一次完整流。
-            final_text_parts: List[str] = []
-            agg: Any = None
-            for chunk in llm.stream(messages):
-                if hasattr(chunk, "content") and chunk.content:
-                    final_text_parts.append(chunk.content)
-                # 逐块累加（AIMessageChunk 支持 + 聚合）：流式模式下工具调用参数
-                # 分布在中间块上，只取最后一块会丢掉 tool_calls —— 曾导致
-                # 「模型发起工具调用时整轮回复为空」（表现为识别意图后直接结束、无任何回复）
-                agg = chunk if agg is None else agg + chunk
-            resp = agg
-            text = "".join(final_text_parts) if final_text_parts else (
-                resp.content if hasattr(resp, "content") else str(resp) if resp else "")
+            # 逐块聚合，保留工具调用增量，并在每个 token 边界响应中止。
+            resp, text = self._stream_llm(llm, messages)
             tool_calls = getattr(resp, "tool_calls", None) or [] if resp else []
             if not tool_calls:
                 # 兜底：模型「嘴上宣布将调用子 Agent」却没真正发起工具调用
@@ -984,15 +2089,7 @@ class GraphRuntime:
                                             "error": sub.get("error", ""),
                                             "artifacts": sub_arts})
                         # 子 Agent 输出事件：前端单独渲染为蓝色子 Agent 消息（带调度溯源）
-                        self._emit({"type": "sub_agent",
-                                    "agent_id": sub_id,
-                                    "agent_name": sub_name,
-                                    "dispatcher_id": state.get("agent_id", ""),
-                                   "dispatcher_name": self._agent_name(state.get("agent_id", "")),
-                                   "reply": sub.get("reply", ""),
-                                   "error": sub.get("error", ""),
-                                   "artifacts": sub.get("artifacts", []),
-                                   "ui_render": sub.get("ui_render")})
+                        self._emit_sub_agent(state, sub_id, sub)
                         out = json.dumps(self._sub_agent_tool_result(sub), ensure_ascii=False)
                 elif name == "call_agents_parallel":
                     # 并行编排：互相独立的子任务（如 数据搬迁 ∥ 代码改造）一次并行委派。
@@ -1052,15 +2149,7 @@ class GraphRuntime:
                                                 "reply": sub.get("reply", ""),
                                                 "error": sub.get("error", ""),
                                                 "artifacts": sub_arts})
-                            self._emit({"type": "sub_agent",
-                                        "agent_id": sub_id,
-                                        "agent_name": sub_name,
-                                        "dispatcher_id": state.get("agent_id", ""),
-                                        "dispatcher_name": self._agent_name(state.get("agent_id", "")),
-                                        "reply": sub.get("reply", ""),
-                                        "error": sub.get("error", ""),
-                                        "artifacts": sub.get("artifacts", []),
-                                        "ui_render": sub.get("ui_render")})
+                            self._emit_sub_agent(state, sub_id, sub)
                         out = json.dumps({"parallel": True, "results": [
                             self._sub_agent_tool_result(sub) for sub in subs
                         ] + blocked_results}, ensure_ascii=False)
@@ -1178,6 +2267,7 @@ class GraphRuntime:
         return schemas
 
     def artifact(self, state: AgentState) -> AgentState:
+        self._check_cancelled()
         pr = state["parse_result"]
         agent_id = state["agent_id"]
         cfg = self.agent_svc.get(agent_id) or {}
@@ -1213,7 +2303,16 @@ class GraphRuntime:
         report_name = _core_report_filename(report_name)
         files[report_name] = md
         try:
-            res = self.artifacts.write(namespace, conv_id, agent_id, object_name, files)
+            _task_state = state.get("task_state") or {}
+            res = self.artifacts.write(
+                namespace, conv_id, agent_id, object_name, files,
+                task_id=_task_state.get("migrate_task_id"),
+                trace_id=str(state.get("trace_id", "") or ""))
+            self._trace(
+                state, "artifact", agent_id,
+                "核心产物已写入: " + ", ".join(
+                    str(f.get("path", "")) for f in res.get("files", [])),
+            )
         except NamespaceError as e:
             state["error"] = str(e)
             return state
@@ -1229,7 +2328,9 @@ def build_graph(llm: Any, rag_search: Callable, prompt_service: PromptService,
                 pipeline_service: Optional[PipelineService] = None,
                 db_tools: Optional[DbTools] = None, kg=None, ops=None, gov=None,
                 rag_enabled: bool = True, datasources_enabled: bool = True,
-                migrate_assets: Any = None, migrate_state: Any = None):
+                migrate_assets: Any = None, migrate_state: Any = None,
+                observability: Any = None,
+                cancellation_event: Optional[threading.Event] = None):
     rt = GraphRuntime(llm=llm, rag_search=rag_search, prompt_service=prompt_service,
                       artifact_service=artifact_service, skill_service=skill_service,
                       parse_schema=parse_schema, config=config or AppConfig(),
@@ -1237,17 +2338,22 @@ def build_graph(llm: Any, rag_search: Callable, prompt_service: PromptService,
                       pipeline_service=pipeline_service,
                       db_tools=db_tools, kg=kg, ops=ops, gov=gov,
                       rag_enabled=rag_enabled, datasources_enabled=datasources_enabled,
-                      migrate_assets=migrate_assets, migrate_state=migrate_state)
+                      migrate_assets=migrate_assets, migrate_state=migrate_state,
+                      observability=observability,
+                      cancellation_event=cancellation_event)
     g = StateGraph(AgentState)
-    g.add_node("parse", rt.parse)
-    g.add_node("route", rt.route)
-    g.add_node("execute", rt.execute)
-    g.add_node("artifact", rt.artifact)
-    g.add_node("reply", lambda s: s)
-    g.set_entry_point("parse")
-    g.add_edge("parse", "route")
-    g.add_edge("route", "execute")
-    g.add_edge("execute", "artifact")
-    g.add_edge("artifact", "reply")
-    g.add_edge("reply", END)
+    g.add_node("migration_commander", rt.commander)
+    g.add_node("migration_collector", rt.migration_collector)
+    g.add_node("migration_assessor", rt.migration_assessor)
+    g.add_node("migration_planner", rt.migration_planner)
+    g.add_node("code_migrator", rt.code_migrator)
+    g.add_node("migration_verifier", rt.migration_verifier)
+    g.set_entry_point("migration_commander")
+    route_map = {agent_id: agent_id for agent_id in STAGE_AGENT_IDS}
+    route_map[END] = END
+    g.add_conditional_edges("migration_commander", rt.route_agent, route_map)
+    stage_map = {agent_id: agent_id for agent_id in STAGE_AGENT_IDS}
+    stage_map["migration_commander"] = "migration_commander"
+    for agent_id in STAGE_AGENT_IDS:
+        g.add_conditional_edges(agent_id, rt.stage_route, stage_map)
     return g.compile()

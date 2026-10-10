@@ -1,11 +1,14 @@
+import { useEffect, useMemo, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { Button } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
 import { api } from '@/lib/api'
+import type { MigrateFlowNode } from '@/lib/types'
 import {
   MIGRATE_STATUS_LABEL,
   type MigrateTaskDetail, type MigrateStatus,
 } from '@/lib/types'
+import { boardStagesFromFlow, type MigrateBoardStage } from './flow-stages'
 import {
   CheckCircle2, XCircle, Circle, Workflow,
   X, Eye, Clock, Braces, FileText, RotateCw, FileSpreadsheet, Play,
@@ -13,30 +16,46 @@ import {
 
 /* ================= 状态机看板（任务详情头部主入口） ================= */
 
-/** 展示节点：与后端 pipeline 一致的 6 步流程（数据采集→迁移评估→迁移方案→代码改造→迁移验证→完成） */
-export const BOARD_STAGES: { keys: MigrateStatus[]; label: string; desc: string }[] = [
-  { keys: ['DATA_COLLECTION'], label: '数据采集', desc: '采集源库元数据/表结构/对象清单（小采），并确认源/目标库、容量、停机窗口等参数' },
-  { keys: ['ASSESSMENT_RUNNING'], label: '迁移评估', desc: '评估专家（小评）结合规则命中做兼容性风险与工作量评估' },
-  { keys: ['SOLUTION_GENERATE'], label: '迁移方案', desc: '方案专家（小方）汇总采集与评估结果，生成国产化迁移落地方案' },
-  { keys: ['CODE_MIGRATE'], label: '代码改造', desc: '改造专家（小改）做 JDBC/ORM/存储过程应用代码适配' },
-  { keys: ['VERIFY_STAGE'], label: '迁移验证', desc: '验证专家（小测）校验语法与结构一致性' },
-  { keys: ['FINISHED'], label: '完成', desc: '生成结构化资产与完整报告' },
-]
+const DEFAULT_BOARD_STAGES = boardStagesFromFlow()
 
-export function stageIdxOf(status: string): number {
-  const i = BOARD_STAGES.findIndex(s => s.keys.includes(status as MigrateStatus))
+/** 任务页/对话页共用：始终读取后端可编排流程，避免展示链路与执行链路分叉 */
+export function useMigrateBoardStages(): MigrateBoardStage[] {
+  const [flow, setFlow] = useState<MigrateFlowNode[] | null>(null)
+  useEffect(() => {
+    let alive = true
+    api.getMigrateFlow().then(r => {
+      if (alive && r.success && r.data) setFlow(r.data as MigrateFlowNode[])
+    }).catch(() => {})
+    return () => { alive = false }
+  }, [])
+  return useMemo(() => boardStagesFromFlow(flow), [flow])
+}
+
+export function stageIdxOf(status: string, stages: MigrateBoardStage[] = DEFAULT_BOARD_STAGES): number {
+  const i = stages.findIndex(s => s.keys.includes(status as MigrateStatus))
   return i >= 0 ? i : 0
 }
 
 /** ERROR 状态无法直接映射，依据已采集参数推断「最近推进到的阶段」 */
-export function effectiveIdx(t: MigrateTaskDetail): number {
+export function effectiveIdx(t: MigrateTaskDetail, stages: MigrateBoardStage[] = DEFAULT_BOARD_STAGES): number {
   if (t.status === 'ERROR') {
     if (t.source_ds_id && t.source_db_type && t.target_db_type
-      && (t.db_business_level || t.db_capacity || t.stop_window)) return stageIdxOf('ASSESSMENT_RUNNING')
-    if (t.source_ds_id) return stageIdxOf('DATA_COLLECTION')
-    return stageIdxOf('DATA_COLLECTION')
+      && (t.db_business_level || t.db_capacity || t.stop_window)) return stageIdxOf('ASSESSMENT_RUNNING', stages)
+    return stageIdxOf('DATA_COLLECTION', stages)
   }
-  return stageIdxOf(t.status)
+  return stageIdxOf(t.status, stages)
+}
+
+/** 阶段执行完成不等于已推进：等待用户确认时，当前节点也应显示完成。 */
+export function currentStageExecutionDone(
+  t: MigrateTaskDetail,
+  stages: MigrateBoardStage[] = DEFAULT_BOARD_STAGES,
+): boolean {
+  if (t.status === 'ERROR') return false
+  if (t.status === 'FINISHED') return true
+  if (!t.current_step) return false
+  if (t.step_status !== 'done' && t.step_status !== 'waiting_confirm') return false
+  return effectiveIdx(t, stages) === stageIdxOf(t.current_step, stages)
 }
 
 /** 单个状态机节点：✅ 已完成 / ⭕ 当前(蓝) / ○ 未执行(灰) / ❌ 异常(红) */
@@ -86,27 +105,54 @@ export function BoardNode({ idx, label, desc, state, onOpen }: {
   )
 }
 
+function RetryNodeButton({ label, onRetry, retrying, disabled }: {
+  label: string
+  onRetry: () => void
+  retrying?: boolean
+  disabled?: boolean
+}) {
+  return (
+    <button
+      onClick={onRetry}
+      disabled={retrying || disabled}
+      title={`重新执行「${label}」`}
+      className={cn(
+        'flex items-center justify-center w-5 h-5 rounded-md border transition-colors',
+        retrying || disabled
+          ? 'border-[#23232e] bg-[#101016] text-[#3a3a48] cursor-not-allowed'
+          : 'border-indigo-500/30 bg-indigo-500/10 text-indigo-300 hover:border-indigo-400/60 hover:bg-indigo-500/20',
+      )}
+    >
+      <RotateCw className={cn('w-3 h-3', retrying && 'animate-spin')} />
+    </button>
+  )
+}
+
 /** 状态机横向看板 + 连接线 */
-export function StateBoard({ detail, onOpenStage, onAdvance, advancing }: {
+export function StateBoard({ detail, onOpenStage, onAdvance, advancing, onRetryStage, retryingStage }: {
   detail: MigrateTaskDetail
   onOpenStage: (i: number) => void
   /** 可选：确定并推进（对话页手动确认闸门互动放此处，由调用方触发 advance API） */
   onAdvance?: () => void
   advancing?: boolean
+  /** 可选：单节点重试（对话页/任务详情页由调用方触发重试 API 与后续 Agent 执行） */
+  onRetryStage?: (stage: string) => void
+  retryingStage?: string | null
 }) {
-  const effIdx = effectiveIdx(detail)
+  const stages = useMigrateBoardStages()
+  const effIdx = effectiveIdx(detail, stages)
   const errored = detail.status === 'ERROR'
   const lock = detail.exec_lock
   // 执行锁：被其他会话占用 → 只读；空闲 → 可操作
   const lockBusy = !!lock?.locked
   const lockOwner = lock?.owner_user_id || lock?.session_id || '其他会话'
   // 下一阶段：推进按钮的提示文案
-  const nextStage = (effIdx >= 0 && effIdx < BOARD_STAGES.length - 1) ? BOARD_STAGES[effIdx + 1] : null
-  const canAdvance = !!onAdvance && !!nextStage && !errored && detail.status !== 'FINISHED' && !lockBusy
+  const nextStage = (effIdx >= 0 && effIdx < stages.length - 1) ? stages[effIdx + 1] : null
+  const activeStageDone = currentStageExecutionDone(detail, stages)
   return (
     <div className="rounded-lg bg-[#0f0f14] border border-[#1e1e28] p-3">
       <div className="flex items-center justify-between mb-2">
-        <span className="text-[10px] text-[#8b8b9e]">任务总状态流转（后端状态机驱动，页面仅展示，用户不可跳转）</span>
+        <span className="text-[10px] text-[#8b8b9e]">任务总状态流转（后端流程编排驱动，页面仅展示，用户不可跳转）</span>
         <span className={cn(
           'text-[10px] font-medium',
           errored ? 'text-red-400' : detail.status === 'FINISHED' ? 'text-green-400' : 'text-indigo-300',
@@ -131,17 +177,28 @@ export function StateBoard({ detail, onOpenStage, onAdvance, advancing }: {
       )}
 
       <div className="flex items-start overflow-x-auto pb-1" style={{ scrollbarWidth: 'thin' }}>
-        {BOARD_STAGES.map((s, i) => {
+        {stages.map((s, i) => {
           const state = errored
             ? (i < effIdx ? 'done' : i === effIdx ? 'error' : 'pending')
-            : (i < effIdx ? 'done' : i === effIdx ? 'current' : 'pending')
+            : (i < effIdx ? 'done' : i === effIdx && activeStageDone ? 'done' : i === effIdx ? 'current' : 'pending')
+          const showRetry = !!onRetryStage && !s.keys.includes('FINISHED')
           return (
-            <div key={s.label} className="flex items-start flex-shrink-0">
-              <BoardNode idx={i} label={s.label} desc={s.desc} state={state} onOpen={() => onOpenStage(i)} />
-              {i < BOARD_STAGES.length - 1 && (
+            <div key={s.keys[0]} className="flex items-start flex-shrink-0">
+              <div className="flex flex-col items-center gap-1">
+                <BoardNode idx={i} label={s.label} desc={s.desc} state={state} onOpen={() => onOpenStage(i)} />
+                {showRetry && (
+                  <RetryNodeButton
+                    label={s.label}
+                    onRetry={() => onRetryStage?.(s.keys[0])}
+                    retrying={retryingStage === s.keys[0]}
+                    disabled={lockBusy || !!retryingStage}
+                  />
+                )}
+              </div>
+              {i < stages.length - 1 && (
                 <div className={cn(
                   'w-3 h-px mt-[26px] flex-shrink-0',
-                  state === 'done' || (errored && i <= effIdx && i < BOARD_STAGES.length) ? 'bg-green-500/40' : 'bg-[#23232e]',
+                  state === 'done' || (errored && i <= effIdx && i < stages.length) ? 'bg-green-500/40' : 'bg-[#23232e]',
                 )} />
               )}
             </div>
@@ -157,7 +214,7 @@ export function StateBoard({ detail, onOpenStage, onAdvance, advancing }: {
       )}
       {errored && (
         <div className="mt-2 text-[11px] text-red-400 bg-red-500/10 border border-red-500/20 rounded-lg px-3 py-2 break-all">
-          节点 {effectiveIdx(detail) + 1}「{BOARD_STAGES[effectiveIdx(detail)]?.label || '—'}」执行失败{detail.error_msg ? `：${detail.error_msg}` : '，数据库连接可能超时'}。点击右上角【断点续跑】从当前节点继续，不会从头重跑。
+          节点 {effIdx + 1}「{stages[effIdx]?.label || '—'}」执行失败{detail.error_msg ? `：${detail.error_msg}` : '，数据库连接可能超时'}。点击右上角【断点续跑】从当前节点继续，不会从头重跑。
         </div>
       )}
       {detail.status === 'FINISHED' && (
@@ -182,7 +239,7 @@ export function StateBoard({ detail, onOpenStage, onAdvance, advancing }: {
           ) : nextStage ? (
             <div className="flex items-center justify-between gap-2">
               <div>
-                <div className="text-[11px] text-[#8b8b9e]">当前处于「{BOARD_STAGES[effectiveIdx(detail)]?.label || '—'}」阶段，参数与阶段产物已就绪</div>
+                <div className="text-[11px] text-[#8b8b9e]">当前处于「{stages[effIdx]?.label || '—'}」阶段，参数与阶段产物已就绪</div>
                 <div className="text-[10px] text-[#5a5a70]">确认后将进入下一阶段（由后端状态机校验，不可跳转）</div>
               </div>
               <Button size="sm" className="h-8 text-[11px] shrink-0 bg-indigo-600 hover:bg-indigo-500 text-white" onClick={onAdvance} disabled={advancing}>
@@ -219,12 +276,16 @@ function StatBlock({ label, value, cls }: { label: string; value: number; cls: s
 export function StageDrawer({ detail, stageIdx, onClose }: {
   detail: MigrateTaskDetail; stageIdx: number; onClose: () => void
 }) {
-  const stage = BOARD_STAGES[stageIdx]
-  const errored = detail.status === 'ERROR' && effectiveIdx(detail) === stageIdx
-  const done = !errored && stageIdx < effectiveIdx(detail)
-  const current = !errored && stageIdx === effectiveIdx(detail)
+  const stages = useMigrateBoardStages()
+  const stage = stages[stageIdx]
+  const effIdx = effectiveIdx(detail, stages)
+  const errored = detail.status === 'ERROR' && effIdx === stageIdx
+  const done = !errored && stageIdx < effIdx
+  const current = !errored && stageIdx === effIdx
   const assets = detail.assets || []
   const stats = detail.assets_stats || { total: 0, high: 0, medium: 0, low: 0 }
+
+  if (!stage) return null
 
   const doExport = () => {
     const a = document.createElement('a')
@@ -249,7 +310,7 @@ export function StageDrawer({ detail, stageIdx, onClose }: {
             </span>
             <div>
               <div className="text-[13px] font-semibold text-[#e4e4e9]">阶段详情：{stage.label}</div>
-              <div className="text-[11px] text-[#5a5a70]">任务 #{detail.task_id} · 第 {stageIdx + 1}/{BOARD_STAGES.length} 步</div>
+              <div className="text-[11px] text-[#5a5a70]">任务 #{detail.task_id} · 第 {stageIdx + 1}/{stages.length} 步</div>
             </div>
           </div>
           <button className="text-[#5a5a70] hover:text-[#9a9aa4] p-1 rounded transition-colors" onClick={onClose}>
@@ -348,13 +409,13 @@ export function StageDrawer({ detail, stageIdx, onClose }: {
               {detail.status === 'INIT' && (
                 <div className="text-[#5a5a70]">[INFO] 等待用户选择数据源，任务未开始（数据采集阶段）</div>
               )}
-              {stageIdx > 0 && detail.source_ds_name && (
+              {stageIdx > stageIdxOf('DATA_COLLECTION', stages) && detail.source_ds_name && (
                 <div className="text-[#8b8b9e]">[OK] 数据采集 · 已选定源数据源：{detail.source_ds_name}</div>
               )}
-              {stageIdx >= 1 && detail.target_db_type && (
+              {stageIdx > stageIdxOf('DATA_COLLECTION', stages) && detail.target_db_type && (
                 <div className="text-[#8b8b9e]">[OK] 数据采集 · 参数齐备：目标 {detail.target_db_type} / 容量 {detail.db_capacity || '—'}</div>
               )}
-              {stageIdx >= 2 && detail.object_count ? (
+              {stageIdx > stageIdxOf('DATA_COLLECTION', stages) && detail.object_count ? (
                 <div className="text-[#8b8b9e]">[OK] 数据采集 · 对象扫描完成：共 {detail.object_count} 个对象，规则命中 {stats.total} 项资产</div>
               ) : null}
               {errored && (
@@ -363,7 +424,7 @@ export function StageDrawer({ detail, stageIdx, onClose }: {
               {current && !errored && (
                 <div className="text-indigo-300">[RUN] 当前阶段正在执行…</div>
               )}
-              {done && stageIdx > 2 && (
+              {done && stageIdx > 0 && (
                 <div className="text-green-400">[OK] 阶段完成，已进入下一阶段</div>
               )}
               {detail.status === 'FINISHED' && done && (

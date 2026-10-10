@@ -11,9 +11,9 @@ import {
 import {
   RefreshCw, Database, Play, Trash2, FileSpreadsheet, FlaskConical,
   ChevronDown, ChevronRight, Loader2, ScanSearch, Workflow, Boxes,
-  RotateCw, ArrowLeft,
+  RotateCw,
 } from 'lucide-react'
-import { StateBoard, BOARD_STAGES, effectiveIdx, StageDrawer } from '@/components/migrate/state-board'
+import { StateBoard, effectiveIdx, StageDrawer, useMigrateBoardStages } from '@/components/migrate/state-board'
 import { FlowBoard } from '@/components/migrate/flow-board'
 
 /* ---- 风险色 ---- */
@@ -153,7 +153,7 @@ export function MigratePanel() {
 
   const load = async () => {
     setLoading(true)
-    const r = await api.listMigrateTasks(statusFilter ? { status: statusFilter } : {}).catch(e => ({ success: false, data: undefined }))
+    const r = await api.listMigrateTasks(statusFilter ? { status: statusFilter } : {}).catch(() => ({ success: false, data: undefined }))
     if (r.success && r.data) {
       setTasks(r.data as MigrateTask[])
       if (r.data.length > 0 && (activeId == null || !r.data.some(t => t.task_id === activeId))) {
@@ -252,9 +252,10 @@ export function MigratePanel() {
     a.click()
   }
 
-  const flowIdx = detail ? effectiveIdx(detail) : -1
-  const nextStatus = detail && flowIdx >= 0 && flowIdx < BOARD_STAGES.length - 1
-    ? BOARD_STAGES[flowIdx + 1].keys[0]
+  const boardStages = useMigrateBoardStages()
+  const flowIdx = detail ? effectiveIdx(detail, boardStages) : -1
+  const nextStatus = detail && flowIdx >= 0 && flowIdx < boardStages.length - 1
+    ? boardStages[flowIdx + 1].keys[0]
     : null
 
   return (

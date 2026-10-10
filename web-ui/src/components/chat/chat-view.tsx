@@ -1,20 +1,20 @@
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useRef, useCallback } from 'react'
 import { Message } from './message'
 import { Composer } from './composer'
 import { AgentTabs, agents as builtinAgents, type AgentTabStatus } from './agent-tabs'
 import { ArtifactPanel } from './delivery-panel'
 import { ConvertToProjectDialog } from './convert-to-project-dialog'
-import { ChatStepPanel, computeStepTotal, isEstimatedTotal } from './chat-step-panel'
+import { computeStepTotal, isEstimatedTotal } from './chat-step-panel'
 import { AttachTaskDialog } from '@/components/project/attach-task-dialog'
-import { useChatStream, stripLeadingJson, type ChatStep } from '@/hooks/use-chat-stream'
+import { useChatStream, stripLeadingJson, type ChatStep, type TimelineItem } from '@/hooks/use-chat-stream'
 import { api } from '@/lib/api'
-import { isVisibleSystemTrace } from '@/lib/trace-filter'
-import type { Agent, ArtifactItem, Message as MsgType, TraceEvent, ConversationDetail, Space, SendExtra, SystemEvent, SubAgentEvent, MigrateStatus, MigrateEvent, MigrateTaskDetail } from '@/lib/types'
-import { MIGRATE_STATUS_FLOW, MIGRATE_STATUS_LABEL } from '@/lib/types'
+import { isFinishedAgentTrace, isVisibleSystemTrace } from '@/lib/trace-filter'
+import type { Agent, ArtifactItem, Message as MsgType, TraceEvent, ConversationDetail, Space, SendExtra, SystemEvent, SubAgentEvent, MigrateEvent, MigrateTask, MigrateTaskDetail } from '@/lib/types'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { cn } from '@/lib/utils'
-import { Sparkles, ChevronRight, ChevronDown, Timer, Square, ChevronsUpDown, Link2, Zap, ArrowLeft, Workflow, Play, FileText } from 'lucide-react'
-import { StateBoard, effectiveIdx, StageDrawer, BOARD_STAGES } from '@/components/migrate/state-board'
+import { Sparkles, ChevronRight, ChevronDown, Timer, Square, ChevronsUpDown, Link2, Zap, ArrowLeft, Workflow, Play, FileText, CircleAlert } from 'lucide-react'
+import { StateBoard, currentStageExecutionDone, effectiveIdx, StageDrawer, useMigrateBoardStages } from '@/components/migrate/state-board'
+import { mergeMigrateSnapshot, useMigrateStateSocket } from '@/hooks/use-migrate-state-socket'
 
 interface ChatViewProps {
   convId: number | null
@@ -24,7 +24,7 @@ interface ChatViewProps {
   setActiveAgent: (id: string) => void
   quickMode?: boolean
   onModeChange?: (q: boolean) => void
-  onConvertToProject?: (spaceId: number, subId?: number) => void | Promise<unknown>
+  onConvertToProject?: (spaceId: number) => void | Promise<unknown>
   /** 从任务详情进入会话时提供：点击顶部任务标签返回任务详情页 */
   onBackToTask?: () => void
   /** 后端智能体列表（用于输入框下拉和标签栏） */
@@ -47,6 +47,9 @@ interface DisplayItem {
   ui?: Record<string, unknown>
   /** 子 Agent 核心产物；有值时正文不直接展示，改为文件入口 */
   artifacts?: ArtifactItem[]
+  /** 同一时间内的稳定排序：助手回复 1，产物卡片 2 */
+  rank?: number
+  seq?: number
 }
 
 const examplePrompts = [
@@ -70,6 +73,39 @@ function artifactFileName(item: ArtifactItem) {
   return item.path?.split('/').pop() || item.object_name || `产物 ${item.id}`
 }
 
+function timelineToDisplayItems(timeline: TimelineItem[]): DisplayItem[] {
+  const finishedAgents = new Set(
+    timeline
+      .filter(it => it.kind === 'system'
+        && isFinishedAgentTrace(it.ev as SystemEvent as unknown as Record<string, unknown>))
+      .map(it => (it.ev as SystemEvent).agent_id || '')
+  )
+  const hasFinishedAgent = finishedAgents.size > 0
+  return timeline.flatMap<DisplayItem>(it => {
+    if (it.kind === 'system') {
+      const ev = it.ev as SystemEvent
+      if (ev.event === 'calling_agent') {
+        const finished = ev.agent_id
+          ? finishedAgents.has(ev.agent_id)
+          : hasFinishedAgent
+        if (finished) return []
+      }
+      return [{ kind: 'system' as const, content: ev.message || '', agentId: ev.agent_id }]
+    }
+    const sa = it.ev as SubAgentEvent
+    return [{
+      kind: 'sub_agent' as const,
+      content: sa.artifacts?.length ? '' : (sa.reply || (sa.error ? `❌ ${sa.error}` : '（无返回内容）')),
+      agentId: sa.agent_id,
+      agentName: sa.agent_name,
+      dispatcherName: sa.dispatcher_name,
+      error: !!sa.error,
+      artifacts: sa.artifacts || [],
+      rank: sa.artifacts?.length ? 2 : undefined,
+    }]
+  })
+}
+
 export function ChatView({ convId, onRefreshArtifacts, activeAgent, setActiveAgent, quickMode = false, onConvertToProject, onBackToTask, agentList }: ChatViewProps) {
   // 使用后端智能体列表，如果未提供则降级为内置列表
   const agents = agentList && agentList.length > 0 ? agentList : builtinAgents
@@ -78,9 +114,8 @@ export function ChatView({ convId, onRefreshArtifacts, activeAgent, setActiveAge
   const pendingMsgRef = useRef<string | null>(null)
   const activeAgentRef = useRef(activeAgent)
   const { streaming, assistantText, steps, timeline, timelineRef, uiRenderRef, migrateState, send, stop } = useChatStream()
-  /** 迁移状态机进度：当前阶段在固定流程中的位置（后端硬编码流转） */
-  const migrateRow = MIGRATE_STATUS_FLOW
-  const migrateIdx = migrateState ? MIGRATE_STATUS_FLOW.indexOf((migrateState as MigrateEvent).to as MigrateStatus) : -1
+  /** 迁移状态机进度：当前阶段在可编排流程中的位置 */
+  const boardStages = useMigrateBoardStages()
   const scrollRef = useRef<HTMLDivElement>(null)
   const loadedConvRef = useRef<number | null>(null)
   /** 迁移任务详情（用于状态机看板展示） */
@@ -88,11 +123,14 @@ export function ChatView({ convId, onRefreshArtifacts, activeAgent, setActiveAge
   const [drawerStage, setDrawerStage] = useState<number | null>(null)
   /** 确定性推进状态机（手动确认闸门）：请求期间禁用按钮 */
   const [advancing, setAdvancing] = useState(false)
-  /** 状态机看板折叠：对话页默认只显示一行紧凑进度条，点击展开完整 8 步看板 */
+  const [retryingStage, setRetryingStage] = useState<string | null>(null)
+  /** 阶段推进/流程配置异常的应用内提示 */
+  const [advanceNotice, setAdvanceNotice] = useState<string | null>(null)
+  /** 状态机看板折叠：对话页默认只显示一行紧凑进度条，点击展开完整看板 */
   const [boardOpen, setBoardOpen] = useState(false)
 
   // 加载状态机看板：会话关联业务任务时，通过任务反查迁移任务（任务详情页同一关联链路）
-  useEffect(() => {
+  const refreshMigrateDetail = useCallback(() => {
     if (convId == null) { setMigrateDetail(null); return }
     // 先按会话绑定的业务任务查迁移任务；查不到时清空（纯对话/未发起迁移）
     api.getConversation(convId).then(cr => {
@@ -103,6 +141,12 @@ export function ChatView({ convId, onRefreshArtifacts, activeAgent, setActiveAge
       }).catch(() => {})
     }).catch(() => {})
   }, [convId])
+  const migrateSocket = useMigrateStateSocket(migrateDetail?.task_id, refreshMigrateDetail)
+  const liveMigrateDetail = mergeMigrateSnapshot(migrateDetail, migrateSocket.snapshot)
+
+  useEffect(() => {
+    void refreshMigrateDetail()
+  }, [refreshMigrateDetail])
 
   // 当迁移状态事件变化时，加载任务详情（实时推进刷新）
   useEffect(() => {
@@ -116,53 +160,74 @@ export function ChatView({ convId, onRefreshArtifacts, activeAgent, setActiveAge
   /** 确定并推进：手动确认闸门 → 后端状态机校验流转 → 刷新任务详情。
       携带会话 session_id 抢占执行锁，避免与工作台面板的会话锁冲突。 */
   const doAdvance = async () => {
-    if (migrateDetail == null) return
+    if (liveMigrateDetail == null) return
     setAdvancing(true)
-    const r: { success?: boolean; data?: { task: MigrateTaskDetail; from: string; to: string; advanced: boolean; warning?: string }; error?: string } =
-      await api.advanceMigrateTask(migrateDetail.task_id, {
+    const r: { success?: boolean; data?: { task: MigrateTask; from: string; to: string; advanced: boolean; warning?: string }; error?: string } =
+      await api.advanceMigrateTask(liveMigrateDetail.task_id, {
         task_confirm: '继续',
         session_id: convId != null ? String(convId) : 'chat',
       }).catch(e => ({ success: false, error: String(e) }))
     if (r.success && r.data?.task) {
-      setMigrateDetail(r.data.task)
+      setMigrateDetail(r.data.task as MigrateTaskDetail)
       if (!r.data.advanced) {
-        window.alert(r.data.warning || '当前阶段还不能推进：请先补齐本阶段必填信息，或等待当前智能体执行完成。')
+        setAdvanceNotice(r.data.warning || '当前阶段还不能推进：请先补齐本阶段必填信息，或等待当前智能体执行完成。')
       } else {
-        if (r.data.warning) window.alert(r.data.warning)
-        // 状态机只负责跨过确认闸门；下一阶段专家必须通过会话流真正执行。
-        await handleSend('继续', undefined, 'migration_commander')
+        if (r.data.warning) setAdvanceNotice(r.data.warning)
+        // 状态机只负责跨过确认闸门；下一阶段专家通过会话流执行，且不再重复确认。
+        await handleSend('开始执行', { skip_state_advance: true }, 'migration_commander')
       }
     } else {
-      window.alert(r.error || '状态机推进失败')
+      setAdvanceNotice(r.error || '状态机推进失败')
     }
     setAdvancing(false)
   }
 
+  /** 单节点重试：先回退状态并复位会话执行态，再由主 Agent 按当前节点重新编排。 */
+  const doRetryStage = async (stage: string) => {
+    if (liveMigrateDetail == null || retryingStage || advancing) return
+    setRetryingStage(stage)
+    try {
+      const r = await api.retryMigrateTaskStage(
+        liveMigrateDetail.task_id,
+        stage,
+        convId != null ? String(convId) : undefined,
+      )
+      if (!r.success || !r.data?.task) {
+        setAdvanceNotice(r.error || '节点重试失败')
+        return
+      }
+      setMigrateDetail(r.data.task as MigrateTaskDetail)
+      await handleSend('开始执行', { skip_state_advance: true }, 'migration_commander')
+    } catch (e) {
+      setAdvanceNotice(e instanceof Error ? e.message : String(e))
+    } finally {
+      setRetryingStage(null)
+    }
+  }
+
   /** 切换逐级确认开关（DB 配置化）：开=每执行阶段完成停驻等确认，关=一次性编排跑完 */
   const toggleStepConfirm = async () => {
-    if (migrateDetail == null) return
-    const next = migrateDetail.step_confirm === false
+    if (liveMigrateDetail == null) return
+    const next = liveMigrateDetail.step_confirm === false
     try {
-      const r = await api.setMigrateStepConfirm(migrateDetail.task_id, next)
+      const r = await api.setMigrateStepConfirm(liveMigrateDetail.task_id, next)
       if (r.success && r.data) setMigrateDetail(r.data as MigrateTaskDetail)
     } catch { /* 静默 */ }
   }
 
   /** 切换流程强校验：开=严格顺序；关=允许按用户指派自由选择阶段专家 */
   const toggleStrictFlow = async () => {
-    if (migrateDetail == null) return
-    const next = migrateDetail.strict_flow !== false ? false : true
+    if (liveMigrateDetail == null) return
+    const next = liveMigrateDetail.strict_flow !== false ? false : true
     try {
-      const r = await api.setMigrateStrictFlow(migrateDetail.task_id, next)
+      const r = await api.setMigrateStrictFlow(liveMigrateDetail.task_id, next)
       if (r.success && r.data) setMigrateDetail(r.data as MigrateTaskDetail)
-      else window.alert(r.error || '流程强校验开关设置失败')
+      else setAdvanceNotice(r.error || '流程强校验开关设置失败')
     } catch (e) {
-      window.alert(String(e))
+      setAdvanceNotice(String(e))
     }
   }
 
-  // 链路相关状态（默认折叠：业务使用者只看对话）
-  const [chainCollapsed, setChainCollapsed] = useState(true)
   const [usedAgents, setUsedAgents] = useState<Set<string>>(new Set())
 
   // 欢迎块：快捷指令 / 技能集折叠状态
@@ -203,6 +268,20 @@ export function ChatView({ convId, onRefreshArtifacts, activeAgent, setActiveAge
     Promise.all([api.getMessages(convId), api.getTrace(convId)]).then(([mr, tr]) => {
       const msgs = (mr.success ? mr.data : []) as MsgType[]
       const events = (tr.success ? tr.data : []) as TraceEvent[]
+      const systemContents = events.map(ev =>
+        (typeof ev.content === 'object' ? ev.content : {}) as Record<string, unknown>
+      )
+      const finishedAgents = new Set(
+        systemContents
+          .filter(content => isFinishedAgentTrace(content))
+          .map(content => content.agent_id as string || '')
+      )
+      const hasFinishedAgent = finishedAgents.size > 0
+      const assistantTimestamps = msgs
+        .filter(m => m.role === 'assistant')
+        .map(m => new Date(m.created_at || '').getTime())
+        .filter(ts => Number.isFinite(ts))
+        .sort((a, b) => a - b)
       const combined: DisplayItem[] = []
       for (const m of msgs) {
         if (m.role === 'user' || m.role === 'assistant') {
@@ -221,10 +300,18 @@ export function ChatView({ convId, onRefreshArtifacts, activeAgent, setActiveAge
         const c = (typeof ev.content === 'object' ? ev.content : {}) as Record<string, unknown>
         if (ev.node === 'system') {
           if (!isVisibleSystemTrace(c)) continue
+          if (c.event === 'calling_agent') {
+            const finished = c.agent_id
+              ? finishedAgents.has(c.agent_id as string)
+              : hasFinishedAgent
+            if (finished) continue
+          }
           combined.push({ kind: 'system', content: (c.message as string) || '', ts: new Date(ev.created_at || '').getTime() })
         } else if (ev.node === 'agent') {
           const replyC = (c.reply as string) || ''
           const artifacts = (c.artifacts as ArtifactItem[]) || []
+          const traceTs = new Date(ev.created_at || '').getTime()
+          const summaryTs = assistantTimestamps.find(ts => ts >= traceTs)
           combined.push({
             kind: 'sub_agent',
             content: artifacts.length ? '' : (replyC || (c.error ? `❌ ${c.error}` : '（无返回内容）')),
@@ -233,7 +320,8 @@ export function ChatView({ convId, onRefreshArtifacts, activeAgent, setActiveAge
             dispatcherName: (c.dispatcher_name as string) || undefined,
             error: !!c.error,
             artifacts,
-            ts: new Date(ev.created_at || '').getTime(),
+            ts: artifacts.length && summaryTs != null ? summaryTs : traceTs,
+            rank: artifacts.length ? 2 : undefined,
           })
           // 与实时流一致：子 Agent 调用同时进入任务链路节点
           combined.push({ kind: 'step', step: { type: 'agent', content: ev.content }, ts: new Date(ev.created_at || '').getTime() })
@@ -241,7 +329,11 @@ export function ChatView({ convId, onRefreshArtifacts, activeAgent, setActiveAge
           combined.push({ kind: 'step', step: { type: ev.node, content: ev.content }, ts: new Date(ev.created_at || '').getTime() })
         }
       }
-      combined.sort((a, b) => (a.ts || 0) - (b.ts || 0))
+      combined.forEach((item, index) => { item.seq = index })
+      combined.sort((a, b) =>
+        (a.ts || 0) - (b.ts || 0)
+        || (a.rank ?? 0) - (b.rank ?? 0)
+        || (a.seq ?? 0) - (b.seq ?? 0))
       if (pendingMsgRef.current) {
         const exists = combined.some(d => d.kind === 'message' && d.role === 'user' && d.content === pendingMsgRef.current)
         if (!exists) {
@@ -293,21 +385,9 @@ export function ChatView({ convId, onRefreshArtifacts, activeAgent, setActiveAge
       const fullText = await send(text, cid, runAgentId, extra)
       // 流结束后：移除占位回复条目，把本次运行产生的系统事件 / 子 Agent 输出补入当前会话视图
       // （已由后端写入 trace，刷新后仍会恢复；此处保证流结束后即时可见）
-      const runItems: DisplayItem[] = timelineRef.current.map(it => {
-        if (it.kind === 'system') {
-          return { kind: 'system', content: (it.ev as SystemEvent).message || '' }
-        }
-        const sa = it.ev as SubAgentEvent
-        return {
-          kind: 'sub_agent',
-          content: sa.reply || (sa.error ? `❌ ${sa.error}` : '（无返回内容）'),
-          agentId: sa.agent_id,
-          agentName: sa.agent_name,
-          dispatcherName: sa.dispatcher_name,
-          error: !!sa.error,
-          artifacts: sa.artifacts || [],
-        }
-      })
+      const committedItems = timelineToDisplayItems(timelineRef.current)
+      const runItems = committedItems.filter(it => !(it.kind === 'sub_agent' && it.artifacts?.length))
+      const artifactItems = committedItems.filter(it => it.kind === 'sub_agent' && !!it.artifacts?.length)
       setItems(prev => {
         const next: DisplayItem[] = [...prev.filter(i => !(i.kind === 'message' && i.pending)), ...runItems]
         if (fullText) {
@@ -320,6 +400,7 @@ export function ChatView({ convId, onRefreshArtifacts, activeAgent, setActiveAge
             ui: uiRenderRef.current || undefined,
           })
         }
+        next.push(...artifactItems)
         return next
       })
     } catch (e) {
@@ -329,6 +410,7 @@ export function ChatView({ convId, onRefreshArtifacts, activeAgent, setActiveAge
         { kind: 'message', role: 'assistant', content: `❌ 发送失败：${e instanceof Error ? e.message : String(e)}`, error: true },
       ])
     }
+    void refreshMigrateDetail()
     onRefreshArtifacts()
   }
 
@@ -358,22 +440,7 @@ export function ChatView({ convId, onRefreshArtifacts, activeAgent, setActiveAge
     }
   }
   if (streaming && timeline.length > 0) {
-    for (const it of timeline) {
-      if (it.kind === 'system') {
-        liveItems.push({ kind: 'system', content: (it.ev as SystemEvent).message || '' })
-      } else {
-        const sa = it.ev as SubAgentEvent
-        liveItems.push({
-          kind: 'sub_agent',
-          content: sa.reply || (sa.error ? `❌ ${sa.error}` : '（无返回内容）'),
-          agentId: sa.agent_id,
-          agentName: sa.agent_name,
-          dispatcherName: sa.dispatcher_name,
-          error: !!sa.error,
-          artifacts: sa.artifacts || [],
-        })
-      }
-    }
+    liveItems.push(...timelineToDisplayItems(timeline))
   }
   if (pendingItem) {
     liveItems.push(pendingItem)
@@ -393,12 +460,6 @@ export function ChatView({ convId, onRefreshArtifacts, activeAgent, setActiveAge
   const totalSec = computeStepTotal(allSteps)
   const statusLabel = hasAnyError ? '执行失败' : streaming ? '执行中' : '已完成'
   const statusCls = hasAnyError ? 'text-red-400' : streaming ? 'text-blue-400' : 'text-green-400'
-
-  // 运行开始时自动展开任务链路面板：让用户看到「识别意图→路由→子Agent调用→产物」的实时进度，
-  // 而不是只看到一个转圈以为没在干活。streaming 由 true 保持期间 effect 不再触发，用户中途手动折叠不会被反复打开。
-  useEffect(() => {
-    if (streaming) setChainCollapsed(false)
-  }, [streaming])
 
   // 占位回复的加载文案：反映当前实际阶段（来自时间线最后一条事件或步骤），而非干巴巴的"正在生成回复"
   let loadingHint = ''
@@ -442,7 +503,7 @@ export function ChatView({ convId, onRefreshArtifacts, activeAgent, setActiveAge
       />
 
       {/* 顶部综合信息栏：任务归属 + 迁移进度 一行（智能体标签栏保持不变） */}
-      {(convInfo || migrateDetail) && (
+      {(convInfo || liveMigrateDetail) && (
         <div className="flex items-center gap-3 px-3 py-1.5 border-b border-[#1e1e28] bg-[#11141d]">
           {/* 左：任务/会话归属 */}
           {convInfo && (quickMode ? (
@@ -484,15 +545,15 @@ export function ChatView({ convId, onRefreshArtifacts, activeAgent, setActiveAge
                   <Link2 className="w-3 h-3" />另存为任务
                 </button>
               )}
-              {(convInfo.space_name || convInfo.sub_system_name) && (
+              {convInfo.space_name && (
                 <span className="text-[11px] text-[#5a5a70] whitespace-nowrap truncate max-w-[220px]">
-                  {convInfo.space_name}{convInfo.sub_system_name ? ` / ${convInfo.sub_system_name}` : ''}
+                  {convInfo.space_name}
                 </span>
               )}
             </div>
           ))}
           {/* 右：迁移进度 + 推进按钮 */}
-          {migrateDetail && (
+          {liveMigrateDetail && (
             <div className="flex items-center gap-3 ml-auto min-w-0 shrink-0">
               <button
                 className="flex items-center gap-2 min-w-0 text-left group"
@@ -501,16 +562,19 @@ export function ChatView({ convId, onRefreshArtifacts, activeAgent, setActiveAge
               >
                 <Workflow className="w-3.5 h-3.5 text-indigo-400 shrink-0" />
                 <span className="text-[11px] font-medium text-indigo-300 whitespace-nowrap">
-                  {BOARD_STAGES[effectiveIdx(migrateDetail)]?.label || '—'}
-                  <span className="text-[#5a5a70] font-normal"> · {effectiveIdx(migrateDetail) + 1}/{BOARD_STAGES.length}</span>
+                  {boardStages[effectiveIdx(liveMigrateDetail, boardStages)]?.label || '—'}
+                  <span className="text-[#5a5a70] font-normal"> · {effectiveIdx(liveMigrateDetail, boardStages) + 1}/{boardStages.length}</span>
                 </span>
                 <div className="flex gap-0.5 max-w-[120px] min-w-[50px]">
-                  {BOARD_STAGES.map((s, i) => {
-                    const st = migrateDetail.status === 'ERROR'
-                      ? (i < effectiveIdx(migrateDetail) ? 'done' : i === effectiveIdx(migrateDetail) ? 'error' : 'pending')
-                      : (i < effectiveIdx(migrateDetail) ? 'done' : i === effectiveIdx(migrateDetail) ? 'current' : 'pending')
+                  {boardStages.map((s, i) => {
+                    const st = liveMigrateDetail.status === 'ERROR'
+                      ? (i < effectiveIdx(liveMigrateDetail, boardStages) ? 'done' : i === effectiveIdx(liveMigrateDetail, boardStages) ? 'error' : 'pending')
+                      : (i < effectiveIdx(liveMigrateDetail, boardStages) || (
+                          i === effectiveIdx(liveMigrateDetail, boardStages)
+                          && currentStageExecutionDone(liveMigrateDetail, boardStages)
+                        ) ? 'done' : i === effectiveIdx(liveMigrateDetail, boardStages) ? 'current' : 'pending')
                     return (
-                      <span key={s.label} className={cn('h-1.5 flex-1 rounded-full transition-colors',
+                      <span key={s.keys[0]} className={cn('h-1.5 flex-1 rounded-full transition-colors',
                         st === 'done' ? 'bg-green-500/70'
                           : st === 'current' ? 'bg-indigo-400'
                             : st === 'error' ? 'bg-red-500'
@@ -521,7 +585,7 @@ export function ChatView({ convId, onRefreshArtifacts, activeAgent, setActiveAge
                 <ChevronDown className={cn('w-3.5 h-3.5 text-[#5a5a70] shrink-0 transition-transform', boardOpen && 'rotate-180')} />
               </button>
               {(() => {
-                const scOn = migrateDetail.step_confirm !== false
+                const scOn = liveMigrateDetail.step_confirm !== false
                 return (
                   <div
                     className="flex items-center gap-1.5 shrink-0"
@@ -541,7 +605,7 @@ export function ChatView({ convId, onRefreshArtifacts, activeAgent, setActiveAge
                 )
               })()}
               {(() => {
-                const strictOn = migrateDetail.strict_flow !== false
+                const strictOn = liveMigrateDetail.strict_flow !== false
                 return (
                   <div
                     className="flex items-center gap-1.5 shrink-0"
@@ -561,11 +625,11 @@ export function ChatView({ convId, onRefreshArtifacts, activeAgent, setActiveAge
                 )
               })()}
               {(() => {
-                const errored = migrateDetail.status === 'ERROR'
-                const lockBusy = !!migrateDetail.exec_lock?.locked
-                const nextIdx = effectiveIdx(migrateDetail) + 1
-                const nextStage = nextIdx < BOARD_STAGES.length ? BOARD_STAGES[nextIdx] : null
-                const canAdvance = !!nextStage && !errored && migrateDetail.status !== 'FINISHED' && !lockBusy
+                const errored = liveMigrateDetail.status === 'ERROR'
+                const lockBusy = !!liveMigrateDetail.exec_lock?.locked
+                const nextIdx = effectiveIdx(liveMigrateDetail, boardStages) + 1
+                const nextStage = nextIdx < boardStages.length ? boardStages[nextIdx] : null
+                const canAdvance = !!nextStage && !errored && liveMigrateDetail.status !== 'FINISHED' && !lockBusy
                 if (!canAdvance) return null
                 return (
                   <button
@@ -582,9 +646,9 @@ export function ChatView({ convId, onRefreshArtifacts, activeAgent, setActiveAge
           )}
         </div>
       )}
-      {boardOpen && migrateDetail && (
+      {boardOpen && liveMigrateDetail && (
         <div className="px-4 py-2 border-b border-[#1e1e28] bg-[#11141d]">
-          <StateBoard detail={migrateDetail} onOpenStage={setDrawerStage} onAdvance={doAdvance} advancing={advancing} />
+          <StateBoard detail={liveMigrateDetail} onOpenStage={setDrawerStage} onAdvance={doAdvance} advancing={advancing} onRetryStage={doRetryStage} retryingStage={retryingStage} />
         </div>
       )}
 
@@ -593,15 +657,52 @@ export function ChatView({ convId, onRefreshArtifacts, activeAgent, setActiveAge
         open={convertOpen}
         spaces={spacesForConvert}
         onClose={() => setConvertOpen(false)}
-        onConfirm={async (sid, subId) => {
+        onConfirm={async (sid) => {
           setConvertOpen(false)
-          await onConvertToProject?.(sid, subId)
-          // 转换成功后刷新会话归属信息（空间名/子系统名）
+          await onConvertToProject?.(sid)
+          // 转换成功后刷新会话归属信息（空间名）
           if (convId != null) {
             api.getConversation(convId).then(r => { if (r.success) setConvInfo(r.data ?? null) }).catch(() => {})
           }
         }}
       />
+
+      {advanceNotice && (
+        <div
+          className="fixed inset-0 z-[95] flex items-center justify-center bg-black/55 backdrop-blur-sm p-4"
+          onClick={() => setAdvanceNotice(null)}
+        >
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="advance-notice-title"
+            className="w-full max-w-[380px] overflow-hidden rounded-lg border border-[#2a2a38] bg-[#15151d] shadow-[0_24px_70px_rgba(0,0,0,0.45)]"
+            onClick={e => e.stopPropagation()}
+          >
+            <div className="flex items-start gap-3 px-5 pt-5 pb-4">
+              <span className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-full border border-amber-500/25 bg-amber-500/10">
+                <CircleAlert className="h-4 w-4 text-amber-400" />
+              </span>
+              <div className="min-w-0">
+                <h3 id="advance-notice-title" className="text-[14px] font-semibold text-[#f0f0f4]">
+                  阶段推进提示
+                </h3>
+                <p className="mt-1.5 text-[12px] leading-5 text-[#a5a5b2]">
+                  {advanceNotice}
+                </p>
+              </div>
+            </div>
+            <div className="flex justify-end border-t border-[#242430] bg-black/20 px-5 py-3">
+              <button
+                className="h-8 rounded-md border border-[#31313d] bg-[#1d1d27] px-3 text-[12px] text-[#d8d8e2] transition-colors hover:border-indigo-500/40 hover:bg-indigo-500/10 hover:text-indigo-200"
+                onClick={() => setAdvanceNotice(null)}
+              >
+                我知道了
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* 多 Agent 执行链路可视化区：已按需求隐藏（覆盖 Showcase 需保留状态机看板与统计条） */}
 
@@ -773,7 +874,7 @@ export function ChatView({ convId, onRefreshArtifacts, activeAgent, setActiveAge
           {/* 输入区：放在聊天列内部，与消息列表（max-w-3xl mx-auto）在同一容器居中。
               原先放在「聊天列 + 产物面板」整体下方居中，导致输入框相对消息区向右偏移半个产物面板宽度 */}
           <div className="w-full bg-[#0f0f14] flex-shrink-0 flex justify-center">
-            <Composer onSend={handleSend} onStop={stop} disabled={streaming} activeAgent={activeAgent} convId={convId} spaceId={convInfo?.space_id ?? null} agentList={agentList} currentStage={migrateDetail?.status_label} />
+            <Composer onSend={handleSend} onStop={stop} disabled={streaming} activeAgent={activeAgent} convId={convId} spaceId={convInfo?.space_id ?? null} agentList={agentList} currentStage={liveMigrateDetail?.status_label} />
           </div>
         </div>
         <ArtifactPanel
@@ -794,8 +895,8 @@ export function ChatView({ convId, onRefreshArtifacts, activeAgent, setActiveAge
         />
       )}
       {/* 阶段详情抽屉（点击状态机节点弹出） */}
-      {migrateDetail && drawerStage != null && (
-        <StageDrawer detail={migrateDetail} stageIdx={drawerStage} onClose={() => setDrawerStage(null)} />
+      {liveMigrateDetail && drawerStage != null && (
+        <StageDrawer detail={liveMigrateDetail} stageIdx={drawerStage} onClose={() => setDrawerStage(null)} />
       )}
     </div>
   )

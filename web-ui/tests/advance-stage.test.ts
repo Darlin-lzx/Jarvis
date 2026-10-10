@@ -15,7 +15,9 @@ test('advancing a stage triggers the next chat run instead of only changing stat
 
   assert.equal(doAdvance.includes("r.data.advanced"), true)
   assert.equal(
-    doAdvance.includes("handleSend('继续', undefined, 'migration_commander')"),
+    doAdvance.includes(
+      "handleSend('开始执行', { skip_state_advance: true }, 'migration_commander')",
+    ),
     true,
   )
 })

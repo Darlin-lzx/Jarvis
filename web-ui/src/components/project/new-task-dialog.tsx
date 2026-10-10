@@ -7,7 +7,6 @@ import { cn } from '@/lib/utils'
 export interface NewTaskContext {
   lockSpace?: boolean | undefined   // 场景 C：空间详情页锁定
   space?: Space | undefined         // 场景 B/C 预选空间
-  subId?: number | undefined        // 场景 B 预选子系统
   agentId?: string | undefined      // 场景 B 当前 Agent / 复制任务
   convId?: number | undefined       // 场景 B 来源会话（创建并进入会话）
   name?: string | undefined         // 复制任务：预填任务名称
@@ -26,7 +25,6 @@ interface Props {
 export function NewTaskDialog({ open, onClose, context, agents = [], onCreate }: Props) {
   const [spaces, setSpaces] = useState<Space[]>([])
   const [spaceId, setSpaceId] = useState<number | null>(null)
-  const [subId, setSubId] = useState<number | null>(null)
   const [name, setName] = useState('')
   const [desc, setDesc] = useState('')
   const [agentId, setAgentId] = useState(context?.agentId || '')
@@ -34,6 +32,7 @@ export function NewTaskDialog({ open, onClose, context, agents = [], onCreate }:
   const [kbs, setKbs] = useState<{ id: number; name: string }[]>([])
   const [advOpen, setAdvOpen] = useState(false)
   const [saving, setSaving] = useState(false)
+  const [error, setError] = useState<string | null>(null)
   // 真实主 Agent 列表（任务主智能体必须是主 Agent）
   const [mainAgents, setMainAgents] = useState<{ id: string; name: string }[]>([])
 
@@ -42,16 +41,15 @@ export function NewTaskDialog({ open, onClose, context, agents = [], onCreate }:
   useEffect(() => {
     if (!open) return
     setSaving(false)
+    setError(null)
     api.listSpaces().then(r => {
       if (!r.success) return
       setSpaces(r.data || [])
       if (context?.space) {
         setSpaceId(context.space.id)
-        setSubId(context.subId ?? null)
       } else {
         // 场景 A：无默认值，必须手动选择空间
         setSpaceId(null)
-        setSubId(null)
       }
     })
     // 复制任务 / 场景 B：预填名称、描述、主 Agent、知识库（无上下文则清空）
@@ -70,21 +68,10 @@ export function NewTaskDialog({ open, onClose, context, agents = [], onCreate }:
       api.getConversation(context.convId).then(r => {
         if (r.success && r.data && r.data.space_id) {
           setSpaceId(r.data.space_id)
-          setSubId(r.data.sub_system_id ?? null)
         }
       })
     }
-  }, [open, context?.space?.id, context?.subId])
-
-  const currentSpace = useMemo(() => spaces.find(s => s.id === spaceId), [spaces, spaceId])
-
-  // 切换空间后清空子系统（仅当空间已加载且子系统不在列表中时才清空）
-  useEffect(() => {
-    if (!currentSpace) return // 空间未加载时不清空，等待异步数据
-    if (subId == null) return
-    const exists = currentSpace.subsystems.some(s => s.id === subId)
-    if (!exists) setSubId(null)
-  }, [spaceId, currentSpace?.subsystems, currentSpace])
+  }, [open, context?.space?.id])
 
   // 可用的主 Agent 选项（优先真实主 Agent；其次外部传入的主/总控 Agent）
   const agentOptions = useMemo(() => {
@@ -95,16 +82,22 @@ export function NewTaskDialog({ open, onClose, context, agents = [], onCreate }:
   const submit = async (enterSession: boolean) => {
     if (!spaceId) return
     if (!name.trim()) return
-    if (!subId) return  // 子系统必选
     setSaving(true)
+    setError(null)
     try {
       const r = await api.createTask({
-        space_id: spaceId, sub_system_id: subId,
+        space_id: spaceId,
         name: name.trim(), description: desc, kb_ids: kbIds, agent_id: agentId,
       })
       if (r.success && r.data) onCreate(r.data, enterSession)
-      else setSaving(false)
-    } catch { setSaving(false) }
+      else {
+        setError(r.error || r.detail || '任务创建失败，请稍后重试')
+        setSaving(false)
+      }
+    } catch (e) {
+      setError(e instanceof Error ? e.message : '任务创建失败，请稍后重试')
+      setSaving(false)
+    }
   }
 
   if (!open) return null
@@ -130,25 +123,6 @@ export function NewTaskDialog({ open, onClose, context, agents = [], onCreate }:
               {!lockSpace && spaces.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
             </select>
             {lockSpace && <p className="text-[11px] text-[#5a5a70] mt-1">所属空间创建后不可修改</p>}
-          </div>
-
-          <div>
-            <label className="text-[12px] text-[#9a9aa4] mb-1.5 block">所属子系统 <span className="text-red-400">*</span></label>
-            <select
-              value={subId ?? ''}
-              onChange={e => setSubId(Number(e.target.value) || null)}
-              disabled={!currentSpace || currentSpace.subsystems.length === 0}
-              className={cn('w-full h-9 rounded-lg bg-[#0f0f14] border border-[#252530] px-3 text-[13px]',
-                (!currentSpace || currentSpace.subsystems.length === 0) ? 'text-[#6a6a7a] cursor-not-allowed' : 'text-[#e4e4e9]')}
-            >
-              <option value="">请选择子系统…</option>
-              {currentSpace?.subsystems.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
-            </select>
-            {!currentSpace
-              ? <p className="text-[11px] text-[#5a5a70] mt-1">请先选择空间</p>
-              : currentSpace.subsystems.length === 0
-                ? <p className="text-[11px] text-amber-400/80 mt-1">该空间暂无子系统，请先去空间管理创建子系统</p>
-                : <p className="text-[11px] text-[#5a5a70] mt-1">任务只能归属当前空间的子系统，创建后不可修改</p>}
           </div>
 
           <div>
@@ -196,19 +170,24 @@ export function NewTaskDialog({ open, onClose, context, agents = [], onCreate }:
             )}
           </div>
 
+          {error && (
+            <div className="rounded-lg border border-red-500/25 bg-red-500/10 px-3 py-2 text-[12px] text-red-400">
+              {error}
+            </div>
+          )}
+
           <div className="flex items-center gap-2.5 pt-2">
             <button onClick={() => submit(false)}
-              disabled={!spaceId || !subId || !name.trim() || saving || (currentSpace?.subsystems.length === 0)}
+              disabled={!spaceId || !name.trim() || saving}
               className="flex-1 h-9 rounded-lg bg-gradient-to-br from-[#5b7cfa] to-[#7a5bfa] text-white text-[13px] disabled:opacity-40">
               {saving ? <Loader2 className="w-4 h-4 animate-spin mx-auto" /> : '创建任务'}
             </button>
             <button onClick={() => submit(true)}
-              disabled={!spaceId || !subId || !name.trim() || saving || (currentSpace?.subsystems.length === 0)}
+              disabled={!spaceId || !name.trim() || saving}
               className="flex-1 h-9 rounded-lg bg-[#1e1e28] border border-[#2f2f38] text-[13px] text-[#cdd3e0] hover:border-indigo-500/40 disabled:opacity-40">
               创建并进入会话
             </button>
           </div>
-          {(!subId && spaceId) && <p className="text-[11px] text-amber-400/90 pt-1 text-center">请选择所属子系统</p>}
         </div>
       </div>
     </div>

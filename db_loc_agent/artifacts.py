@@ -2,9 +2,10 @@
 from __future__ import annotations
 
 import re
+import difflib
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Union
 
 from sqlalchemy import select
 
@@ -76,10 +77,12 @@ class ArtifactService:
         return d
 
     def write(self, namespace: str, conv_id: int, agent_id: str, object_name: str,
-              files: Dict[str, str]) -> Dict:
+              files: Dict[str, Union[str, bytes]], *, task_id: int | None = None,
+              trace_id: str = "") -> Dict:
         d = self._dir_for(namespace)
         d.mkdir(parents=True, exist_ok=True)
-        # 归属解析：从会话反向读取 空间/子系统/任务
+        # 归属解析：显式 task_id 优先；否则从会话反向读取 空间/子系统/任务
+        requested_task_id = task_id
         space_id = sub_system_id = task_id = None
         if conv_id is not None:
             from db_loc_agent.db import Conversation
@@ -87,22 +90,59 @@ class ArtifactService:
                 conv = s.get(Conversation, conv_id)
                 if conv:
                     space_id, sub_system_id, task_id = conv.space_id, conv.sub_system_id, conv.task_id
+        task_id = requested_task_id if requested_task_id is not None else task_id
         records = []
         for fname, content in files.items():
             if "/" in fname or "\\" in fname or fname in ("", ".", ".."):
                 raise NamespaceError(f"非法文件名: {fname}")
             fpath = d / fname
-            fpath.write_text(content, encoding="utf-8")
             ftype = fpath.suffix.lstrip(".").lower() or "txt"
+            version, parent_version = 1, None
+            version_dir = d
+            if task_id is not None:
+                version, parent_version = self._next_version(
+                    task_id=task_id, agent_id=agent_id,
+                    object_name=object_name, file_type=ftype,
+                )
+                version_dir = d / f"v{version}"
+                version_dir.mkdir(parents=True, exist_ok=True)
+                fpath = version_dir / fname
+            if isinstance(content, bytes):
+                fpath.write_bytes(content)
+            else:
+                fpath.write_text(content, encoding="utf-8")
             with self.db.session() as s:
                 rec = ArtifactRecord(namespace=namespace, conv_id=conv_id, agent_id=agent_id,
                                      object_name=object_name, file_type=ftype, path=str(fpath),
-                                     space_id=space_id, sub_system_id=sub_system_id, task_id=task_id)
+                                     space_id=space_id, sub_system_id=sub_system_id,
+                                     task_id=task_id, version=version,
+                                     parent_version=parent_version,
+                                     trace_id=(trace_id or "").strip())
                 s.add(rec)
                 s.commit()
                 s.refresh(rec)
                 records.append(self._to_dict(rec))
         return {"namespace": namespace, "files": records}
+
+    def _next_version(self, *, task_id: int, agent_id: str,
+                      object_name: str, file_type: str) -> tuple[int, int | None]:
+        versions = self._version_rows(task_id, agent_id, object_name, file_type)
+        if not versions:
+            return 1, None
+        latest = versions[-1].version or 1
+        return int(latest) + 1, int(latest)
+
+    def _version_rows(self, task_id: int, agent_id: str,
+                      object_name: str, file_type: str):
+        with self.db.session() as s:
+            return list(s.scalars(
+                select(ArtifactRecord)
+                .where(ArtifactRecord.task_id == task_id,
+                       ArtifactRecord.agent_id == agent_id,
+                       ArtifactRecord.object_name == object_name,
+                       ArtifactRecord.file_type == file_type)
+                .order_by(ArtifactRecord.id.asc())
+            ))
 
     def list_namespaces(self, conv_id: Optional[int] = None) -> List[str]:
         with self.db.session() as s:
@@ -127,9 +167,120 @@ class ArtifactService:
             if not rec:
                 return None
             p = Path(rec.path).resolve()
-            if not str(p).startswith(str(self.root.resolve())):
-                raise NamespaceError("产物路径越界")
-            return p.read_text(encoding="utf-8")
+        if not str(p).startswith(str(self.root.resolve())):
+            raise NamespaceError("产物路径越界")
+        if p.suffix.lower() == ".xlsx":
+            return _xlsx_preview(p)
+        return p.read_text(encoding="utf-8")
+
+    def read_bytes(self, record_id: int) -> Optional[bytes]:
+        record = self._record(record_id)
+        return self._read_record_bytes(record)
+
+    def file_path(self, record_id: int) -> Path:
+        record = self._record(record_id)
+        path = Path(record.path).resolve()
+        if not str(path).startswith(str(self.root.resolve())):
+            raise NamespaceError("产物路径越界")
+        return path
+
+    def version_record(self, record_id: int, version: int):
+        base = self._record(record_id)
+        rows = self._version_rows(
+            base.task_id, base.agent_id, base.object_name, base.file_type
+        ) if base.task_id is not None else []
+        for row in rows:
+            if int(row.version or 1) == int(version):
+                return row
+        raise ValueError(f"产物版本不存在: {record_id} v{version}")
+
+    def list_versions(self, record_id: int) -> List[Dict]:
+        base = self._record(record_id)
+        if base.task_id is None:
+            return [self._to_dict(base)]
+        return [self._to_dict(row) for row in self._version_rows(
+            base.task_id, base.agent_id, base.object_name, base.file_type
+        )]
+
+    def read_version(self, record_id: int, version: int) -> Optional[str]:
+        return self._read_record(self.version_record(record_id, version))
+
+    def diff(self, record_id: int, left_version: int, right_version: int) -> Dict:
+        left = self.version_record(record_id, left_version)
+        right = self.version_record(record_id, right_version)
+        left_lines = (self._read_record(left) or "").splitlines(keepends=True)
+        right_lines = (self._read_record(right) or "").splitlines(keepends=True)
+        matcher = difflib.SequenceMatcher(a=left_lines, b=right_lines, autojunk=False)
+        blocks: List[Dict] = []
+        summary = {"added": 0, "removed": 0, "changed": 0}
+        for tag, i1, i2, j1, j2 in matcher.get_opcodes():
+            if tag == "equal":
+                blocks.append({
+                    "kind": "context",
+                    "left_start": i1 + 1, "left_end": i2,
+                    "right_start": j1 + 1, "right_end": j2,
+                    "left": _display_lines(left_lines, i1, i2),
+                    "right": _display_lines(right_lines, j1, j2),
+                })
+                continue
+            if tag in ("delete", "replace"):
+                summary["removed"] += i2 - i1
+            if tag == "insert":
+                summary["added"] += j2 - j1
+            if tag == "replace":
+                summary["changed"] += 1
+                summary["added"] += j2 - j1
+                blocks.append({
+                    "kind": "changed", "left_start": i1 + 1, "left_end": i2,
+                    "right_start": j1 + 1, "right_end": j2,
+                    "left": _display_lines(left_lines, i1, i2),
+                    "right": _display_lines(right_lines, j1, j2),
+                })
+                blocks.append({
+                    "kind": "removed", "left_start": i1 + 1, "left_end": i2,
+                    "right_start": j1 + 1, "right_end": j1,
+                    "left": _display_lines(left_lines, i1, i2), "right": [],
+                })
+                blocks.append({
+                    "kind": "added", "left_start": i1 + 1, "left_end": i1,
+                    "right_start": j1 + 1, "right_end": j2,
+                    "left": [], "right": _display_lines(right_lines, j1, j2),
+                })
+            else:
+                kind = "added" if tag == "insert" else "removed"
+                blocks.append({
+                    "kind": kind,
+                    "left_start": i1 + 1, "left_end": i2,
+                    "right_start": j1 + 1, "right_end": j2,
+                    "left": _display_lines(left_lines, i1, i2),
+                    "right": _display_lines(right_lines, j1, j2),
+                })
+        return {
+            "record_id": record_id,
+            "left_version": int(left_version), "right_version": int(right_version),
+            "summary": summary, "blocks": blocks,
+        }
+
+    def _record(self, record_id: int) -> ArtifactRecord:
+        with self.db.session() as s:
+            record = s.get(ArtifactRecord, record_id)
+        if record is None:
+            raise ValueError(f"产物不存在: {record_id}")
+        return record
+
+    def _read_record(self, record: ArtifactRecord) -> Optional[str]:
+        path = Path(record.path).resolve()
+        if not str(path).startswith(str(self.root.resolve())):
+            raise NamespaceError("产物路径越界")
+        if path.suffix.lower() == ".xlsx":
+            return _xlsx_preview(path)
+        return path.read_text(encoding="utf-8")
+
+    def _read_record_bytes(self, record: ArtifactRecord) -> bytes:
+        path = Path(record.path).resolve()
+        if not str(path).startswith(str(self.root.resolve())):
+            raise NamespaceError("产物路径越界")
+        return path.read_bytes()
 
     @staticmethod
     def _to_dict(r: ArtifactRecord) -> Dict:
@@ -137,4 +288,27 @@ class ArtifactService:
                 "object_name": r.object_name, "type": r.file_type, "path": r.path,
                 "space_id": r.space_id, "sub_system_id": r.sub_system_id, "task_id": r.task_id,
                 "kb_doc_id": r.kb_doc_id,
+                "version": int(getattr(r, "version", 1) or 1),
+                "parent_version": getattr(r, "parent_version", None),
+                "trace_id": getattr(r, "trace_id", "") or "",
                 "created_at": r.created_at.isoformat() if r.created_at else None}
+
+
+def _display_lines(lines: List[str], start: int, end: int) -> List[str]:
+    return [line.rstrip("\r\n") for line in lines[start:end]]
+
+
+def _xlsx_preview(path: Path) -> str:
+    from openpyxl import load_workbook
+
+    workbook = load_workbook(path, read_only=True, data_only=True)
+    try:
+        blocks = []
+        for sheet in workbook.worksheets:
+            blocks.append(f"### {sheet.title}")
+            for row in sheet.iter_rows(values_only=True):
+                values = [str(value) if value is not None else "" for value in row]
+                blocks.append("| " + " | ".join(values) + " |")
+        return "\n\n".join(blocks) or "（空 Excel）"
+    finally:
+        workbook.close()

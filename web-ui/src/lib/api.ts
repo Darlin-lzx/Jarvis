@@ -5,8 +5,9 @@ import type {
   SecurityLog, Template, Space, SpaceSubsystem, BizTask, TaskDetail,
   ConversationDetail, ArtifactItem, SubSystemStats, UploadAttachmentResult, SendExtra,
   VectorSpaceStat, ChunkItem, UserProfile,
-  KBSearchHit,
+  KBSearchHit, KnowledgeConfidence, KnowledgeSearchResult,
   MigrateTask, MigrateAsset, MigrateTaskDetail, RuleScanResult, MigrateRule, MigrateFlowNode,
+  ArtifactVersionItem, ArtifactDiff, TraceLogItem,
 } from './types'
 
 async function request<T>(path: string, method = 'GET', body?: unknown): Promise<ApiResponse<T>> {
@@ -61,6 +62,7 @@ export const api = {
     const body: Record<string, unknown> = { message, conv_id: convId, agent_id: agentId }
     if (extra?.references?.length) body.references = extra.references
     if (extra?.attachment_ids?.length) body.attachment_ids = extra.attachment_ids
+    if (extra?.skip_state_advance) body.skip_state_advance = true
     return fetch('/api/chat/stream', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -68,6 +70,7 @@ export const api = {
       signal,
     })
   },
+  cancelChat: (id: number) => request<never>('/api/chat/' + id + '/cancel', 'POST'),
   /** + 上传附件：多文件 multipart 上传，单项失败仅该项带 error；全部失败 success=false */
   uploadChatAttachments: (files: File[], opts?: { conv_id?: number | null; space_id?: number | null; auto_import?: boolean }) => {
     const fd = new FormData()
@@ -134,6 +137,10 @@ export const api = {
     const qs = params.toString()
     return request<Datasource[]>(`/api/datasources${qs ? '?' + qs : ''}`)
   },
+  /** 上传 Excel 文件创建 Excel 数据源（源库不可连接时替代采集） */
+  uploadDatasource: (fd: FormData) =>
+    fetch('/api/datasources/upload', { method: 'POST', body: fd })
+      .then(r => r.json()) as Promise<ApiResponse<Datasource>>,
   createDatasource: (d: Partial<Datasource> & { username?: string; password?: string; dsn?: string }) =>
     request<Datasource>('/api/datasources', 'POST', d),
   toggleDatasource: (name: string, enabled: boolean) =>
@@ -153,11 +160,30 @@ export const api = {
     const qs = params.toString()
     return request<KBDocument[]>(`/api/kb/documents${qs ? '?' + qs : ''}`)
   },
-  uploadDocument: (file: File, extra?: { space_id?: number; sub_system_id?: number }) => {
+  uploadDocument: (file: File, extra?: {
+    space_id?: number
+    sub_system_id?: number
+    kb_type?: string
+    business_domain?: string
+    target_db?: string
+    stage?: string
+    object_type?: string
+    confidence?: string
+    source?: string
+    source_ref?: string
+  }) => {
     const fd = new FormData()
     fd.append('file', file)
     if (extra?.space_id != null) fd.append('space_id', String(extra.space_id))
     if (extra?.sub_system_id != null) fd.append('sub_system_id', String(extra.sub_system_id))
+    fd.append('kb_type', extra?.kb_type || 'doc')
+    fd.append('business_domain', extra?.business_domain || 'db_migrate')
+    if (extra?.target_db) fd.append('target_db', extra.target_db)
+    if (extra?.stage) fd.append('stage', extra.stage)
+    if (extra?.object_type) fd.append('object_type', extra.object_type)
+    fd.append('confidence', extra?.confidence || 'verified')
+    fd.append('source', extra?.source || 'upload')
+    if (extra?.source_ref) fd.append('source_ref', extra.source_ref)
     return fetch('/api/kb/documents', { method: 'POST', body: fd }).then(r => r.json()) as Promise<ApiResponse<{ id: number; chunks: number }>>
   },
   deleteDocument: (id: number) => request<never>(`/api/kb/documents/${id}`, 'DELETE'),
@@ -167,6 +193,25 @@ export const api = {
     if (opts?.space_id) p.set('space_id', String(opts.space_id))
     return request<KBSearchHit[]>('/api/kb/search?' + p.toString())
   },
+  searchKnowledge: (payload: {
+    query: string
+    top_k?: number
+    space_id?: number
+    kb_types?: string[]
+    business_domain?: string
+    target_db?: string
+    stage?: string
+    object_type?: string
+    candidate_k?: number
+    min_similarity?: number
+  }) => request<KnowledgeSearchResult>('/api/knowledge/search', 'POST', payload),
+  feedbackKnowledge: (doc_id: number, feedback: 'positive' | 'negative', reason = '') =>
+    request<{
+      doc_id: number
+      confidence: KnowledgeConfidence
+      negative_feedback_count: number
+      review_required: boolean
+    }>('/api/knowledge/feedback', 'POST', { doc_id, feedback, reason }),
   listKbSpaces: () => request<{ id: number; name: string; description: string; doc_count: number; chunk_count: number; enabled: boolean; created_at: string }[]>('/api/kb/spaces'),
   createKbSpace: (payload: { name: string; description?: string }) => request<{ id: number; name: string }>('/api/kb/spaces', 'POST', payload),
   deleteKbSpace: (space_id: number) => request<never>(`/api/kb/spaces/${space_id}`, 'DELETE'),
@@ -205,6 +250,11 @@ export const api = {
   },
   listAllArtifacts: () => request<ArtifactItem[]>('/api/artifacts?all=1'),
   getArtifactFile: (rid: number) => request<string>(`/api/artifacts/${rid}/file`),
+  listArtifactVersions: (rid: number) => request<ArtifactVersionItem[]>(`/api/products/${rid}/versions`),
+  getArtifactVersion: (rid: number, version: number) =>
+    request<ArtifactVersionItem & { content: string }>(`/api/products/${rid}/versions/${version}`),
+  diffArtifact: (rid: number, left: number, right: number) =>
+    request<ArtifactDiff>(`/api/products/${rid}/diff?left=${left}&right=${right}`),
   renameArtifact: (rid: number, object_name: string) => request<ArtifactItem>(`/api/artifacts/${rid}`, 'PUT', { object_name }),
   importArtifact: (rid: number, payload: { doc_name?: string; space_id?: number; description?: string }) =>
     request<{ doc_id: number; name: string; chunks: number }>(`/api/artifacts/${rid}/import`, 'POST', payload),
@@ -248,6 +298,30 @@ export const api = {
   deleteMigrateTask: (id: number) => request<never>(`/api/migrate/tasks/${id}`, 'DELETE'),
   resetMigrateTask: (id: number, sess?: string) => request<MigrateTask>(`/api/migrate/tasks/${id}/reset`, 'POST', { ...(sess ? { session_id: sess } : {}) }),
   resumeMigrateTask: (id: number, sess?: string) => request<MigrateTask>(`/api/migrate/tasks/${id}/resume`, 'POST', { ...(sess ? { session_id: sess } : {}) }),
+  retryMigrateTaskStage: (id: number, stage: string, sess?: string) =>
+    request<{ task: MigrateTask; conv_id: number }>('/api/migrate/tasks/' + id + '/retry-stage', 'POST', {
+      stage,
+      ...(sess ? { session_id: sess } : {}),
+    }),
+  runMigrationStage: async (convId: number) => {
+    const res = await fetch('/api/chat/stream', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        message: '开始执行',
+        conv_id: convId,
+        agent_id: 'migration_commander',
+        skip_state_advance: true,
+      }),
+    })
+    if (!res.ok) throw new Error(`阶段执行失败：${res.status}`)
+    if (!res.body) return
+    const reader = res.body.getReader()
+    for (;;) {
+      const { done } = await reader.read()
+      if (done) return
+    }
+  },
   advanceMigrateTask: (id: number, params: Record<string, unknown>) =>
     request<{ task: MigrateTask; from: string; to: string; advanced: boolean; warning?: string }>(`/api/migrate/tasks/${id}/advance`, 'POST', params),
   scanMigrateTask: (id: number, sess?: string) => request<{ object_count: number; findings: number }>(`/api/migrate/tasks/${id}/scan`, 'POST', { ...(sess ? { session_id: sess } : {}) }),
@@ -260,6 +334,7 @@ export const api = {
     request<never>(`/api/migrate/tasks/${id}/assets`, 'POST', { assets }),
   deleteMigrateAsset: (id: number) => request<never>(`/api/migrate/assets/${id}`, 'DELETE'),
   getMigrateReport: (id: number) => request<{ task_id: number; title: string; markdown: string }>(`/api/migrate/tasks/${id}/assets/report`),
+  getTraceLogs: (traceId: string) => request<TraceLogItem[]>(`/api/trace/${encodeURIComponent(traceId)}`),
   exportMigrateExcel: (id: number) => `/api/migrate/tasks/${id}/assets/export`,
   ruleScan: (sql: string, objectName?: string, assetType?: string) =>
     request<RuleScanResult>('/api/migrate/scan', 'POST', { sql, object_name: objectName, asset_type: assetType }),

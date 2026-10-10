@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import re
+import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
@@ -188,8 +189,9 @@ def status_label(status: str) -> str:
 class MigrateStateService:
     """迁移任务状态机服务：读写 db_migrate_task，驱动确定性流转 + 断点续跑。"""
 
-    def __init__(self, db):
+    def __init__(self, db, observability=None):
         self.db = db
+        self.observability = observability
 
     # ---------- 读取 ----------
 
@@ -291,33 +293,68 @@ class MigrateStateService:
             return s.scalar(select(DbMigrateTask).where(
                 DbMigrateTask.conv_id == conv_id).order_by(DbMigrateTask.id.desc()))
 
-    def get_by_source_ds(self, source_ds_id: str) -> Optional[DbMigrateTask]:
+    def get_by_project_task(self, project_task_id: int) -> Optional[DbMigrateTask]:
+        from sqlalchemy import select
+        with self.db.session() as s:
+            return s.scalar(select(DbMigrateTask).where(
+                DbMigrateTask.project_task_id == project_task_id
+            ).order_by(DbMigrateTask.id.desc()))
+
+    def bind_project_task(self, task_db_id: int, project_task_id: Optional[int]) -> None:
+        """为存量迁移任务补显式业务任务归属。"""
+        with self.db.session() as s:
+            row = s.get(DbMigrateTask, task_db_id)
+            if row and row.project_task_id is None:
+                row.project_task_id = project_task_id
+                s.commit()
+
+    def get_by_source_ds(self, source_ds_id: str,
+                         space_id: Optional[int] = None,
+                         project_task_id: Optional[int] = None,
+                         owner_ref: Optional[int] = None) -> Optional[DbMigrateTask]:
         """按数据源 ID 查找进行中的任务（同一数据源不重复建任务，支持多会话共享推进）。
 
-        多会话共享设计：任务级（非会话级）状态载体。任意会话通过「同一数据源」即可
-        接入并推进同一任务，不复用他人任务 / 已完成任务（FINISHED 后重新发起新任务）。
+        多会话共享设计：任务级（非会话级）状态载体。业务任务会话只能接入该业务任务
+        自己的迁移状态；普通会话按空间共享，不复用已完成任务。
         """
         from sqlalchemy import select
         with self.db.session() as s:
-            rows = list(s.scalars(select(DbMigrateTask).where(
+            conditions = [
                 DbMigrateTask.source_ds_id == source_ds_id,
                 DbMigrateTask.status != MIGRATE_STATUS_FINISHED,
-            ).order_by(DbMigrateTask.id.desc())))
+            ]
+            if space_id is not None:
+                conditions.append(DbMigrateTask.space_id == space_id)
+            if project_task_id is not None:
+                conditions.append(DbMigrateTask.project_task_id == project_task_id)
+            elif owner_ref is not None:
+                conditions.append(DbMigrateTask.conv_id == owner_ref)
+            rows = list(s.scalars(select(DbMigrateTask).where(*conditions)
+                                  .order_by(DbMigrateTask.id.desc())))
         return rows[0] if rows else None
 
-    def get_recent_active(self) -> Optional[DbMigrateTask]:
+    def get_recent_active(self, space_id: Optional[int] = None,
+                          project_task_id: Optional[int] = None,
+                          owner_ref: Optional[int] = None) -> Optional[DbMigrateTask]:
         """最近活跃的进行中任务（多会话共享兜底：新会话说「继续推进」但未指明数据源时，
-        接入最近活跃的任务；FINISHED 不计入）。"""
+        接入最近活跃的任务；FINISHED 不计入。业务任务仅在其自身范围内查找。"""
         from sqlalchemy import select
         with self.db.session() as s:
-            rows = list(s.scalars(select(DbMigrateTask).where(
-                DbMigrateTask.status != MIGRATE_STATUS_FINISHED,
-            ).order_by(DbMigrateTask.updated_at.desc()).limit(1)))
+            conditions = [DbMigrateTask.status != MIGRATE_STATUS_FINISHED]
+            if space_id is not None:
+                conditions.append(DbMigrateTask.space_id == space_id)
+            if project_task_id is not None:
+                conditions.append(DbMigrateTask.project_task_id == project_task_id)
+            elif owner_ref is not None:
+                conditions.append(DbMigrateTask.conv_id == owner_ref)
+            rows = list(s.scalars(select(DbMigrateTask).where(*conditions)
+                                  .order_by(DbMigrateTask.updated_at.desc()).limit(1)))
         return rows[0] if rows else None
 
     def to_dict(self, t: DbMigrateTask) -> Dict[str, Any]:
         return {
             "task_id": t.id, "space_id": t.space_id, "sub_system_id": t.sub_system_id,
+            "project_task_id": getattr(t, "project_task_id", None),
             "task_name": t.task_name, "status": t.status,
             "status_label": status_label(t.status),
             "source_ds_id": t.source_ds_id, "source_ds_name": t.source_ds_name,
@@ -327,6 +364,9 @@ class MigrateStateService:
             "step_confirm": bool(getattr(t, "step_confirm", True)),
             "strict_flow": bool(getattr(t, "strict_flow", True)),
             "error_msg": t.error_msg, "conv_id": t.conv_id,
+            "task_type": getattr(t, "task_type", "") or "database_migration",
+            "trace_id": getattr(t, "trace_id", "") or "",
+            "plugin_version": getattr(t, "plugin_version", "") or "",
             "created_at": t.created_at.isoformat() if t.created_at else None,
             "updated_at": t.updated_at.isoformat() if t.updated_at else None,
             # 执行锁信息（多会话互斥展示）
@@ -367,7 +407,7 @@ class MigrateStateService:
 
     def try_acquire_lock(self, task_db_id: int, session_id: str,
                          owner_user_id: str = "", ttl_seconds: int = EXEC_LOCK_TTL_SECONDS,
-                         force: bool = False) -> Dict[str, Any]:
+                         force: bool = False, allow_readonly: bool = False) -> Dict[str, Any]:
         """尝试获取执行锁（状态变更动作前调用）。
 
         - FINISHED：拒绝（全局只读，不能修改/重新执行）；
@@ -383,7 +423,7 @@ class MigrateStateService:
             if row is None:
                 raise MigrateStateError(f"迁移任务不存在: {task_db_id}")
             info = self.lock_info(row)
-            if info["readonly"]:
+            if info["readonly"] and not allow_readonly:
                 return {"ok": False, "lock": info, "message": "任务已完成，所有会话只读，不能再次执行"}
             sid = str(session_id or "").strip()
             if not sid:
@@ -458,19 +498,41 @@ class MigrateStateService:
 
     def create(self, conv_id: Optional[int], space_id: Optional[int],
                sub_system_id: Optional[int] = None,
+               project_task_id: Optional[int] = None,
                source_ds_id: str = "", source_ds_name: str = "",
-               task_name: str = "数据库迁移评估") -> DbMigrateTask:
+                 task_name: str = "数据库迁移评估") -> DbMigrateTask:
+        trace_id = (self.observability.new_trace_id()
+                    if self.observability else uuid.uuid4().hex)
         with self.db.session() as s:
             row = DbMigrateTask(conv_id=conv_id, space_id=space_id,
                                 sub_system_id=sub_system_id,
+                                project_task_id=project_task_id,
                                 source_ds_id=source_ds_id or "",
                                 source_ds_name=source_ds_name or "",
                                 task_name=task_name or "数据库迁移评估",
-                                status=MIGRATE_STATUS_DATA_COLLECTION)
+                                status=MIGRATE_STATUS_DATA_COLLECTION,
+                                trace_id=trace_id)
             s.add(row)
             s.commit()
             s.refresh(row)
-            return row
+            conv_id = row.conv_id
+            trace_id = getattr(row, "trace_id", "") or trace_id
+        self._safe_event(
+            task_id=row.id, conv_id=conv_id, event_type="TASK_STARTED",
+            from_status="", to_status=MIGRATE_STATUS_DATA_COLLECTION,
+            node_id=MIGRATE_STATUS_DATA_COLLECTION, message="迁移任务已创建",
+            trace_id=trace_id,
+        )
+        return row
+
+    def _safe_event(self, **kwargs) -> None:
+        if self.observability is None:
+            return
+        try:
+            self.observability.record_state_event(**kwargs)
+        except Exception:
+            # 观测事件是旁路数据，不能阻塞或回滚业务状态。
+            return
 
     def update_params(self, task_db_id: int, params: Dict[str, Any],
                       status_override: Optional[str] = None) -> Dict[str, Any]:
@@ -511,6 +573,8 @@ class MigrateStateService:
                 warning = (f"目标数据库类型与源数据库类型相同（{_st_n}），"
                            "后端已拦截，请重新选择不同的目标国产数据库")
             before = row.status
+            conv_id = row.conv_id
+            trace_id = getattr(row, "trace_id", "") or ""
             # 状态机流转（流程静态表驱动，页面可编排节点/闸门）：
             # - 采集阶段（INIT→选源→基础信息）：参数齐备时可在单次提交内级联走完；
             # - 执行阶段（扫对象/评估/SQL转换/方案/验证）：单次调用最多推进一级，
@@ -542,10 +606,23 @@ class MigrateStateService:
                 row.status = status_override
             s.commit()
             s.refresh(row)
-            return {"task": self.to_dict(row),
-                    "advanced": row.status != before,
-                    "from": before, "to": row.status,
-                    "warning": warning}
+            result = {"task": self.to_dict(row),
+                      "advanced": row.status != before,
+                      "from": before, "to": row.status,
+                      "warning": warning}
+        self._safe_event(
+            task_id=task_db_id, conv_id=conv_id, event_type="USER_INPUT",
+            from_status=before, to_status=before,
+            node_id=before, message="用户提交任务参数",
+            trace_id=trace_id,
+        )
+        self._safe_event(
+            task_id=task_db_id, conv_id=conv_id, event_type="NODE_SUCCESS",
+            from_status=before, to_status=result["to"],
+            node_id=before, message="任务状态已更新",
+            trace_id=trace_id,
+        )
+        return result
 
     def set_step_confirm(self, task_db_id: int, value: bool) -> Dict[str, Any]:
         """切换逐级确认开关（DB 配置化，不写死）：True=每级完成停驻等确认，False=一次性编排跑完。"""
@@ -585,23 +662,41 @@ class MigrateStateService:
         with self.db.session() as s:
             row = s.get(DbMigrateTask, task_db_id)
             if row:
+                before = row.status
+                conv_id = row.conv_id
+                trace_id = getattr(row, "trace_id", "") or ""
                 row.status = MIGRATE_STATUS_ERROR
                 row.error_msg = (error_msg or "")[:1000]
                 row.exec_lock_session_id = ""
                 row.lock_owner_user_id = ""
                 row.lock_expire_time = None
                 s.commit()
+                self._safe_event(
+                    task_id=task_db_id, conv_id=conv_id,
+                    event_type="NODE_FAILED", from_status=before,
+                    to_status=MIGRATE_STATUS_ERROR, node_id=before,
+                    message=error_msg or "节点执行失败", trace_id=trace_id,
+                )
 
     def mark_finished(self, task_db_id: int) -> None:
         """标记完成：自动释放执行锁（所有会话只读，只能查看产物）。"""
         with self.db.session() as s:
             row = s.get(DbMigrateTask, task_db_id)
             if row:
+                before = row.status
+                conv_id = row.conv_id
+                trace_id = getattr(row, "trace_id", "") or ""
                 row.status = MIGRATE_STATUS_FINISHED
                 row.exec_lock_session_id = ""
                 row.lock_owner_user_id = ""
                 row.lock_expire_time = None
                 s.commit()
+                self._safe_event(
+                    task_id=task_db_id, conv_id=conv_id,
+                    event_type="TASK_COMPLETED", from_status=before,
+                    to_status=MIGRATE_STATUS_FINISHED, node_id=before,
+                    message="迁移任务已完成", trace_id=trace_id,
+                )
 
     def reset(self, task_db_id: int) -> Dict[str, Any]:
         """重置整个任务：状态回到 INIT，清空已采集参数、错误与执行锁（任务主体保留）。"""
@@ -635,6 +730,9 @@ class MigrateStateService:
                 raise MigrateStateError(f"迁移任务不存在: {task_db_id}")
             if row.status != MIGRATE_STATUS_ERROR:
                 raise MigrateStateError("仅异常中断（ERROR）状态支持断点续跑")
+            before = row.status
+            conv_id = row.conv_id
+            trace_id = getattr(row, "trace_id", "") or ""
             row.error_msg = ""
             collected = {
                 "source_ds_id": row.source_ds_id or "",
@@ -663,7 +761,49 @@ class MigrateStateService:
             row.status = advance
             s.commit()
             s.refresh(row)
-            return self.to_dict(row)
+            result = self.to_dict(row)
+        self._safe_event(
+            task_id=task_db_id, conv_id=conv_id, event_type="USER_INPUT",
+            from_status=before, to_status=before, node_id=before,
+            message="用户确认断点续跑", trace_id=trace_id,
+        )
+        self._safe_event(
+            task_id=task_db_id, conv_id=conv_id, event_type="NODE_SUCCESS",
+            from_status=before, to_status=result["status"], node_id=before,
+            message="任务已恢复执行", trace_id=trace_id,
+        )
+        return result
+
+    def retry_stage(self, task_db_id: int, stage: str) -> Dict[str, Any]:
+        """回退到指定执行节点：保留参数与产物，只重置任务状态和错误信息。
+
+        执行锁由调用方先抢占；这里只做目标节点合法性与状态回退，避免把
+        “单节点重试”误实现成清空整个任务。
+        """
+        stage = str(stage or "").strip()
+        nodes = [n for n in self.get_flow() if n.get("enabled", True)]
+        target = next((n for n in nodes if n.get("status") == stage), None)
+        if target is None or stage == MIGRATE_STATUS_FINISHED:
+            raise MigrateStateError("重试阶段无效，仅支持流程中的执行节点")
+        with self.db.session() as s:
+            row = s.get(DbMigrateTask, task_db_id)
+            if row is None:
+                raise MigrateStateError(f"迁移任务不存在: {task_db_id}")
+            before = row.status
+            conv_id = row.conv_id
+            trace_id = getattr(row, "trace_id", "") or ""
+            row.status = stage
+            row.error_msg = ""
+            s.commit()
+            s.refresh(row)
+            result = self.to_dict(row)
+        self._safe_event(
+            task_id=task_db_id, conv_id=conv_id, event_type="USER_INPUT",
+            from_status=before, to_status=stage, node_id=stage,
+            message=f"用户重试节点：{target.get('label') or stage}",
+            trace_id=trace_id,
+        )
+        return result
 
     def delete(self, task_db_id: int) -> None:
         with self.db.session() as s:

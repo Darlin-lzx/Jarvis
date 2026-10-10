@@ -1,5 +1,6 @@
 """附件解析 / 上传接口 / kg 实体检索 / stream 引用注入 测试"""
 import io
+import json
 
 import pytest
 from fastapi.testclient import TestClient
@@ -285,7 +286,7 @@ class CaptureLLM:
 
 def test_stream_with_references_and_attachments(tmp_path, monkeypatch):
     llm = CaptureLLM()
-    monkeypatch.setattr(app_module, "create_chat_model", lambda cfg: llm)
+    monkeypatch.setattr(app_module, "create_chat_model", lambda cfg, **kwargs: llm)
     c = _client(tmp_path, with_seed=True)
     conv = c.post("/api/conversations", json={"title": "引用测试"}).json()["data"]
     conv_id = conv["id"]
@@ -349,7 +350,7 @@ def test_stream_sub_agent_and_system_events(tmp_path, monkeypatch):
     """主 Agent 委派 call_agent 时：SSE 流实时下发「系统调度事件 + 子 Agent 输出事件」，
     且子 Agent 带调度溯源（dispatcher_name）"""
     llm = OrchLLM()
-    monkeypatch.setattr(app_module, "create_chat_model", lambda cfg: llm)
+    monkeypatch.setattr(app_module, "create_chat_model", lambda cfg, **kwargs: llm)
     c = _client(tmp_path, with_seed=True)
     r = c.post("/api/chat/stream", json={"message": "帮我做个 DDL 转换"})
     assert r.status_code == 200
@@ -366,10 +367,34 @@ def test_stream_sub_agent_and_system_events(tmp_path, monkeypatch):
     assert '"dispatcher_name": "小问"' in r.text
 
 
+def test_stream_marks_sub_agent_finished_after_output(tmp_path, monkeypatch):
+    """子 Agent 输出后必须下发完成态，避免前端一直显示“正在调用”。"""
+    llm = OrchLLM()
+    monkeypatch.setattr(app_module, "create_chat_model", lambda cfg, **kwargs: llm)
+    c = _client(tmp_path, with_seed=True)
+    r = c.post("/api/chat/stream", json={"message": "帮我做个 DDL 转换"})
+    assert r.status_code == 200
+    events = []
+    for line in r.iter_lines():
+        raw = line if isinstance(line, bytes) else line.encode()
+        if raw.startswith(b"data: "):
+            events.append(json.loads(raw[6:]))
+    event_names = [(e.get("type"), (e.get("content") or {}).get("event"))
+                   for e in events if e.get("type") in ("system", "sub_agent", "done")]
+    assert ("system", "calling_agent") in event_names
+    assert ("sub_agent", None) in event_names
+    finished_idx = event_names.index(("system", "agent_finished"))
+    assert finished_idx > event_names.index(("sub_agent", None))
+    assert event_names.index(("done", None)) > finished_idx
+    finished = events[finished_idx]["content"]
+    assert finished["agent_id"] == "ddl_converter"
+    assert "【小转】执行完成" in finished["message"]
+
+
 def test_stream_without_extra_fields(tmp_path, monkeypatch):
     """不带 references/attachment_ids 的既有调用完全兼容"""
     llm = CaptureLLM()
-    monkeypatch.setattr(app_module, "create_chat_model", lambda cfg: llm)
+    monkeypatch.setattr(app_module, "create_chat_model", lambda cfg, **kwargs: llm)
     c = _client(tmp_path)
     r = c.post("/api/chat/stream", json={"message": "普通问答"})
     assert r.status_code == 200

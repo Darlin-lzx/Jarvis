@@ -4,14 +4,15 @@ import { ScrollArea } from '@/components/ui/scroll-area'
 import { Button } from '@/components/ui/button'
 import { api } from '@/lib/api'
 import { isCoreArtifact } from '@/lib/artifact-filter'
-import type { ArtifactItem, Agent } from '@/lib/types'
+import type { ArtifactDiff, ArtifactItem, ArtifactVersionItem, Agent } from '@/lib/types'
 import { cn } from '@/lib/utils'
 import {
   FileText, X, Search, Loader2,
   AlertCircle, Download, Pencil, Trash2, MoreHorizontal,
   FileCode, Pin, BookOpen, ArrowUpRight, Copy, Check, FilePlus,
   PanelRightClose, PanelRightOpen,
-  ClipboardCheck, Code2, Database, CheckCircle2, ListChecks, Activity, ShieldCheck, ScanSearch,
+  ClipboardCheck, CheckCircle2, ListChecks, ShieldCheck,
+  History, GitCompareArrows,
 } from 'lucide-react'
 
 /* ---- 产物状态 ---- */
@@ -34,6 +35,7 @@ interface Artifact {
   stage?: string
   /** 已入库知识库文档 ID（后端回写，NULL=未入库） */
   kbDocId?: number | null
+  version?: number
 }
 
 interface ArtifactPanelProps {
@@ -77,6 +79,7 @@ function toArtifact(it: ArtifactItem, stage = '其他', imported = false): Artif
     agent: agentId,
     stage,
     kbDocId: it.kb_doc_id ?? null,
+    version: it.version,
   }
 }
 
@@ -169,6 +172,34 @@ function renderSqlLines(src: string) {
       </div>
     )
   })
+}
+
+function diffBlocks(diff: ArtifactDiff | null) {
+  if (!diff) return null
+  return (
+    <div className="border border-[#252530] rounded-lg overflow-hidden bg-[#12121a]">
+      <div className="flex items-center justify-between px-3 py-2 border-b border-[#252530] bg-[#16161e]">
+        <div className="text-[11px] text-[#9a9aa4]">v{diff.left_version} → v{diff.right_version}</div>
+        <div className="flex gap-2 text-[10px]">
+          <span className="text-green-400">+{diff.summary.added}</span>
+          <span className="text-red-400">-{diff.summary.removed}</span>
+          <span className="text-amber-400">~{diff.summary.changed}</span>
+        </div>
+      </div>
+      <div className="max-h-[360px] overflow-auto">
+        {diff.blocks.map((block, index) => (
+          <div key={index} className="grid grid-cols-2 border-b border-[#202028] last:border-0">
+            <div className={cn('px-3 py-1 font-mono text-[11px] whitespace-pre-wrap break-all', block.kind === 'added' ? 'bg-green-500/5 text-[#4a4a58]' : block.kind === 'removed' || block.kind === 'changed' ? 'bg-red-500/5 text-red-300' : 'text-[#8b8b9e]')}>
+              {block.left_start ? `${block.left_start}: ` : ''}{block.left.join('\n') || '—'}
+            </div>
+            <div className={cn('px-3 py-1 font-mono text-[11px] whitespace-pre-wrap break-all border-l border-[#252530]', block.kind === 'removed' ? 'bg-red-500/5 text-[#4a4a58]' : block.kind === 'added' || block.kind === 'changed' ? 'bg-green-500/5 text-green-300' : 'text-[#8b8b9e]')}>
+              {block.right_start ? `${block.right_start}: ` : ''}{block.right.join('\n') || '—'}
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  )
 }
 
 /** Markdown 渲染：标题 / 列表 / 引用 / 表格 / 代码块 / 分隔线 */
@@ -341,6 +372,12 @@ export function ArtifactPanel({ convId, taskId, taskName, onClose, space = '浙�
   const [previewContent, setPreviewContent] = useState('')
   const [previewLoading, setPreviewLoading] = useState(false)
   const [previewError, setPreviewError] = useState(false)
+  const [versions, setVersions] = useState<ArtifactVersionItem[]>([])
+  const [selectedVersion, setSelectedVersion] = useState<number | null>(null)
+  const [diffLeft, setDiffLeft] = useState<number | null>(null)
+  const [diffRight, setDiffRight] = useState<number | null>(null)
+  const [diffResult, setDiffResult] = useState<ArtifactDiff | null>(null)
+  const [diffLoading, setDiffLoading] = useState(false)
   // 入库弹窗（预览抽屉内）
   const [importTarget, setImportTarget] = useState<Artifact | null>(null)
   const [importDocName, setImportDocName] = useState('')
@@ -530,6 +567,11 @@ export function ArtifactPanel({ convId, taskId, taskName, onClose, space = '浙�
     setPreviewContent('')
     setPreviewLoading(true)
     setPreviewError(false)
+    setVersions([])
+    setSelectedVersion(artifact.version ?? null)
+    setDiffLeft(null)
+    setDiffRight(null)
+    setDiffResult(null)
     setMoreMenu(null)
     api.getArtifactFile(artifact.id).then(r => {
       const content = (r as unknown as { content?: string }).content ?? ''
@@ -538,6 +580,47 @@ export function ArtifactPanel({ convId, taskId, taskName, onClose, space = '浙�
     }).catch(() => {
       setPreviewLoading(false)
       setPreviewError(true)
+    })
+    api.listArtifactVersions(artifact.id).then(r => {
+      const rows = r.data || []
+      setVersions(rows)
+      const current = rows.find(v => v.version === artifact.version) ||
+        rows.find(v => v.id === artifact.id) ||
+        rows[rows.length - 1]
+      if (current?.version != null) {
+        setSelectedVersion(current.version)
+        if (rows.length >= 2) {
+          setDiffLeft(rows[rows.length - 2].version ?? null)
+          setDiffRight(rows[rows.length - 1].version ?? null)
+        }
+      }
+    }).catch(() => setVersions([]))
+  }
+
+  const switchVersion = (version: number) => {
+    if (!previewArtifact) return
+    setSelectedVersion(version)
+    setPreviewLoading(true)
+    setPreviewError(false)
+    api.getArtifactVersion(previewArtifact.id, version).then(r => {
+      setPreviewContent(r.data?.content ?? '')
+      setPreviewLoading(false)
+    }).catch(() => {
+      setPreviewLoading(false)
+      setPreviewError(true)
+    })
+  }
+
+  const compareVersions = () => {
+    if (!previewArtifact || diffLeft == null || diffRight == null || diffLeft === diffRight) return
+    setDiffLoading(true)
+    api.diffArtifact(previewArtifact.id, diffLeft, diffRight).then(r => {
+      setDiffResult(r.data || null)
+      setDiffLoading(false)
+    }).catch(() => {
+      setDiffResult(null)
+      setDiffLoading(false)
+      showToast('差异对比失败')
     })
   }
 
@@ -564,17 +647,13 @@ export function ArtifactPanel({ convId, taskId, taskName, onClose, space = '浙�
   }
 
   const handleDownload = (artifact: Artifact) => {
-    // 从后端拉取真实产物文件内容
-    api.getArtifactFile(artifact.id).then(r => {
-      const content = (r as unknown as { content?: string }).content ?? ''
-      const blob = new Blob([content], { type: 'text/plain;charset=utf-8' })
-      const url = URL.createObjectURL(blob)
-      const a = document.createElement('a')
-      a.href = url
-      a.download = artifact.name
-      a.click()
-      URL.revokeObjectURL(url)
-    }).catch(() => showToast('产物文件已删除或不存在'))
+    // xlsx 必须保留原生二进制；其他文本产物也统一从后端原文件下载。
+    const extension = artifact.type ? `.${artifact.type}` : ''
+    const filename = artifact.name.includes('.') ? artifact.name : `${artifact.name}${extension}`
+    const a = document.createElement('a')
+    a.href = `/api/artifacts/${artifact.id}/download`
+    a.download = filename
+    a.click()
     setMoreMenu(null)
     showToast(`已下载「${artifact.name}」`)
   }
@@ -1082,6 +1161,70 @@ export function ArtifactPanel({ convId, taskId, taskName, onClose, space = '浙�
                 )}
               </div>
             </div>
+
+            {versions.length > 0 && (
+              <div className="px-4 py-2 border-b border-[#252530] bg-[#12121a]">
+                <div className="flex flex-wrap items-center gap-2">
+                  <div className="flex items-center gap-1 text-[11px] font-semibold text-[#9a9aa4]">
+                    <History className="w-3.5 h-3.5 text-blue-400" />
+                    版本历史
+                  </div>
+                  <div className="flex items-center gap-1 overflow-x-auto">
+                    {versions.map(version => (
+                      <button
+                        key={`${version.id}-${version.version}`}
+                        onClick={() => version.version != null && switchVersion(version.version)}
+                        className={cn(
+                          'h-6 px-2 rounded-full border text-[10px] whitespace-nowrap transition-colors',
+                          selectedVersion === version.version
+                            ? 'border-blue-500/40 bg-blue-500/10 text-blue-300'
+                            : 'border-[#2a2a35] bg-[#16161e] text-[#8b8b9e] hover:text-[#cdd3e0]'
+                        )}
+                      >
+                        v{version.version ?? 1}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+                {versions.length >= 2 && (
+                  <div className="flex items-center gap-2 mt-2">
+                    <div className="flex items-center gap-1 text-[11px] font-semibold text-[#9a9aa4]">
+                      <GitCompareArrows className="w-3.5 h-3.5 text-amber-400" />
+                      差异对比
+                    </div>
+                    <select
+                      value={diffLeft ?? undefined}
+                      onChange={e => setDiffLeft(Number(e.target.value))}
+                      className="h-6 rounded-md border border-[#2a2a35] bg-[#16161e] px-1.5 text-[10px] text-[#cdd3e0] outline-none"
+                    >
+                      {versions.map(version => (
+                        <option key={`left-${version.version}`} value={version.version ?? 1}>v{version.version ?? 1}</option>
+                      ))}
+                    </select>
+                    <span className="text-[10px] text-[#5a5a70]">→</span>
+                    <select
+                      value={diffRight ?? undefined}
+                      onChange={e => setDiffRight(Number(e.target.value))}
+                      className="h-6 rounded-md border border-[#2a2a35] bg-[#16161e] px-1.5 text-[10px] text-[#cdd3e0] outline-none"
+                    >
+                      {versions.map(version => (
+                        <option key={`right-${version.version}`} value={version.version ?? 1}>v{version.version ?? 1}</option>
+                      ))}
+                    </select>
+                    <Button
+                      size="sm"
+                      className="h-6 px-2 text-[10px] bg-[#16161e] border border-[#2a2a35] text-[#9a9aa4] hover:text-[#e4e4e9]"
+                      disabled={diffLoading || diffLeft == null || diffRight == null || diffLeft === diffRight}
+                      onClick={compareVersions}
+                    >
+                      {diffLoading ? <Loader2 className="w-3 h-3 animate-spin" /> : <GitCompareArrows className="w-3 h-3" />}
+                      对比
+                    </Button>
+                  </div>
+                )}
+                {diffResult && <div className="mt-3">{diffBlocks(diffResult)}</div>}
+              </div>
+            )}
 
             {/* 预览内容区（独立滚动） */}
             <div className="flex-1 overflow-y-auto">

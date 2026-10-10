@@ -5,11 +5,14 @@ import asyncio
 import functools
 import json
 import re
+import threading
 from dataclasses import asdict
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from fastapi import FastAPI, File, Form, HTTPException, Query, UploadFile
+from fastapi import (FastAPI, File, Form, HTTPException, Query, UploadFile,
+                     WebSocket, WebSocketDisconnect)
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -18,26 +21,148 @@ from db_loc_agent.artifacts import ArtifactService, NamespaceError
 from db_loc_agent.assets import MigrateAssetService, REPORT_TEMPLATE
 from db_loc_agent.attachments import SUPPORTED_EXT, create_attachment, extract_text
 from db_loc_agent.config import AppConfig, LLMSettings, load_config
-from db_loc_agent.db import Conversation, Database, Message, ProjectTask, Space, SpaceSubsystem, TemplateRecord
+from db_loc_agent.db import (ArtifactRecord, Conversation, Database, Message,
+                             ProjectTask, Space, SpaceSubsystem, TemplateRecord)
 from db_loc_agent.db_tools import DbTools
 from db_loc_agent.embedding import create_embedding_function
 from db_loc_agent.gov import GovService
-from db_loc_agent.graph import AgentState, build_graph
+from db_loc_agent.graph import AgentState, ChatRunCancelled, build_graph
 from db_loc_agent.kg import KnowledgeGraph
 from db_loc_agent.llm import create_chat_model
 from db_loc_agent.ops import OpsService
+from db_loc_agent.observability import ObservabilityService
 from db_loc_agent.project import ProjectError, ProjectService
 from db_loc_agent.prompts import PromptService
 from db_loc_agent.rag import RAGStore
+from db_loc_agent.reliability import CircuitBreaker
 from db_loc_agent.rule_engine import RuleEngine
 from db_loc_agent.skills import SkillService
 from db_loc_agent.state_machine import (MigrateStateError, MigrateStateService,
                                         normalize_db_type, parse_migrate_params,
                                         status_label)
+from db_loc_agent.state_stream import (MigrateStateBroadcaster,
+                                        migrate_state_event_frame,
+                                        migrate_state_snapshot)
 
 
 def _conv_key(conv: Conversation) -> str:
     return f"sess_{conv.id if conv.id is not None else 0}"
+
+
+class ChatCancellationRegistry:
+    """会话级服务端取消注册表：显式中止优先于依赖 SSE 断连感知。"""
+
+    def __init__(self) -> None:
+        self._events: Dict[int, threading.Event] = {}
+        self._lock = threading.Lock()
+
+    def start(self, conv_id: int) -> threading.Event:
+        event = threading.Event()
+        with self._lock:
+            self._events[int(conv_id)] = event
+        return event
+
+    def cancel(self, conv_id: int) -> bool:
+        with self._lock:
+            event = self._events.get(int(conv_id))
+        if event is None:
+            return False
+        event.set()
+        return True
+
+
+def _with_migrate_execution_state(data: Dict, db: Database) -> Dict:
+    """补充会话内阶段执行态：主状态负责推进，step_status 负责节点完成展示。"""
+    conv_id = data.get("conv_id")
+    if conv_id is None:
+        return data
+
+    def _decode_state(conv: Conversation | None) -> Dict:
+        try:
+            decoded = json.loads((conv.task_state if conv else "") or "{}")
+            return decoded if isinstance(decoded, dict) else {}
+        except (TypeError, ValueError):
+            return {}
+
+    with db.session() as s:
+        conv = s.get(Conversation, int(conv_id))
+        task_state = _decode_state(conv)
+        state_conv_id = int(conv_id)
+        if not any(k in task_state for k in
+                   ("current_step", "step_status", "awaiting_confirmation")):
+            # 平台化改造后 conv_id 可能存业务任务 ID；阶段执行态在任务下的会话里。
+            from sqlalchemy import select
+            candidates = list(s.scalars(select(Conversation).where(
+                Conversation.task_id == int(conv_id)).order_by(
+                Conversation.id.desc())))
+            fallback = next(
+                (c for c in candidates
+                 if _decode_state(c).get("migrate_task_id") == data.get("task_id")),
+                candidates[0] if candidates else None,
+            )
+            if fallback is not None:
+                task_state = _decode_state(fallback)
+                state_conv_id = int(fallback.id)
+    if isinstance(task_state, dict):
+        for key in ("current_step", "step_status", "awaiting_confirmation"):
+            if key in task_state:
+                data[key] = task_state[key]
+        legacy_collection_steps = {
+            "DATA_COLLECTION", "INIT", "DATA_SOURCE_SELECTED",
+            "BASIC_INFO_COLLECTED", "OBJECT_SCANNING", "step1", "step2", "step3",
+        }
+        if (data.get("status") == "DATA_COLLECTION"
+                and str(task_state.get("current_step") or "") in legacy_collection_steps
+                and task_state.get("step_status") == "running"):
+            # 兼容旧版本：报告已落库但 stay 分支把执行态覆盖回 running。
+            with db.session() as s:
+                has_report = s.query(ArtifactRecord.id).filter(
+                    ArtifactRecord.conv_id == state_conv_id,
+                    ArtifactRecord.agent_id == "migration_collector",
+                    ArtifactRecord.file_type == "md",
+                ).first() is not None
+            if has_report:
+                data["step_status"] = "done"
+    return data
+
+
+def _has_collector_report(db: Database, task_id: int, conv_ref: Any) -> bool:
+    """判断迁移任务是否已有小采核心报告（业务任务与会话两种关联都兼容）。"""
+    from sqlalchemy import or_, select
+
+    with db.session() as s:
+        conv_ids = list(s.scalars(select(Conversation.id).where(or_(
+            Conversation.id == int(conv_ref or 0),
+            Conversation.task_id == int(conv_ref or 0),
+        ))))
+        if not conv_ids:
+            return False
+        return s.query(ArtifactRecord.id).filter(
+            ArtifactRecord.conv_id.in_(conv_ids),
+            ArtifactRecord.agent_id == "migration_collector",
+            ArtifactRecord.file_type == "md",
+        ).first() is not None
+
+
+def _collector_report_completion_params(row, params: Dict, db: Database) -> Dict:
+    """用户确认推进时，以已生成的小采报告作为采集完成依据。"""
+    confirmed = str(params.get("task_confirm") or "").strip() in ("确认", "继续", "同意")
+    if (getattr(row, "status", "") != "DATA_COLLECTION" or not confirmed
+            or not getattr(row, "source_ds_id", "")
+            or not (params.get("target_db_type") or getattr(row, "target_db_type", ""))):
+        return {}
+    if not _has_collector_report(db, int(row.id), getattr(row, "conv_id", None)):
+        return {}
+    return {
+        "source_db_type": params.get("source_db_type")
+        or getattr(row, "source_db_type", "") or "以采集报告为准",
+        "db_business_level": params.get("db_business_level")
+        or getattr(row, "db_business_level", "") or "以采集报告为准",
+        "db_capacity": params.get("db_capacity")
+        or getattr(row, "db_capacity", "") or "以采集报告为准",
+        "stop_window": params.get("stop_window")
+        or getattr(row, "stop_window", "") or "以采集报告为准",
+    }
 
 
 def _resolve_ui_placeholders(obj: Dict, db_tools: Any) -> Dict:
@@ -134,7 +259,12 @@ def create_app(db_path: str = "data/db.sqlite3", artifact_root: str = "artifacts
     artifacts = ArtifactService(db, artifact_root)
     proj = ProjectService(db)
     agents_svc = AgentService(db)
-    db_tools = DbTools(db)
+    observability = ObservabilityService(db)
+    db_breaker = CircuitBreaker(
+        failure_threshold=cfg.reliability.db_failure_threshold,
+        recovery_seconds=cfg.reliability.db_recovery_seconds,
+    )
+    db_tools = DbTools(db, circuit_breaker=db_breaker)
     from db_loc_agent.schema_diff import SchemaDiffService
     schema_diff = SchemaDiffService(db_tools, db)
     kg = KnowledgeGraph(db)
@@ -146,11 +276,47 @@ def create_app(db_path: str = "data/db.sqlite3", artifact_root: str = "artifacts
     rag = RAGStore(db, faiss_dir, cfg.kb_collection, embed_fn)
 
     # ---- 数据库迁移拔高能力：状态机 / 规则引擎 / 结构化资产 ----
+    chat_cancellations = ChatCancellationRegistry()
     from db_loc_agent.agents import SysDictService
     rule_engine = RuleEngine(SysDictService(db))
-    migrate_state = MigrateStateService(db)
+    migrate_state = MigrateStateService(db, observability=observability)
     migrate_assets = MigrateAssetService(db)
     migrate_assets.rule_engine = rule_engine  # 装配：扫描结果直接写资产表
+    migrate_state_broadcaster = MigrateStateBroadcaster()
+
+    def _persisted_migrate_task_state(row) -> Dict:
+        data = migrate_state.to_dict(row)
+        _with_migrate_execution_state(data, db)
+        return {
+            "current_step": data.get("current_step"),
+            "step_status": data.get("step_status"),
+            "awaiting_confirmation": data.get("awaiting_confirmation"),
+        }
+
+    def _broadcast_migrate_state(task_id: int,
+                                 task_state: Dict | None = None) -> None:
+        try:
+            row = migrate_state.get(int(task_id))
+            if row is None:
+                return
+            effective_state = (
+                task_state if isinstance(task_state, dict)
+                else _persisted_migrate_task_state(row))
+            migrate_state_broadcaster.broadcast(
+                int(task_id),
+                migrate_state_snapshot(row, effective_state, status_label),
+            )
+        except Exception:
+            pass
+
+    def _broadcast_latest_migrate_event(task_id: int) -> None:
+        try:
+            events = observability.list_state_events(task_id, limit=1)
+            if events:
+                migrate_state_broadcaster.broadcast_event(
+                    task_id, migrate_state_event_frame(events[-1]))
+        except Exception:
+            pass
 
     # 迁移对象扫描演示样例（规则引擎素材兜底：无真实对象可扫时保证演示稳定）
     _DEMO_MIGRATE_OBJECTS = [
@@ -262,6 +428,36 @@ def create_app(db_path: str = "data/db.sqlite3", artifact_root: str = "artifacts
     def health():
         return {"status": "ok", "name": cfg.name}
 
+    @app.websocket("/ws/migrate/{task_id}")
+    async def migrate_state_socket(task_id: int, websocket: WebSocket):
+        """Push authoritative migration state frames while the browser stays connected."""
+        await websocket.accept()
+        row = migrate_state.get(task_id)
+        if row is None:
+            await websocket.send_json({"event": "not_found", "task_id": task_id})
+            await websocket.close(code=1008)
+            return
+        try:
+            initial_snapshot = migrate_state_snapshot(
+                row, _persisted_migrate_task_state(row), status_label)
+            await websocket.send_json(initial_snapshot)
+            await migrate_state_broadcaster.add(task_id, websocket)
+            current_row = migrate_state.get(task_id)
+            if current_row is not None:
+                current_snapshot = migrate_state_snapshot(
+                    current_row, _persisted_migrate_task_state(current_row),
+                    status_label)
+                if current_snapshot != initial_snapshot:
+                    migrate_state_broadcaster.broadcast(task_id, current_snapshot)
+            while True:
+                message = await websocket.receive_text()
+                if message == "ping":
+                    await websocket.send_json({"event": "pong"})
+        except WebSocketDisconnect:
+            pass
+        finally:
+            await migrate_state_broadcaster.remove(task_id, websocket)
+
     @app.get("/api/me")
     def current_user():
         """当前登录用户信息（轻量：仅展示用，不做真实鉴权）。从 DB user_profiles 读取。"""
@@ -280,7 +476,7 @@ def create_app(db_path: str = "data/db.sqlite3", artifact_root: str = "artifacts
     def ollama_models():
         """按 LLM 提供商返回可用的模型列表（表单下拉数据源）。
         - ollama：读取本机 Ollama /api/tags
-        - bailian / deepseek：尝试 OpenAI 兼容 /models 接口，失败时回退内置预设列表
+        - bailian / deepseek / zhipu：尝试 OpenAI 兼容 /models 接口，失败时回退内置预设列表
         返回列表始终包含当前配置的 model（避免下拉为空）。
         """
         import httpx
@@ -307,6 +503,7 @@ def create_app(db_path: str = "data/db.sqlite3", artifact_root: str = "artifacts
                         "qwen2.5-72b-instruct", "qwen3-235b-a22b-instruct",
                         "qwen3.7-plus"],
             "deepseek": ["deepseek-chat", "deepseek-reasoner"],
+            "zhipu": ["GLM-5.3"],
         }
 
         if provider == "ollama":
@@ -323,9 +520,10 @@ def create_app(db_path: str = "data/db.sqlite3", artifact_root: str = "artifacts
                         "fallback": True,
                         "error": f"无法连接 Ollama({cfg.llm.base_url}): {e}"}
 
-        # bailian / deepseek：OpenAI 兼容 /models
-        from db_loc_agent.llm import DEEPSEEK_BASE, BAILIAN_BASE
-        base_map = {"deepseek": DEEPSEEK_BASE, "bailian": BAILIAN_BASE}
+        # OpenAI 兼容 /models
+        from db_loc_agent.llm import DEEPSEEK_BASE, BAILIAN_BASE, ZHIPU_BASE
+        base_map = {"deepseek": DEEPSEEK_BASE, "bailian": BAILIAN_BASE,
+                    "zhipu": ZHIPU_BASE}
         api_key = (cfg.llm.api_key or "").strip()
         preset = PRESET.get(provider, [])
         if api_key:
@@ -372,28 +570,21 @@ def create_app(db_path: str = "data/db.sqlite3", artifact_root: str = "artifacts
             q = select(Conversation)
             if space_id:
                 q = q.where(Conversation.space_id == space_id)
-            if sub_system_id:
-                q = q.where(Conversation.sub_system_id == sub_system_id)
             rows = list(s.scalars(q.order_by(Conversation.id.desc())))
             data = []
             for c in rows:
                 task = s.get(ProjectTask, c.task_id) if c.task_id else None
                 task_name = task.name if task else ""
-                # 归属任务的会话，若未显式记录空间/子系统则从任务继承
+                # 归属任务的会话，若未显式记录空间则从任务继承
                 eff_space_id = c.space_id or (task.space_id if task else None)
-                eff_sub_id = c.sub_system_id or (task.sub_system_id if task else None)
                 space_name = ""
                 if eff_space_id:
                     sp = s.get(Space, eff_space_id)
                     space_name = sp.name if sp else ""
-                sub_name = ""
-                if eff_sub_id:
-                    ss = s.get(SpaceSubsystem, eff_sub_id)
-                    sub_name = ss.name if ss else ""
                 msg_count = s.query(func.count(Message.id)).filter(Message.conv_id == c.id).scalar() or 0
                 data.append({"id": c.id, "title": c.title,
                              "space_id": eff_space_id, "space_name": space_name,
-                             "sub_system_id": eff_sub_id, "sub_system_name": sub_name,
+                             "sub_system_id": None, "sub_system_name": "",
                              "task_id": c.task_id, "task_name": task_name,
                              "agent_id": c.agent_id, "message_count": msg_count,
                              "task_state": c.task_state or "",
@@ -405,16 +596,14 @@ def create_app(db_path: str = "data/db.sqlite3", artifact_root: str = "artifacts
         with db.session() as s:
             task_id = payload.get("task_id")
             space_id = payload.get("space_id")
-            sub_system_id = payload.get("sub_system_id")
-            # 归属任务时自动继承任务的空间与子系统（未显式指定时）
-            if task_id and (space_id is None or sub_system_id is None):
+            # 归属任务时自动继承任务的空间（未显式指定时）
+            if task_id and space_id is None:
                 t = s.get(ProjectTask, int(task_id))
                 if t:
                     space_id = space_id if space_id is not None else t.space_id
-                    sub_system_id = sub_system_id if sub_system_id is not None else t.sub_system_id
             c = Conversation(title=payload.get("title") or "新会话",
                              space_id=space_id,
-                             sub_system_id=sub_system_id,
+                             sub_system_id=None,
                              task_id=task_id,
                              agent_id=str(payload.get("agent_id") or ""))
             s.add(c)
@@ -470,7 +659,7 @@ def create_app(db_path: str = "data/db.sqlite3", artifact_root: str = "artifacts
 
     @app.post("/api/conversations/{cid}/attach-space")
     def attach_space(cid: int, payload: Dict):
-        """快速问答会话 → 项目会话：为会话绑定空间与（可选）子系统归属"""
+        """快速问答会话 → 项目会话：为会话绑定空间归属"""
         with db.session() as s:
             c = s.get(Conversation, cid)
             if not c:
@@ -481,25 +670,17 @@ def create_app(db_path: str = "data/db.sqlite3", artifact_root: str = "artifacts
             sp = s.get(Space, space_id)
             if not sp:
                 raise HTTPException(400, "空间不存在")
-            sub_id = payload.get("sub_system_id")
-            if sub_id:
-                ss = s.get(SpaceSubsystem, sub_id)
-                if not ss or ss.space_id != space_id:
-                    raise HTTPException(400, "子系统不属于该空间")
             c.space_id = space_id
-            c.sub_system_id = sub_id or None
+            c.sub_system_id = None
             s.commit()
             space_name = sp.name or ""
-            sub_name = ""
-            if c.sub_system_id:
-                sub_name = (s.get(SpaceSubsystem, c.sub_system_id) or type("_", (), {"name": ""})).name
             task_name = ""
             if c.task_id:
                 t = s.get(ProjectTask, c.task_id)
                 task_name = t.name if t else ""
             return {"success": True, "data": {
                 "id": c.id, "title": c.title, "space_id": c.space_id, "space_name": space_name,
-                "sub_system_id": c.sub_system_id, "sub_system_name": sub_name,
+                "sub_system_id": None, "sub_system_name": "",
                 "task_id": c.task_id, "task_name": task_name, "agent_id": c.agent_id}}
 
     @app.delete("/api/conversations/{cid}")
@@ -508,13 +689,14 @@ def create_app(db_path: str = "data/db.sqlite3", artifact_root: str = "artifacts
         import shutil
         from pathlib import Path as _Path
         from sqlalchemy import select
-        from db_loc_agent.db import ArtifactRecord, ChatTrace, Message
+        from db_loc_agent.db import ArtifactRecord, ChatTrace, Message, Task
         with db.session() as s:
             c = s.get(Conversation, cid)
             if not c:
                 raise HTTPException(404, "会话不存在")
             s.query(Message).filter(Message.conv_id == cid).delete(synchronize_session=False)
             s.query(ChatTrace).filter(ChatTrace.conv_id == cid).delete(synchronize_session=False)
+            s.query(Task).filter(Task.conv_id == cid).delete(synchronize_session=False)
             # 会话产物记录与本地文件一并清理（知识库已入库副本保留）
             for rec in s.scalars(select(ArtifactRecord).where(ArtifactRecord.conv_id == cid)):
                 if rec.path:
@@ -615,6 +797,35 @@ def create_app(db_path: str = "data/db.sqlite3", artifact_root: str = "artifacts
         if sub_system_id is not None and space_id is None:
             raise HTTPException(400, "按子系统过滤数据源时须同时指定空间")
         return {"success": True, "data": db_tools.list(space_id, sub_system_id)}
+
+    @app.post("/api/datasources/upload")
+    async def upload_datasource_file(file: UploadFile = File(...),
+                                     name: str = Form(""),
+                                     space_id: Optional[int] = Form(None),
+                                     sub_system_id: Optional[int] = Form(None)):
+        """上传 Excel 文件创建 Excel 数据源（源库不可连接时，用人工导出的 Excel 替代采集）"""
+        name = (name or "").strip()
+        if not name:
+            raise HTTPException(400, "请输入数据源名称")
+        fname = file.filename or "upload.xlsx"
+        ext = Path(fname).suffix.lstrip(".").lower()
+        if ext not in ("xlsx", "xls", "csv"):
+            raise HTTPException(400, f"不支持的 Excel 文件类型: .{ext}（支持 xlsx/xls/csv）")
+        raw = await file.read()
+        if len(raw) > 20 * 1024 * 1024:
+            raise HTTPException(400, "文件超过 20MB")
+        ds_dir = Path(db_path).parent / "datasource_files"
+        ds_dir.mkdir(parents=True, exist_ok=True)
+        safe = re.sub(r"[^\w\u4e00-\u9fff-]", "_", name)
+        target = (ds_dir / f"{safe}_{int(datetime.now().timestamp())}.{ext}").resolve()
+        target.write_bytes(raw)
+        try:
+            return {"success": True, "data": db_tools.create(
+                name, kind="excel", location=str(target),
+                space_id=space_id, sub_system_id=sub_system_id)}
+        except ValueError as e:
+            target.unlink(missing_ok=True)
+            raise HTTPException(400, str(e))
 
     @app.post("/api/datasources")
     def create_datasource(payload: Dict):
@@ -1022,7 +1233,9 @@ def create_app(db_path: str = "data/db.sqlite3", artifact_root: str = "artifacts
             return {"success": True}
 
     @app.get("/api/kb/documents")
-    def list_docs(space_id: Optional[int] = None, sub_system_id: Optional[int] = None):
+    def list_docs(space_id: Optional[int] = None, sub_system_id: Optional[int] = None,
+                  business_domain: str = "", kb_type: str = "", confidence: str = "",
+                  review_required: Optional[bool] = None):
         with db.session() as s:
             from sqlalchemy import select
             from db_loc_agent.db import DocumentRecord
@@ -1031,18 +1244,44 @@ def create_app(db_path: str = "data/db.sqlite3", artifact_root: str = "artifacts
                 q = q.where(DocumentRecord.space_id == space_id)
             if sub_system_id:
                 q = q.where(DocumentRecord.sub_system_id == sub_system_id)
+            if business_domain:
+                q = q.where(DocumentRecord.business_domain == business_domain)
+            if kb_type:
+                q = q.where(DocumentRecord.kb_type == kb_type)
+            if confidence:
+                q = q.where(DocumentRecord.confidence == confidence)
+            if review_required is not None:
+                q = q.where(DocumentRecord.review_required == review_required)
             rows = list(s.scalars(q.order_by(DocumentRecord.id.desc())))
-            return {"success": True, "data": [{"id": r.id, "name": r.name, "source_type": r.source_type,
-                                               "chunk_count": r.chunk_count, "enabled": r.enabled,
-                                               "space_id": r.space_id, "sub_system_id": r.sub_system_id,
-                                               "kb_type": r.kb_type if hasattr(r, "kb_type") else "doc",
-                                               "created_at": r.created_at.isoformat()} for r in rows]}
+            return {"success": True, "data": [{
+                "id": r.id, "name": r.name, "source_type": r.source_type,
+                "chunk_count": r.chunk_count, "enabled": r.enabled,
+                "space_id": r.space_id, "sub_system_id": r.sub_system_id,
+                "kb_type": r.kb_type or "doc",
+                "business_domain": r.business_domain or "db_migrate",
+                "target_db": r.target_db or "", "stage": r.stage or "",
+                "object_type": r.object_type or "",
+                "confidence": r.confidence or "verified",
+                "source": r.source or "upload", "source_ref": r.source_ref or "",
+                "effective_time": r.effective_time.isoformat() if r.effective_time else None,
+                "negative_feedback_count": int(r.negative_feedback_count or 0),
+                "review_required": bool(r.review_required),
+                "created_at": r.created_at.isoformat(),
+            } for r in rows]}
 
     @app.post("/api/kb/documents")
     async def upload_doc(file: UploadFile = File(...),
                          space_id: Optional[int] = Form(None),
                          sub_system_id: Optional[int] = Form(None),
-                         kb_type: Optional[str] = Form("doc")):
+                         kb_type: Optional[str] = Form("doc"),
+                         business_domain: str = Form("db_migrate"),
+                         target_db: str = Form(""),
+                         stage: str = Form(""),
+                         object_type: str = Form(""),
+                         confidence: str = Form("verified"),
+                         source: str = Form("upload"),
+                         source_ref: str = Form(""),
+                         effective_time: Optional[str] = Form(None)):
         name = file.filename or "unnamed"
         ext = Path(name).suffix.lstrip(".").lower()
         if ext not in ("md", "sql", "txt", "pdf"):
@@ -1050,6 +1289,15 @@ def create_app(db_path: str = "data/db.sqlite3", artifact_root: str = "artifacts
         kb_type = (kb_type or "doc").strip()
         if kb_type not in ("rules", "cases", "doc", "ops"):
             kb_type = "doc"  # 分层知识库：rules 规则库 / cases 案例库 / doc 归档文档 / ops 运维手册
+        confidence = (confidence or "verified").strip()
+        if confidence not in ("verified", "human_authority", "pending_review", "model_generated"):
+            raise HTTPException(400, "无效的可信度标识")
+        effective_at = None
+        if effective_time:
+            try:
+                effective_at = datetime.fromisoformat(effective_time)
+            except ValueError:
+                raise HTTPException(400, "无效的生效时间")
         raw = await file.read()
         if len(raw) > 5 * 1024 * 1024:
             raise HTTPException(400, "文件超过 5MB")
@@ -1080,7 +1328,12 @@ def create_app(db_path: str = "data/db.sqlite3", artifact_root: str = "artifacts
             s.refresh(rec)
             doc_id = rec.id
         info = rag.add_document(doc_id, name, ext, str(target), space_id=space_id,
-                                kb_type=kb_type)
+                                kb_type=kb_type,
+                                business_domain=business_domain,
+                                target_db=target_db, stage=stage,
+                                object_type=object_type, confidence=confidence,
+                                source=source, source_ref=source_ref,
+                                effective_time=effective_at)
         return {"success": True, "data": {"id": doc_id, "chunks": info["chunks"]}}
 
     @app.delete("/api/kb/documents/{doc_id}")
@@ -1106,6 +1359,52 @@ def create_app(db_path: str = "data/db.sqlite3", artifact_root: str = "artifacts
     @app.get("/api/kb/search")
     def kb_search(q: str, top_k: int = 4, space_id: Optional[int] = None):
         return {"success": True, "data": rag.search(q, top_k, space_id=space_id)}
+
+    @app.post("/api/knowledge/search")
+    def knowledge_search(payload: Dict):
+        """统一知识检索 API：保留诊断信息、候选与溯源字段。"""
+        query = (payload.get("query") or payload.get("q") or "").strip()
+        if not query:
+            raise HTTPException(400, "检索内容不能为空")
+        kb_types = payload.get("kb_types")
+        if kb_types is not None and not isinstance(kb_types, list):
+            raise HTTPException(400, "kb_types 必须是数组")
+        candidate_k = int(payload.get("candidate_k", 20))
+        min_similarity = float(payload.get("min_similarity", 0.35))
+        try:
+            result = rag._search_core(
+                query,
+                top_k=int(payload.get("top_k", 4)),
+                space_id=payload.get("space_id"),
+                kb_types=kb_types,
+                source_db=payload.get("source_db", ""),
+                target_db=payload.get("target_db", ""),
+                business_domain=payload.get("business_domain", "db_migrate"),
+                stage=payload.get("stage", ""),
+                object_type=payload.get("object_type", ""),
+                candidate_k=candidate_k,
+                min_similarity=min_similarity,
+            )
+        except (TypeError, ValueError):
+            raise HTTPException(400, "检索参数无效")
+        result.update({
+            "query": query,
+            "candidate_k": candidate_k,
+            "min_similarity": min_similarity,
+        })
+        return {"success": True, "data": result}
+
+    @app.post("/api/knowledge/feedback")
+    def knowledge_feedback(payload: Dict):
+        try:
+            result = rag.record_feedback(
+                int(payload.get("doc_id", 0)),
+                feedback=str(payload.get("feedback", "")),
+                reason=str(payload.get("reason", "")),
+            )
+        except (TypeError, ValueError) as e:
+            raise HTTPException(400, str(e))
+        return {"success": True, "data": result}
 
     # ---------- 知识图谱 ----------
     @app.get("/api/kg/overview")
@@ -1215,9 +1514,9 @@ def create_app(db_path: str = "data/db.sqlite3", artifact_root: str = "artifacts
     def create_task(payload: Dict):
         return {"success": True, "data": proj.create_task(
             int(payload["space_id"]), str(payload.get("name", "")),
-            payload.get("sub_system_id"), str(payload.get("description", "")),
-            payload.get("kb_ids"), str(payload.get("agent_id", "")),
-            str(payload.get("creator", "")))}
+            sub_system_id=None, description=str(payload.get("description", "")),
+            kb_ids=payload.get("kb_ids"), agent_id=str(payload.get("agent_id", "")),
+            creator=str(payload.get("creator", "")))}
 
     @app.get("/api/tasks/{tid}")
     @_project_handler
@@ -1229,14 +1528,14 @@ def create_app(db_path: str = "data/db.sqlite3", artifact_root: str = "artifacts
         """通过业务任务 ID 查找关联的迁移任务，返回与工作台迁移面板一致的任务详情：
         优先级：
         1. 任务下会话 task_state JSON 中的 migrate_task_id（权威关联）；
-        2. 任务下会话按 conv_id 匹配（若迁移任务 conv_id 存的是会话 ID）；
-        3. 兜底：按 DbMigrateTask.conv_id == tid 匹配（若 conv_id 存的是业务任务 ID）。"""
+        2. 迁移任务的显式 project_task_id（新状态机权威归属）。"""
         import json as _json
         from db_loc_agent.db import Conversation, DbMigrateTask
         from sqlalchemy import select
 
         def _pack(row) -> Dict:
             data = migrate_state.to_dict(row)
+            _with_migrate_execution_state(data, db)
             data["assets"] = migrate_assets.list(row.id)
             data["assets_stats"] = migrate_assets.stats(row.id)
             return data
@@ -1244,6 +1543,12 @@ def create_app(db_path: str = "data/db.sqlite3", artifact_root: str = "artifacts
         with db.session() as s:
             convs = list(s.scalars(
                 select(Conversation).where(Conversation.task_id == tid).order_by(Conversation.id)))
+        with db.session() as s:
+            owned_row = s.scalar(select(DbMigrateTask).where(
+                DbMigrateTask.project_task_id == tid
+            ).order_by(DbMigrateTask.id.desc()))
+        if owned_row is not None:
+            return {"success": True, "data": _pack(owned_row)}
         for c in convs:
             # 1. 权威：会话 task_state JSON 中的 migrate_task_id
             ts_raw = (c.task_state or "").strip()
@@ -1261,12 +1566,6 @@ def create_app(db_path: str = "data/db.sqlite3", artifact_root: str = "artifacts
             row = migrate_state.get_by_conv(c.id)
             if row is not None:
                 return {"success": True, "data": _pack(row)}
-        # 3. 兜底：迁移任务 conv_id 若存的是业务任务 ID
-        with db.session() as s:
-            row = s.scalar(select(DbMigrateTask).where(
-                DbMigrateTask.conv_id == tid).order_by(DbMigrateTask.id.desc()))
-        if row is not None:
-            return {"success": True, "data": _pack(row)}
         return {"success": True, "data": None}
 
     @app.put("/api/tasks/{tid}")
@@ -1324,6 +1623,53 @@ def create_app(db_path: str = "data/db.sqlite3", artifact_root: str = "artifacts
         if content is None:
             raise HTTPException(404, "产物不存在")
         return JSONResponse({"success": True, "content": content})
+
+    @app.get("/api/artifacts/{rid}/download")
+    def artifact_download(rid: int):
+        try:
+            path = artifacts.file_path(rid)
+        except ValueError:
+            raise HTTPException(404, "产物不存在")
+        if not path.exists():
+            raise HTTPException(404, "产物文件不存在")
+        return FileResponse(
+            path,
+            filename=path.name,
+            media_type=(
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                if path.suffix.lower() == ".xlsx" else "application/octet-stream"
+            ),
+        )
+
+    @app.get("/api/products/{rid}/versions")
+    def list_product_versions(rid: int):
+        try:
+            return {"success": True, "data": artifacts.list_versions(rid)}
+        except ValueError as exc:
+            raise HTTPException(404, str(exc))
+
+    @app.get("/api/products/{rid}/versions/{version}")
+    def get_product_version(rid: int, version: int):
+        try:
+            record = artifacts.version_record(rid, version)
+            return {
+                "success": True,
+                "data": {**artifacts._to_dict(record),
+                         "content": artifacts.read_version(rid, version) or ""},
+            }
+        except ValueError as exc:
+            raise HTTPException(404, str(exc))
+
+    @app.get("/api/products/{rid}/diff")
+    def diff_product(rid: int, left: int, right: int):
+        try:
+            return {"success": True, "data": artifacts.diff(rid, left, right)}
+        except ValueError as exc:
+            raise HTTPException(404, str(exc))
+
+    @app.get("/api/trace/{trace_id}")
+    def trace_detail(trace_id: str, limit: int = 500):
+        return {"success": True, "data": observability.list_trace(trace_id, limit)}
 
     @app.put("/api/artifacts/{rid}")
     def rename_artifact(rid: int, payload: Dict):
@@ -1745,6 +2091,12 @@ def create_app(db_path: str = "data/db.sqlite3", artifact_root: str = "artifacts
                 })
             return {"success": True, "data": data}
 
+    @app.post("/api/chat/{cid}/cancel")
+    def cancel_chat(cid: int):
+        """显式中止会话当前执行；前端随后再断开 SSE 连接。"""
+        cancelled = chat_cancellations.cancel(cid)
+        return {"success": True, "data": {"cancelled": cancelled}}
+
     @app.post("/api/chat/stream")
     def chat_stream(payload: Dict):
         user_input = (payload.get("message") or "").strip()
@@ -1757,6 +2109,7 @@ def create_app(db_path: str = "data/db.sqlite3", artifact_root: str = "artifacts
         # attachment_ids: 上传附件写入产物的 ArtifactRecord id 列表
         references = payload.get("references") or []
         attachment_ids = payload.get("attachment_ids") or []
+        skip_state_advance = bool(payload.get("skip_state_advance"))
         if conv_id is None:
             with db.session() as s:
                 c = Conversation(title=user_input[:20])
@@ -1777,7 +2130,8 @@ def create_app(db_path: str = "data/db.sqlite3", artifact_root: str = "artifacts
             _c = s.get(Conversation, conv_id)
             _quick = (_c is None) or not _c.space_id
             conv_space_id = _c.space_id if _c else None
-        llm = create_chat_model(cfg.llm)
+        llm = create_chat_model(cfg.llm, reliability=cfg.reliability)
+        cancellation_event = chat_cancellations.start(int(conv_id))
         graph = build_graph(llm=llm, rag_search=rag.search, prompt_service=prompts,
                             artifact_service=artifacts, skill_service=skills, config=cfg,
                             agent_service=agents_svc, pipeline_service=PipelineService(db),
@@ -1785,7 +2139,8 @@ def create_app(db_path: str = "data/db.sqlite3", artifact_root: str = "artifacts
                             ops=ops, gov=gov,
                             rag_enabled=not _quick, datasources_enabled=not _quick,
                             migrate_assets=migrate_assets, migrate_state=migrate_state,
-                            max_iterations=8)  # 迁移流水线需串行编排 4-5 个子 Agent，默认 3 会中途截断
+                            max_iterations=8, observability=observability,
+                            cancellation_event=cancellation_event)  # 迁移流水线需串行编排 4-5 个子 Agent，默认 3 会中途截断
 
         def event(name: str, content: Any) -> str:
             return f"data: {json.dumps({'type': name, 'content': content}, ensure_ascii=False)}\n\n"
@@ -1878,6 +2233,24 @@ def create_app(db_path: str = "data/db.sqlite3", artifact_root: str = "artifacts
                 # 未绑定业务任务时回退会话 ID（记录最近活跃会话）
                 biz_task_id = _c.task_id if _c else None
                 _conv_ref = biz_task_id if biz_task_id is not None else conv_id
+            trace_id = ""
+            _migrate_task_id = task_state.get("migrate_task_id")
+            if _migrate_task_id:
+                try:
+                    _migrate_row = migrate_state.get(int(_migrate_task_id))
+                    if _migrate_row is not None:
+                        trace_id = (getattr(_migrate_row, "trace_id", "") or "").strip()
+                        if not trace_id:
+                            trace_id = observability.new_trace_id()
+                            _migrate_row.trace_id = trace_id
+                            with db.session() as s:
+                                _row = s.get(type(_migrate_row), _migrate_row.id)
+                                if _row is not None:
+                                    _row.trace_id = trace_id
+                                    s.commit()
+                        task_state["trace_id"] = trace_id
+                except (TypeError, ValueError):
+                    pass
 
             # ---- 领域状态机：确定性流转（不依赖 LLM 记忆，支持断点续跑） ----
             # 迁移流程由后端硬编码状态机控制：INIT→选源→采集基础信息→扫对象→评估→
@@ -1917,12 +2290,20 @@ def create_app(db_path: str = "data/db.sqlite3", artifact_root: str = "artifacts
                 if task_state.get("migrate_task_id"):
                     try:
                         migrate_row = migrate_state.get(int(task_state["migrate_task_id"]))
+                        if (migrate_row is not None and biz_task_id is not None
+                                and getattr(migrate_row, "project_task_id", None) is None):
+                            migrate_state.bind_project_task(migrate_row.id, biz_task_id)
                     except Exception:
+                        migrate_row = None
+                    if (migrate_row is not None and biz_task_id is not None
+                            and getattr(migrate_row, "project_task_id", None) != biz_task_id):
                         migrate_row = None
                 if migrate_row is None and merged_params.get("source_ds_id"):
                     try:
                         migrate_row = migrate_state.get_by_source_ds(
-                            str(merged_params["source_ds_id"]))
+                            str(merged_params["source_ds_id"]),
+                            space_id=conv_space_id,
+                            project_task_id=biz_task_id)
                         # 多会话共享：一个迁移任务可被多个会话共同推进（任务级状态），
                         # 不复用他人任务 / 已完成任务；接入后记录最近活跃会话。
                         if migrate_row:
@@ -1933,7 +2314,9 @@ def create_app(db_path: str = "data/db.sqlite3", artifact_root: str = "artifacts
                 if migrate_row is None and is_migration_flow \
                         and not merged_params.get("source_ds_id"):
                     try:
-                        migrate_row = migrate_state.get_recent_active()
+                        migrate_row = migrate_state.get_recent_active(
+                            space_id=conv_space_id,
+                            project_task_id=biz_task_id)
                         if migrate_row:
                             migrate_state.bind_conv(migrate_row.id, _conv_ref)
                     except Exception:
@@ -1943,6 +2326,7 @@ def create_app(db_path: str = "data/db.sqlite3", artifact_root: str = "artifacts
                 if migrate_row is None and is_migration_flow:
                     migrate_row = migrate_state.create(
                         conv_id=_conv_ref, space_id=conv_space_id,
+                        project_task_id=biz_task_id,
                         source_ds_id=str(merged_params.get("source_ds_id") or ""),
                         source_ds_name=(_resolve_ds_name(str(merged_params["source_ds_id"]))
                                         if merged_params.get("source_ds_id") else ""))
@@ -1963,6 +2347,24 @@ def create_app(db_path: str = "data/db.sqlite3", artifact_root: str = "artifacts
                     # 逐级确认开关（DB 配置化，从任务读取）：注入 task_state 供 graph 编排决策
                     task_state["step_confirm"] = bool(getattr(migrate_row, "step_confirm", True))
                     task_state["strict_flow"] = bool(getattr(migrate_row, "strict_flow", True))
+                    # 演示默认值：未显式选源时优先读取已启用 Excel；未显式选目标时用本地 MySQL。
+                    # 只补缺失字段，不覆盖用户已选择的数据源或目标库。
+                    if not (getattr(migrate_row, "source_ds_id", "")
+                            or merged_params.get("source_ds_id")):
+                        default_excel = next((
+                            item for item in db_tools.list()
+                            if item.get("kind") == "excel"
+                            and item.get("enabled", True)
+                        ), None)
+                        if default_excel is not None:
+                            merged_params.update({
+                                "source_ds_id": str(default_excel.get("id", "")),
+                                "source_ds_name": str(default_excel.get("name", "")),
+                                "source_db_type": "excel",
+                            })
+                    if not (getattr(migrate_row, "target_db_type", "")
+                            or merged_params.get("target_db_type")):
+                        merged_params["target_db_type"] = "mysql"
                     # 数据源防重复硬拦截：一旦选定，后续轮次传入不同 source_ds_id 一律忽略
                     if migrate_row.source_ds_id and merged_params.get("source_ds_id") \
                             and str(merged_params["source_ds_id"]) != str(migrate_row.source_ds_id):
@@ -1978,14 +2380,45 @@ def create_app(db_path: str = "data/db.sqlite3", artifact_root: str = "artifacts
                         merged_params.pop("target_db_type", None)
                         task_state["last_warning"] = (
                             f"目标数据库类型与源数据库类型相同（{_st}），后端已拦截，请重新选择不同的目标国产数据库")
+                    # Excel 替代采集：用户明确确认后，Excel 对象清单就是采集结果。
+                    # 仅在该任务确实绑定 Excel 源、已扫描到对象且目标库已选定时放行。
+                    _excel_confirm_re = re.compile(
+                        r"(?:采用|使用|确认).{0,30}excel.{0,30}(?:替代|代替).{0,20}采集",
+                        re.IGNORECASE)
                     try:
-                        _res_upd = migrate_state.update_params(migrate_row.id, merged_params)
-                    except MigrateStateError as _e:
-                        _res_upd = None
-                        task_state["last_warning"] = str(_e)
+                        _excel_ds = db_tools.get(migrate_row.source_ds_name or "")
+                    except Exception:
+                        _excel_ds = None
+                    if (_excel_confirm_re.search(user_input)
+                            and _excel_ds and _excel_ds.get("kind") == "excel"
+                            and int(getattr(migrate_row, "object_count", 0)
+                                    or merged_params.get("object_count") or 0) > 0
+                            and (merged_params.get("target_db_type")
+                                 or getattr(migrate_row, "target_db_type", ""))):
+                        merged_params.setdefault("source_db_type", "excel")
+                        merged_params.setdefault("db_business_level", "以Excel采集结果为准")
+                        merged_params.setdefault("db_capacity", "以Excel采集结果为准")
+                        merged_params.setdefault("stop_window", "以Excel采集结果为准")
+                    merged_params.update(_collector_report_completion_params(
+                        migrate_row, merged_params, db))
+                    _res_upd = None
+                    if skip_state_advance:
+                        # /advance 已完成一次闸门确认；这里仅执行刚进入的阶段，
+                        # 不能把“开始执行”再次解析成下一阶段的 task_confirm。
+                        task_state["current_step"] = getattr(migrate_row, "status", "")
+                        task_state["step_status"] = "running"
+                        task_state["awaiting_confirmation"] = False
+                        task_state["pipeline_start"] = True
+                        _broadcast_migrate_state(migrate_row.id, task_state)
+                    else:
+                        try:
+                            _res_upd = migrate_state.update_params(migrate_row.id, merged_params)
+                        except MigrateStateError as _e:
+                            task_state["last_warning"] = str(_e)
                     if _res_upd:
                         _mt = _res_upd["task"]
                         task_state["current_step"] = _mt["status"]
+                        _broadcast_migrate_state(migrate_row.id, task_state)
                         if _res_upd["advanced"]:
                             migrate_evt = {"task_id": migrate_row.id, "from": _res_upd["from"],
                                            "to": _res_upd["to"], "label": status_label(_res_upd["to"])}
@@ -2012,6 +2445,8 @@ def create_app(db_path: str = "data/db.sqlite3", artifact_root: str = "artifacts
                                     _res2 = migrate_state.update_params(
                                         migrate_row.id, {"object_count": _scan_res["object_count"]})
                                     task_state["current_step"] = _res2["task"]["status"]
+                                    _broadcast_migrate_state(
+                                        migrate_row.id, task_state)
                                 except Exception:
                                     pass
                         # 进入执行阶段 → 注入强制编排计划（graph 据此调度子 Agent）
@@ -2139,7 +2574,8 @@ def create_app(db_path: str = "data/db.sqlite3", artifact_root: str = "artifacts
             initial = AgentState(user_input=user_input, conv_id=conv_id,
                                  space_id=conv_space_id, history=history,
                                  agent_id=agent_id or "", extra_context=extra_context,
-                                 task_state=task_state)
+                                 task_state=task_state,
+                                 trace_id=str(task_state.get("trace_id") or ""))
             assistant_parts: List[str] = []
             reply_started = False      # 是否已进入真正的回复正文
             pending_prefix = ""        # 最前可能为解析 JSON 前缀的文本缓冲区
@@ -2251,6 +2687,9 @@ def create_app(db_path: str = "data/db.sqlite3", artifact_root: str = "artifacts
             try:
                 # messages 模式提供 LLM token 级增量（打字机效果），updates 模式提供节点事件，
                 # custom 模式提供 graph 内实时自定义事件（子 Agent 调度 + 子 Agent 输出）
+                stream_migrate_task_id = (
+                    task_state.get("migrate_task_id")
+                    if isinstance(task_state, dict) else None)
                 for mode, payload in graph.stream(
                         initial, stream_mode=["updates", "messages", "custom"]):
                     if mode == "messages":
@@ -2292,9 +2731,17 @@ def create_app(db_path: str = "data/db.sqlite3", artifact_root: str = "artifacts
                         ev = payload if isinstance(payload, dict) else {}
                         etype = ev.get("type")
                         aid = ev.get("agent_id") or ""
+                        if etype == "route_preflight":
+                            direct_agent_id = str(ev.get("agent_id") or direct_agent_id)
+                            routed_cfg = agents_svc.get(direct_agent_id) or {}
+                            buffer_direct_reply = bool(routed_cfg.get("gen_artifact", False))
+                            continue
                         if etype == "system":
                             ev_body = {"message": ev.get("message", ""),
-                                       "event": ev.get("event", "calling_agent")}
+                                       "event": ev.get("event", "calling_agent"),
+                                       "agent_id": aid,
+                                       "success": ev.get("success"),
+                                       "artifact_count": ev.get("artifact_count")}
                             yield event("system", ev_body)
                             trace("system", ev_body, aid)
                         elif etype == "sub_agent":
@@ -2317,40 +2764,64 @@ def create_app(db_path: str = "data/db.sqlite3", artifact_root: str = "artifacts
                             yield event("artifact", ev_body)
                             trace("artifact", ev_body, ev.get("agent_id", aid))
                         continue
-                    # updates 模式：parse/route/skill/artifact/error 节点事件
+                    # updates 模式：指挥官负责 parse/route/非迁移执行；阶段节点负责执行与产物
                     for node, update in payload.items():
-                        if node == "parse":
+                        graph_task_state = update.get("task_state")
+                        if isinstance(graph_task_state, dict):
+                            graph_task_id = (
+                                graph_task_state.get("migrate_task_id")
+                                or stream_migrate_task_id)
+                            if graph_task_id:
+                                _broadcast_migrate_state(
+                                    int(graph_task_id), graph_task_state)
+                        if node == "migration_commander":
                             pr = update.get("parse_result", {})
-                            yield event("parse", pr)
-                            trace("parse", pr)
-                        elif node == "route":
                             routed_agent_id = str(update.get("agent_id") or direct_agent_id)
                             routed_cfg = agents_svc.get(routed_agent_id) or {}
                             direct_agent_id = routed_agent_id
                             buffer_direct_reply = bool(routed_cfg.get("gen_artifact", False))
-                            yield event("route", {"agent_id": update.get("agent_id"),
-                                                  "reason": update.get("route_reason")})
-                            trace("route", update.get("route_reason", ""), update.get("agent_id", ""))
-                        elif node == "execute":
-                            # 若本轮发起了工具调用（技能/检索），record 为 skill 步骤
-                            # 正文文本已由 messages 流逐 token 下发，此处不再重复发送
-                            skill_calls = update.get("skill_calls") or []
-                            for sc in skill_calls:
-                                yield event("skill", sc)
-                                trace("skill", sc, update.get("agent_id", ""))
-                        elif node == "artifact":
-                            artifact_files = update.get("artifacts") or []
-                            if buffer_direct_reply:
-                                direct_artifacts.extend(
-                                    f for f in artifact_files
-                                    if str(f.get("agent_id", "")) == direct_agent_id
-                                )
-                            if update.get("namespace"):
-                                yield event("artifact", {"namespace": update["namespace"],
-                                                         "files": artifact_files})
-                                trace("artifact", {"namespace": update["namespace"]},
+                            if pr:
+                                yield event("parse", pr)
+                                trace("parse", pr)
+                            if update.get("route_reason") is not None:
+                                yield event("route", {"agent_id": update.get("agent_id"),
+                                                      "reason": update.get("route_reason")})
+                                trace("route", update.get("route_reason", ""),
                                       update.get("agent_id", ""))
-                        elif node == "reply" and update.get("error"):
+                            if update.get("error"):
+                                _update_task_status("failed")
+                                yield event("error", update["error"])
+                                trace("error", update["error"])
+                            if update.get("graph_phase") == "blocked" and update.get("reply"):
+                                yield event("text", update["reply"])
+                                assistant_parts.append(update["reply"])
+                            if update.get("generic_executed"):
+                                # 非迁移智能体在小枢内执行；产物型回复只出文件卡片。
+                                for sc in update.get("skill_calls") or []:
+                                    yield event("skill", sc)
+                                    trace("skill", sc, update.get("agent_id", ""))
+                                artifact_files = update.get("artifacts") or []
+                                if buffer_direct_reply:
+                                    direct_artifacts.extend(
+                                        f for f in artifact_files
+                                        if str(f.get("agent_id", "")) == direct_agent_id
+                                    )
+                                if update.get("namespace"):
+                                    yield event("artifact", {
+                                        "namespace": update["namespace"],
+                                        "files": artifact_files})
+                                    trace("artifact", {"namespace": update["namespace"]},
+                                          update.get("agent_id", ""))
+                        elif node in {
+                                "migration_collector", "migration_assessor",
+                                "migration_planner", "code_migrator", "migration_verifier"}:
+                            # 阶段产物已由 custom sub_agent/artifact 事件下发；
+                            # 这里只透出执行错误，避免把核心报告重复发到对话框。
+                            if update.get("error"):
+                                _update_task_status("failed")
+                                yield event("error", update["error"])
+                                trace("error", update["error"])
+                        elif update.get("error"):
                             _update_task_status("failed")
                             yield event("error", update["error"])
                             trace("error", update["error"])
@@ -2394,6 +2865,30 @@ def create_app(db_path: str = "data/db.sqlite3", artifact_root: str = "artifacts
                 if migrate_evt is not None:
                     yield event("migrate", migrate_evt)
                 yield event("done", None)
+            except ChatRunCancelled:
+                # 显式中止不是失败：释放执行锁，任务停在 paused，可从当前阶段继续。
+                _update_task_status("paused")
+                task_state["step_status"] = "paused"
+                task_state["awaiting_confirmation"] = True
+                task_state["pipeline_start"] = False
+                with db.session() as s:
+                    _c = s.get(Conversation, conv_id)
+                    if _c is not None:
+                        _c.task_state = json.dumps(task_state, ensure_ascii=False)
+                        s.commit()
+                if is_migration_flow and _migrate_lock_tid is not None:
+                    try:
+                        _broadcast_migrate_state(_migrate_lock_tid, task_state)
+                        migrate_state.release_lock(_migrate_lock_tid, str(conv_id))
+                        _migrate_lock_tid = None
+                    except Exception:
+                        pass
+                trace("system", {"event": "run_cancelled",
+                                 "message": "用户已中止本次智能体执行"})
+                yield event("system", {"event": "run_cancelled",
+                                       "message": "已中止本次智能体执行"})
+                yield event("done", None)
+                return
             except Exception as e:  # 覆盖 LLM 未启动等运行错误
                 _update_task_status("failed")
                 if buffer_direct_reply and direct_reply_buffer:
@@ -2454,12 +2949,20 @@ def create_app(db_path: str = "data/db.sqlite3", artifact_root: str = "artifacts
 
     @app.post("/api/migrate/tasks")
     def migrate_task_create(payload: Dict):
+        conv_id = payload.get("conv_id")
+        project_task_id = payload.get("project_task_id")
+        if project_task_id is None and conv_id is not None:
+            with db.session() as s:
+                conv = s.get(Conversation, int(conv_id))
+                project_task_id = conv.task_id if conv else None
         row = migrate_state.create(
-            conv_id=payload.get("conv_id"), space_id=payload.get("space_id"),
+            conv_id=conv_id, space_id=payload.get("space_id"),
             sub_system_id=payload.get("sub_system_id"),
+            project_task_id=project_task_id,
             source_ds_id=str(payload.get("source_ds_id") or ""),
             source_ds_name=str(payload.get("source_ds_name") or ""),
             task_name=str(payload.get("task_name") or "数据库迁移评估"))
+        _broadcast_latest_migrate_event(row.id)
         return {"success": True, "data": migrate_state.to_dict(row)}
 
     @app.get("/api/migrate/tasks/{tid}")
@@ -2468,6 +2971,7 @@ def create_app(db_path: str = "data/db.sqlite3", artifact_root: str = "artifacts
         if row is None:
             raise HTTPException(404, f"迁移任务不存在: {tid}")
         data = migrate_state.to_dict(row)
+        _with_migrate_execution_state(data, db)
         data["assets"] = migrate_assets.list(tid)
         data["assets_stats"] = migrate_assets.stats(tid)
         return {"success": True, "data": data}
@@ -2509,9 +3013,108 @@ def create_app(db_path: str = "data/db.sqlite3", artifact_root: str = "artifacts
             if not _lk["ok"]:
                 raise MigrateStateError(_lk["message"])
             res = migrate_state.resume(tid)
+            _broadcast_migrate_state(tid)
+            _broadcast_latest_migrate_event(tid)
         except MigrateStateError as e:
             raise HTTPException(400, str(e))
         return {"success": True, "data": res}
+
+    @app.post("/api/migrate/tasks/{tid}/retry-stage")
+    def migrate_task_retry_stage(tid: int, payload: Dict = None):
+        """单节点重试：回退到指定执行节点，保留参数与产物。
+
+        接口只负责状态回退与会话执行态复位；真正的 Agent 重跑由前端随后
+        调用 /api/chat/stream 发起，避免把状态机指令和业务执行混在一起。
+        """
+        import json as _json
+        from db_loc_agent.db import Conversation
+        from sqlalchemy import select
+
+        payload = payload or {}
+        stage = str(payload.get("stage") or "").strip()
+        sid = str(payload.get("session_id") or "").strip()
+        owner = str(payload.get("owner") or "")
+        row = migrate_state.get(tid)
+        if row is None:
+            raise HTTPException(404, f"迁移任务不存在: {tid}")
+
+        def _state_conv(c: Conversation | None):
+            if c is None:
+                return None
+            try:
+                state = _json.loads(c.task_state or "{}")
+                return c if (isinstance(state, dict) and int(state.get("migrate_task_id") or 0) == tid) else None
+            except (TypeError, ValueError):
+                return None
+
+        with db.session() as s:
+            requested = s.get(Conversation, int(sid)) if sid.isdigit() else None
+            owned = requested if requested and (
+                _state_conv(requested)
+                or (row.project_task_id and requested.task_id == row.project_task_id)
+            ) else None
+            candidates: list[Conversation] = []
+            if row.project_task_id:
+                candidates.extend(s.scalars(select(Conversation).where(
+                    Conversation.task_id == row.project_task_id).order_by(Conversation.id.desc())))
+            if row.conv_id is not None:
+                direct = s.get(Conversation, row.conv_id)
+                if direct is not None:
+                    candidates.append(direct)
+                candidates.extend(s.scalars(select(Conversation).where(
+                    Conversation.task_id == row.conv_id).order_by(Conversation.id.desc())))
+            state_conv = owned or next((_state_conv(c) for c in candidates if _state_conv(c)), None)
+            if state_conv is None:
+                state_conv = owned or next((c for c in candidates if c.id == row.conv_id), None)
+            if state_conv is None:
+                state_conv = owned or (candidates[0] if candidates else None)
+            if state_conv is None:
+                raise HTTPException(400, "该迁移任务没有关联会话，无法重新执行")
+            conv_id = state_conv.id
+
+        locked = False
+        try:
+            _lk = migrate_state.try_acquire_lock(
+                tid, str(conv_id), owner_user_id=owner or f"会话{conv_id}",
+                allow_readonly=True)
+            if not _lk["ok"]:
+                raise MigrateStateError(_lk["message"])
+            locked = True
+            res = migrate_state.retry_stage(tid, stage)
+            with db.session() as s:
+                target_conv = s.get(Conversation, conv_id)
+                if target_conv is None:
+                    raise MigrateStateError("该迁移任务没有关联会话，无法重新执行")
+                try:
+                    state = _json.loads(target_conv.task_state or "{}")
+                    if not isinstance(state, dict):
+                        state = {}
+                except (TypeError, ValueError):
+                    state = {}
+                state.update({
+                    "migrate_task_id": tid,
+                    "current_step": stage,
+                    "step_status": "running",
+                    "awaiting_confirmation": False,
+                    "pipeline_start": True,
+                })
+                target_conv.task_state = _json.dumps(state, ensure_ascii=False)
+                s.commit()
+            _broadcast_migrate_state(tid, {
+                "current_step": stage,
+                "step_status": "running",
+                "awaiting_confirmation": False,
+            })
+            _broadcast_latest_migrate_event(tid)
+            return {"success": True, "data": {"task": res, "conv_id": conv_id}}
+        except MigrateStateError as e:
+            raise HTTPException(400, str(e))
+        finally:
+            if locked:
+                try:
+                    migrate_state.release_lock(tid, str(conv_id))
+                except Exception:
+                    pass
 
     @app.post("/api/migrate/tasks/{tid}/advance")
     def migrate_task_advance(tid: int, payload: Dict = None):
@@ -2522,10 +3125,19 @@ def create_app(db_path: str = "data/db.sqlite3", artifact_root: str = "artifacts
         sid = str(payload.get("session_id") or "panel")
         owner = str(payload.get("owner") or "")
         try:
+            row = migrate_state.get(tid)
+            if row is None:
+                raise MigrateStateError(f"迁移任务不存在: {tid}")
             _lk = migrate_state.try_acquire_lock(tid, sid, owner_user_id=owner)
             if not _lk["ok"]:
                 raise MigrateStateError(_lk["message"])
+            payload.update(_collector_report_completion_params(row, payload, db))
             res = migrate_state.update_params(tid, payload)
+            _broadcast_migrate_state(tid, {
+                "current_step": res["task"]["status"],
+                "step_status": "running",
+            })
+            _broadcast_latest_migrate_event(tid)
         except MigrateStateError as e:
             raise HTTPException(400, str(e))
         # 状态推进完成后释放锁（阶段完成即释放，便于下一会话接管）

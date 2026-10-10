@@ -1,7 +1,6 @@
 import { useEffect, useState } from 'react'
 import { X, Loader2, FolderPlus } from 'lucide-react'
 import { api } from '@/lib/api'
-import type { Space } from '@/lib/types'
 import { cn } from '@/lib/utils'
 
 export function AttachTaskDialog({ open, onClose, convId, spaceId, onAttached }: {
@@ -13,20 +12,15 @@ export function AttachTaskDialog({ open, onClose, convId, spaceId, onAttached }:
 }) {
   const [mode, setMode] = useState<'existing' | 'new'>('existing')
   const [tasks, setTasks] = useState<{ id: number; name: string }[]>([])
-  const [spaces, setSpaces] = useState<Space[]>([])
   const [taskId, setTaskId] = useState<number | ''>('')
   const [name, setName] = useState('')
-  const [subId, setSubId] = useState<number | ''>('')
   const [saving, setSaving] = useState(false)
 
   useEffect(() => {
     if (!open) return
     setSaving(false)
-    api.listSpaces().then(r => { if (r.success) setSpaces(r.data || []) })
     if (spaceId) api.listTasks(spaceId).then(r => { if (r.success) setTasks(r.data || []) })
   }, [open, spaceId])
-
-  const currentSpace = spaces.find(s => s.id === spaceId)
 
   const submit = async () => {
     if (!convId) return
@@ -34,7 +28,7 @@ export function AttachTaskDialog({ open, onClose, convId, spaceId, onAttached }:
     try {
       const payload = mode === 'existing'
         ? { task_id: taskId === '' ? undefined : taskId }
-        : { name, sub_system_id: subId === '' ? undefined : subId }
+        : { name }
       const r = await api.attachTask(convId, payload)
       if (r.success && r.data) { onAttached(r.data); onClose() }
       else setSaving(false)
@@ -68,11 +62,6 @@ export function AttachTaskDialog({ open, onClose, convId, spaceId, onAttached }:
           <div className="space-y-3 mb-4">
             <input value={name} onChange={e => setName(e.target.value)} placeholder="任务名称（必填）"
               className="w-full h-9 rounded-lg bg-[#0f0f14] border border-[#252530] px-3 text-[13px]" />
-            <select value={subId} onChange={e => setSubId(e.target.value ? Number(e.target.value) : '')}
-              className="w-full h-9 rounded-lg bg-[#0f0f14] border border-[#252530] px-3 text-[13px]">
-              <option value="">无（空间级任务）</option>
-              {currentSpace?.subsystems.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
-            </select>
           </div>
         )}
         <button onClick={submit} disabled={saving || (mode === 'existing' ? !taskId : !name.trim())}

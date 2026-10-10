@@ -43,3 +43,24 @@ def test_write_and_list(tmp_path):
     assert len(svc.list_files(ns)) == 2
     content = svc.read(res["files"][0]["id"])
     assert "create table" in content
+
+
+def test_write_and_read_binary_xlsx(tmp_path):
+    from io import BytesIO
+    from openpyxl import Workbook
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "改造清单"
+    ws.append(["对象名称"])
+    ws.append(["user_order"])
+
+    buf = BytesIO()
+    wb.save(buf)
+    db = Database(str(tmp_path / "t.db"))
+    svc = ArtifactService(db, str(tmp_path / "artifacts"))
+    ns = make_namespace("sess_xlsx", "code_migrator", "user_order", "20260928T103000")
+    res = svc.write(ns, conv_id=1, agent_id="code_migrator", object_name="user_order",
+                    files={"改造清单.xlsx": buf.getvalue()})
+
+    assert svc.read_bytes(res["files"][0]["id"]) == buf.getvalue()

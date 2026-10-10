@@ -15,13 +15,25 @@ BASE_DIR = Path(__file__).resolve().parent.parent  # db_loc_agent/ 模块根
 
 @dataclass
 class LLMSettings:
-    provider: str = "ollama"          # ollama | deepseek | bailian
+    provider: str = "ollama"          # ollama | deepseek | bailian | zhipu
     base_url: str = "http://localhost:11434"
     model: str = "qwen2.5"
     api_key: str = ""
     embedding_model: str = "nomic-embed-text"
     temperature: float = 0.2
     max_tokens: int = 4096
+
+
+@dataclass
+class ReliabilitySettings:
+    db_failure_threshold: int = 3
+    db_recovery_seconds: int = 30
+    llm_failure_threshold: int = 3
+    llm_recovery_seconds: int = 60
+    llm_retry_count: int = 3
+    llm_retry_backoff_seconds: float = 1
+    llm_timeout_seconds: int = 120
+    node_timeout_seconds: int = 300
 
 
 @dataclass
@@ -40,6 +52,7 @@ class AppConfig:
     rate_limit: int = 0
     security_log: bool = True
     llm: LLMSettings = field(default_factory=LLMSettings)
+    reliability: ReliabilitySettings = field(default_factory=ReliabilitySettings)
 
     def to_dict(self) -> Dict[str, Any]:
         d = asdict(self)
@@ -57,6 +70,10 @@ def load_config(path: str | None = None) -> AppConfig:
                 for k, v in value.items():
                     if hasattr(cfg.llm, k):
                         setattr(cfg.llm, k, v)
+            elif key == "reliability" and isinstance(value, dict):
+                for k, v in value.items():
+                    if hasattr(cfg.reliability, k):
+                        setattr(cfg.reliability, k, v)
             elif hasattr(cfg, key):
                 setattr(cfg, key, value)
     return cfg

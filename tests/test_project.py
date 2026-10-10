@@ -16,14 +16,20 @@ def proj():
     os.remove(path)
 
 
-def test_space_subsystem_task_flow(proj):
+def test_space_task_flow_ignores_subsystem_dimension(proj):
     sp = proj.create_space("测试空间", "描述", kb_ids=[])
     assert sp["id"] > 0
-    sub = proj.create_subsystem(sp["id"], "营业系统")
-    assert sub["name"] == "营业系统"
-    task = proj.create_task(space_id=sp["id"], sub_system_id=sub["id"],
-                            name="DDL迁移", description="", kb_ids=[], agent_id="a1")
-    assert task["status"] == "pending" and task["space_id"] == sp["id"]
+    legacy_sub = proj.create_subsystem(sp["id"], "营业系统")
+    legacy_task = proj.create_task(space_id=sp["id"], name="存量任务")
+    task = proj.create_task(space_id=sp["id"], name="DDL迁移",
+                            description="", kb_ids=[], agent_id="a1")
+
+    assert task["status"] == "pending"
+    assert task["space_id"] == sp["id"]
+    assert task["sub_system_id"] is None
+    assert {t["id"] for t in proj.list_tasks(sp["id"], sub_system_id=legacy_sub["id"])} == {
+        legacy_task["id"], task["id"]
+    }
     # 空间不可改
     with pytest.raises(ProjectError) as ei:
         proj.update_task(task["id"], {"space_id": 999})
@@ -46,8 +52,7 @@ def test_ensure_default_space_is_idempotent(proj):
 def test_task_delete_cascades_conversations(proj):
     """删除任务：级联删除其下全部会话（含消息/trace/产物），知识库副本保留。"""
     sp = proj.create_space("S", "")
-    sub = proj.create_subsystem(sp["id"], "营业系统")
-    task = proj.create_task(space_id=sp["id"], sub_system_id=sub["id"], name="T")
+    task = proj.create_task(space_id=sp["id"], name="T")
     with proj.db.session() as s:
         from db_loc_agent.db import Conversation
         s.add(Conversation(title="c1", space_id=sp["id"], task_id=task["id"]))
@@ -57,3 +62,41 @@ def test_task_delete_cascades_conversations(proj):
         from db_loc_agent.db import Conversation
         c = s.query(Conversation).first()
         assert c is None, "删除任务应级联删除其下会话"
+
+
+def test_task_delete_cascades_migrate_state(proj):
+    """删除业务任务必须同步删除其迁移状态机，避免新任务接入旧状态。"""
+    import json
+
+    from db_loc_agent.db import (
+        Conversation,
+        DbMigrateAsset,
+        DbMigrateTask,
+        MigrateStateEvent,
+    )
+
+    sp = proj.create_space("S", "")
+    task = proj.create_task(space_id=sp["id"], name="T")
+    with proj.db.session() as s:
+        conv = Conversation(title="c1", space_id=sp["id"], task_id=task["id"])
+        s.add(conv)
+        s.flush()
+        migrate = DbMigrateTask(
+            conv_id=task["id"], space_id=sp["id"], status="ASSESSMENT_RUNNING")
+        s.add(migrate)
+        s.flush()
+        s.add(DbMigrateAsset(task_id=migrate.id, asset_name="users"))
+        s.add(MigrateStateEvent(
+            task_id=migrate.id, conv_id=conv.id, event_type="NODE_SUCCESS"))
+        conv.task_state = json.dumps({"migrate_task_id": migrate.id})
+        s.commit()
+        migrate_id = migrate.id
+
+    proj.delete_task(task["id"])
+
+    with proj.db.session() as s:
+        assert s.get(DbMigrateTask, migrate_id) is None
+        assert s.query(DbMigrateAsset).filter(
+            DbMigrateAsset.task_id == migrate_id).count() == 0
+        assert s.query(MigrateStateEvent).filter(
+            MigrateStateEvent.task_id == migrate_id).count() == 0

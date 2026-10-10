@@ -142,7 +142,7 @@ export function SubSystemDetailPage({ spaceId, spaceName, subId, onBack, onOpenT
   }
 
   const handleNewTask = () => {
-    if (space && current) onNewTask?.({ space, subId: current.id, lockSpace: true })
+    if (space && current) onNewTask?.({ space, lockSpace: true })
   }
 
   const handleDeleteSub = () => {
@@ -164,7 +164,8 @@ export function SubSystemDetailPage({ spaceId, spaceName, subId, onBack, onOpenT
     if (!window.confirm(`删除会话「${c.title}」？`)) return
     api.deleteConversation(c.id).then(r => {
       if (r.success) { showToast('会话已删除'); setConvs(prev => prev.filter(x => x.id !== c.id)); refreshStats() }
-    })
+      else showToast(r.message || '删除会话失败')
+    }).catch(() => showToast('删除会话失败'))
   }
 
   const handleDeleteDoc = (d: KBDoc) => {

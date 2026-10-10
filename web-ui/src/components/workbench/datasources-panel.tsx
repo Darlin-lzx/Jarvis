@@ -10,10 +10,10 @@ import { cn } from '@/lib/utils'
 import {
   Search, Plus, Trash2, X, AlertTriangle,
   CheckCircle2, Circle, Loader2, Send,
-  Settings, Zap, Power, Clock, Database,
+  Settings, Zap, Power, Clock, Database, FileSpreadsheet,
 } from 'lucide-react'
 
-type TypeFilter = '全部' | 'Oracle' | 'MySQL' | 'PostgreSQL'
+type TypeFilter = '全部' | 'Oracle' | 'MySQL' | 'PostgreSQL' | 'Excel'
 type StatusFilter = '全部' | '已启用' | '已停用' | '连接异常'
 
 interface DrawerForm {
@@ -34,7 +34,7 @@ const emptyForm: DrawerForm = {
   username: '', password: '', timeout: '60', description: '', tags: '',
 }
 
-const DB_KINDS = ['Oracle', 'MySQL', 'PostgreSQL']
+const DB_KINDS = ['Oracle', 'MySQL', 'PostgreSQL', 'Excel']
 
 export function DatasourcesPanel() {
   const [datasources, setDatasources] = useState<Datasource[]>([])
@@ -52,6 +52,8 @@ export function DatasourcesPanel() {
   const [saving, setSaving] = useState(false)
   const [testingConn, setTestingConn] = useState(false)
   const [testResult, setTestResult] = useState<{ ok: boolean; msg: string } | null>(null)
+  const [excelFile, setExcelFile] = useState<File | null>(null)
+  const [excelFileName, setExcelFileName] = useState('')
 
   // Delete confirm
   const [deleteTarget, setDeleteTarget] = useState<Datasource | null>(null)
@@ -87,15 +89,18 @@ export function DatasourcesPanel() {
     setForm(emptyForm)
     setFormErrors({})
     setTestResult(null)
+    setExcelFile(null)
+    setExcelFileName('')
     setDrawerOpen(true)
   }
 
   const openEdit = (ds: Datasource) => {
     setEditingDs(ds)
-    const [host, port] = (ds.location || '').split(':')
+    const isExcel = ds.kind === 'excel'
+    const [host, port] = isExcel ? [] : (ds.location || '').split(':')
     setForm({
       name: ds.name,
-      kind: ds.kind,
+      kind: isExcel ? 'Excel' : ds.kind,
       host: host || '',
       port: port || '',
       database: '',
@@ -107,6 +112,8 @@ export function DatasourcesPanel() {
     })
     setFormErrors({})
     setTestResult(null)
+    setExcelFile(null)
+    setExcelFileName(isExcel ? (ds.location || '').split('/').pop() || '' : '')
     setDrawerOpen(true)
   }
 
@@ -116,6 +123,43 @@ export function DatasourcesPanel() {
   }
 
   const handleSave = async () => {
+    const isExcel = form.kind === 'Excel'
+
+    // Excel 新增：上传文件创建数据源
+    if (isExcel && !editingDs) {
+      const errors: Record<string, string> = {}
+      if (!form.name.trim()) errors.name = '请输入数据源名称'
+      if (!excelFile) errors.file = '请选择 Excel 文件'
+      setFormErrors(errors)
+      if (Object.keys(errors).length > 0) return
+      if (!excelFile) return
+      const file = excelFile
+      setSaving(true)
+      const fd = new FormData()
+      fd.append('name', form.name.trim())
+      fd.append('file', file)
+      const r = await api.uploadDatasource(fd)
+      if (r.success) { closeDrawer(); load() } else alert(r.detail || '保存失败')
+      setSaving(false)
+      return
+    }
+
+    // Excel 编辑：仅改名称（保留原文件）
+    if (isExcel && editingDs) {
+      const errors: Record<string, string> = {}
+      if (!form.name.trim()) errors.name = '请输入数据源名称'
+      setFormErrors(errors)
+      if (Object.keys(errors).length > 0) return
+      setSaving(true)
+      const r = await api.updateDatasource(editingDs.name, {
+        name: form.name.trim(), kind: 'excel', location: editingDs.location || '',
+        username: '', password: '', dsn: '',
+      })
+      if (r.success) { closeDrawer(); load() } else alert('保存失败')
+      setSaving(false)
+      return
+    }
+
     const errors: Record<string, string> = {}
     if (!form.name.trim()) errors.name = '请输入数据源名称'
     if (!form.host.trim()) errors.host = '请输入主机地址'
@@ -209,6 +253,7 @@ export function DatasourcesPanel() {
       postgresql: 'bg-indigo-500/15 text-indigo-400',
       'sql server': 'bg-purple-500/15 text-purple-400',
       dm: 'bg-purple-500/15 text-purple-400',
+      excel: 'bg-green-500/15 text-green-400',
     }
     return colors[kind.toLowerCase()] || 'bg-[#26262d] text-[#9a9aa4]'
   }
@@ -217,11 +262,11 @@ export function DatasourcesPanel() {
   const KIND_LABELS: Record<string, string> = {
     oracle: 'Oracle', mysql: 'MySQL', postgresql: 'PostgreSQL',
     sqlite: 'SQLite', dm: '达梦', kingbase: '金仓', gaussdb: 'GaussDB',
-    'sql server': 'SQL Server',
+    'sql server': 'SQL Server', excel: 'Excel',
   }
   const kindLabel = (kind: string) => KIND_LABELS[(kind || '').toLowerCase()] || kind
 
-  const typeTabs: TypeFilter[] = ['全部', 'Oracle', 'MySQL', 'PostgreSQL']
+  const typeTabs: TypeFilter[] = ['全部', 'Oracle', 'MySQL', 'PostgreSQL', 'Excel']
   const statusTabs: StatusFilter[] = ['全部', '已启用', '已停用', '连接异常']
 
   return (
@@ -431,7 +476,32 @@ export function DatasourcesPanel() {
                 </Select>
               </div>
 
-              {/* 主机端口 */}
+              {/* Excel 文件上传（类型=Excel） */}
+              {form.kind === 'Excel' && (
+                <div className="space-y-2">
+                  {editingDs ? (
+                    <div className="rounded-lg border border-[#252530] bg-[#16161e] px-3 py-2 text-[11px] text-[#9a9aa4] flex items-center gap-2">
+                      <FileSpreadsheet className="w-3.5 h-3.5 text-green-400" />
+                      {excelFileName || editingDs.location}
+                    </div>
+                  ) : (
+                    <div>
+                      <label className="text-[11px] text-[#8b8b9e] mb-1 block">Excel 文件 <span className="text-red-400">*</span></label>
+                      <Input
+                        type="file"
+                        accept=".xlsx,.xls,.csv"
+                        className={cn('h-8 text-[12px] bg-[#16161e] border file:mr-2 file:rounded file:border-0 file:bg-[#26262d] file:px-2 file:py-1 file:text-[11px] file:text-[#cdd3e0] cursor-pointer', formErrors.file ? 'border-red-500/50' : 'border-[#252530]')}
+                        onChange={e => { const f = e.target.files?.[0] || null; setExcelFile(f); setExcelFileName(f?.name || '') }}
+                      />
+                      {formErrors.file && <p className="text-[10px] text-red-400 mt-1 flex items-center gap-1"><AlertTriangle className="w-3 h-3" />{formErrors.file}</p>}
+                      <p className="text-[10px] text-[#5a5a70] mt-1.5">每个工作表视为一张表，表头行作为列名，用于源库不可连接时的替代采集</p>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* 主机端口（非 Excel） */}
+              {form.kind !== 'Excel' && (
               <div>
                 <label className="text-[11px] text-[#8b8b9e] mb-1 block">主机端口 <span className="text-red-400">*</span></label>
                 <div className="flex gap-2">
@@ -450,8 +520,10 @@ export function DatasourcesPanel() {
                 </div>
                 {formErrors.host && <p className="text-[10px] text-red-400 mt-1 flex items-center gap-1"><AlertTriangle className="w-3 h-3" />{formErrors.host}</p>}
               </div>
+              )}
 
-              {/* 服务名 / 数据库名 */}
+              {/* 服务名 / 数据库名（非 Excel） */}
+              {form.kind !== 'Excel' && (
               <div>
                 <label className="text-[11px] text-[#8b8b9e] mb-1 block">服务名 / 数据库名</label>
                 <Input
@@ -461,8 +533,10 @@ export function DatasourcesPanel() {
                   onChange={e => setForm({ ...form, database: e.target.value })}
                 />
               </div>
+              )}
 
-              {/* 连接账号 */}
+              {/* 连接账号（非 Excel） */}
+              {form.kind !== 'Excel' && (
               <div>
                 <label className="text-[11px] text-[#8b8b9e] mb-1 block">连接账号</label>
                 <Input
@@ -472,8 +546,10 @@ export function DatasourcesPanel() {
                   onChange={e => setForm({ ...form, username: e.target.value })}
                 />
               </div>
+              )}
 
-              {/* 密码 */}
+              {/* 密码（非 Excel） */}
+              {form.kind !== 'Excel' && (
               <div>
                 <label className="text-[11px] text-[#8b8b9e] mb-1 block">密码</label>
                 <Input
@@ -484,8 +560,10 @@ export function DatasourcesPanel() {
                   onChange={e => setForm({ ...form, password: e.target.value })}
                 />
               </div>
+              )}
 
-              {/* 超时时间 */}
+              {/* 超时时间（非 Excel） */}
+              {form.kind !== 'Excel' && (
               <div>
                 <label className="text-[11px] text-[#8b8b9e] mb-1 block">超时时间（s）</label>
                 <Input
@@ -496,6 +574,7 @@ export function DatasourcesPanel() {
                   onChange={e => setForm({ ...form, timeout: e.target.value })}
                 />
               </div>
+              )}
 
               {/* 描述 */}
               <div>

@@ -39,11 +39,11 @@ interface SystemEvent {
 }
 
 const quickActions = [
-  { label: '新建对话', icon: MessageCircle, color: 'bg-indigo-500 hover:bg-indigo-600' },
-  { label: '上传知识库', icon: Upload, color: 'bg-green-500 hover:bg-green-600' },
-  { label: '新建产物', icon: FileText, color: 'bg-purple-500 hover:bg-purple-600' },
-  { label: '创建智能体', icon: Bot, color: 'bg-cyan-500 hover:bg-cyan-600' },
-  { label: '新建技能', icon: Wrench, color: 'bg-orange-500 hover:bg-orange-600' },
+  { label: '新建对话', icon: MessageCircle, color: 'bg-indigo-500 hover:bg-indigo-600', action: 'new' as const },
+  { label: '上传知识库', icon: Upload, color: 'bg-green-500 hover:bg-green-600', tab: 'kb' },
+  { label: '新建产物', icon: FileText, color: 'bg-purple-500 hover:bg-purple-600', tab: 'artifacts' },
+  { label: '创建智能体', icon: Bot, color: 'bg-cyan-500 hover:bg-cyan-600', tab: 'agents' },
+  { label: '新建技能', icon: Wrench, color: 'bg-orange-500 hover:bg-orange-600', tab: 'skills' },
 ]
 
 function fmtTime(iso?: string | null): string {
@@ -55,7 +55,7 @@ function fmtTime(iso?: string | null): string {
 }
 
 /* ---- 主组件 ---- */
-export function WorkspacePanel({ onTabChange }: { onTabChange?: (tab: string) => void }) {
+export function WorkspacePanel({ onTabChange, onNew }: { onTabChange?: (tab: string) => void; onNew?: () => void }) {
   const [space, setSpace] = useState('')
   const [spaceOpen, setSpaceOpen] = useState(false)
   const [spaceOptions, setSpaceOptions] = useState<string[]>([])
@@ -235,9 +235,10 @@ export function WorkspacePanel({ onTabChange }: { onTabChange?: (tab: string) =>
               <button
                 key={a.label}
                 className={cn(
-                  'flex items-center gap-1.5 px-3.5 py-2 rounded-lg text-[12px] text-white transition-colors',
+                  'flex items-center gap-1.5 px-3.5 py-2 rounded-lg text-[12px] text-white transition-colors cursor-pointer',
                   a.color
                 )}
+                onClick={() => { if (a.action === 'new') { onNew?.() } else { handleCardClick(a.tab || '') } }}
               >
                 <Icon className="w-3.5 h-3.5" />
                 {a.label}

@@ -10,6 +10,7 @@ export interface Conversation {
   agent_id?: string
   created_at?: string
   updated_at?: string
+  message_count?: number
 }
 
 export interface Message {
@@ -41,6 +42,7 @@ export interface StreamEvent {
 export interface SystemEvent {
   message?: string
   event?: string
+  agent_id?: string
 }
 
 /** 子 Agent 输出消息（含调度溯源信息） */
@@ -147,6 +149,17 @@ export interface KBDocument {
   enabled: boolean
   space_id?: number | null
   sub_system_id?: number | null
+  kb_type?: string
+  business_domain?: string
+  target_db?: string
+  stage?: string
+  object_type?: string
+  confidence?: KnowledgeConfidence
+  source?: string
+  source_ref?: string
+  effective_time?: string | null
+  negative_feedback_count?: number
+  review_required?: boolean
   created_at: string
 }
 
@@ -274,6 +287,42 @@ export interface KBSearchHit {
   type: string; content: string; score: number
 }
 
+export type KnowledgeConfidence =
+  | 'verified' | 'human_authority' | 'pending_review' | 'model_generated'
+
+export interface KnowledgeSearchHit extends KBSearchHit {
+  doc_id: number
+  kb_type: string
+  business_domain: string
+  target_db: string
+  stage: string
+  object_type: string
+  confidence: KnowledgeConfidence
+  confidence_score: number
+  source: string
+  source_ref: string
+  effective_time?: string | null
+  negative_feedback_count: number
+  review_required: boolean
+  needs_review: boolean
+  domain_match: number
+  matched_dimensions: string[]
+  similarity: number
+  fused_score: number
+  keyword_hits: number
+  match_type: 'exact' | 'semantic'
+}
+
+export interface KnowledgeSearchResult {
+  results: KnowledgeSearchHit[]
+  degraded: boolean
+  elapsed_ms: number
+  no_hit_reason?: string | null
+  query: string
+  candidate_k: number
+  min_similarity: number
+}
+
 export interface UserProfile {
   name: string
   role: string
@@ -336,8 +385,12 @@ export interface MigrateTask {
   object_count?: number
   error_msg?: string
   conv_id?: number | null
+  current_step?: string
+  step_status?: string
+  awaiting_confirmation?: boolean
   step_confirm?: boolean
   strict_flow?: boolean
+  trace_id?: string
   created_at?: string
   updated_at?: string
 }
@@ -382,6 +435,49 @@ export interface MigrateTaskDetail extends MigrateTask {
   assets_stats: { total: number; high: number; medium: number; low: number }
   /** 执行锁状态（多会话互斥展示；无锁时 locked=false） */
   exec_lock?: MigrateExecLock
+}
+
+export interface MigrateStateSnapshot {
+  event: 'state' | 'pong'
+  task_id: number
+  status?: MigrateStatus
+  status_label?: string
+  current_step?: string
+  step_status?: string
+  awaiting_confirmation?: boolean
+  step_confirm?: boolean
+  strict_flow?: boolean
+  updated_at?: string | null
+}
+
+export interface MigrateStateEventData {
+  id?: number | null
+  task_id?: number | null
+  conv_id?: number | null
+  event_type?: string
+  from_status?: string
+  to_status?: string
+  node_id?: string
+  message?: string
+  trace_id?: string
+  created_at?: string | null
+}
+
+export interface MigrateStateEventFrame extends MigrateStateEventData {
+  event: 'state_event'
+}
+
+export interface TraceLogItem {
+  id: number
+  trace_id: string
+  conv_id?: number | null
+  task_id?: number | null
+  phase: string
+  span?: string
+  level: string
+  message: string
+  duration_ms?: number | null
+  created_at?: string | null
 }
 
 export interface MigrateRule {
@@ -452,7 +548,30 @@ export interface ArtifactItem {
   object_name?: string; type: string; path?: string
   space_id?: number; sub_system_id?: number; task_id?: number
   kb_doc_id?: number | null
+  version?: number
+  parent_version?: number | null
+  trace_id?: string
   created_at?: string
+}
+
+export interface ArtifactVersionItem extends ArtifactItem {}
+
+export interface ArtifactDiffBlock {
+  kind: 'context' | 'added' | 'removed' | 'changed'
+  left_start: number
+  left_end: number
+  right_start: number
+  right_end: number
+  left: string[]
+  right: string[]
+}
+
+export interface ArtifactDiff {
+  record_id: number
+  left_version: number
+  right_version: number
+  summary: { added: number; removed: number; changed: number }
+  blocks: ArtifactDiffBlock[]
 }
 export interface TaskDetail extends BizTask {
   space_name?: string; sub_system_name?: string
@@ -496,4 +615,6 @@ export interface UploadAttachmentResult extends AttachmentItem {
 export interface SendExtra {
   references?: ChatReference[]
   attachment_ids?: number[]
+  /** 内部执行标记：阶段确认后自动执行当前智能体，不再解析为下一级确认 */
+  skip_state_advance?: boolean
 }

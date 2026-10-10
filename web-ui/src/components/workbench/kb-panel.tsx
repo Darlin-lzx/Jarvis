@@ -3,7 +3,7 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Badge } from '@/components/ui/badge'
 import { api } from '@/lib/api'
-import type { KBDocument } from '@/lib/types'
+import type { KBDocument, KnowledgeSearchHit } from '@/lib/types'
 import { cn } from '@/lib/utils'
 import {
   Database, FileText, Layers, Search, Settings,
@@ -14,6 +14,46 @@ import {
 } from 'lucide-react'
 
 type Tab = 'list' | 'docs' | 'chunks' | 'search' | 'settings'
+
+const BUSINESS_DOMAINS = [
+  { value: 'db_migrate', label: '数据库迁移' },
+  { value: 'sql_audit', label: 'SQL 审计' },
+  { value: 'code_migrate', label: '代码迁移' },
+  { value: 'db_inspect', label: '数据库巡检' },
+]
+
+const KNOWLEDGE_TYPES = [
+  { value: 'rules', label: '规则库' },
+  { value: 'cases', label: '案例库' },
+  { value: 'doc', label: '实施文档' },
+  { value: 'ops', label: '运维手册' },
+]
+
+const CONFIDENCE_OPTIONS = [
+  { value: 'verified', label: '已验证' },
+  { value: 'human_authority', label: '人工权威' },
+  { value: 'pending_review', label: '待复核' },
+  { value: 'model_generated', label: '模型生成' },
+]
+
+const CONFIDENCE_LABEL: Record<string, string> = Object.fromEntries(
+  CONFIDENCE_OPTIONS.map(item => [item.value, item.label])
+)
+
+interface KnowledgeUploadMeta {
+  kb_type: string
+  businessDomain: string
+  target_db: string
+  stage: string
+  object_type: string
+  confidence: string
+  source_ref: string
+}
+
+const DEFAULT_UPLOAD_META: KnowledgeUploadMeta = {
+  kb_type: 'doc', businessDomain: 'db_migrate', target_db: '',
+  stage: '', object_type: '', confidence: 'verified', source_ref: '',
+}
 
 const subTabs: {
   id: Tab
@@ -85,6 +125,7 @@ export function KBPanel() {
   const [searchQ, setSearchQ] = useState('')
   const [showVectorInfo, setShowVectorInfo] = useState(false)
   const fileRef = useRef<HTMLInputElement>(null)
+  const [uploadMeta, setUploadMeta] = useState<KnowledgeUploadMeta>(DEFAULT_UPLOAD_META)
 
   const load = async () => {
     const r = await api.listDocuments()
@@ -95,7 +136,16 @@ export function KBPanel() {
   const handleUpload = async () => {
     const file = fileRef.current?.files?.[0]
     if (!file) return
-    const r = await api.uploadDocument(file)
+    const r = await api.uploadDocument(file, {
+      kb_type: uploadMeta.kb_type,
+      business_domain: uploadMeta.businessDomain,
+      target_db: uploadMeta.target_db,
+      stage: uploadMeta.stage,
+      object_type: uploadMeta.object_type,
+      confidence: uploadMeta.confidence,
+      source: 'human',
+      source_ref: uploadMeta.source_ref,
+    })
     if (r.success) { if (fileRef.current) fileRef.current.value = ''; load() }
     else alert('上传失败: ' + (r.detail || '未知错误'))
   }
@@ -190,6 +240,8 @@ export function KBPanel() {
               <DocsContent
                 docs={docs}
                 fileRef={fileRef}
+                uploadMeta={uploadMeta}
+                setUploadMeta={setUploadMeta}
                 onUpload={handleUpload}
                 onDelete={handleDelete}
                 onRefresh={load}
@@ -380,7 +432,7 @@ function KBListContent({ onGoDocs }: { docCount: number; onGoDocs: () => void })
   useEffect(() => {
     api.listKbSpaces().then(r => {
       if (r.success) {
-        const items: KBItem[] = r.data.map(sp => ({
+        const items: KBItem[] = (r.data || []).map(sp => ({
           id: sp.id,
           name: sp.name,
           key: sp.name.toLowerCase().replace(/[^a-z0-9\u4e00-\u9fa5]/g, '_').replace(/\s+/g, '_'),
@@ -659,7 +711,7 @@ function KBListContent({ onGoDocs }: { docCount: number; onGoDocs: () => void })
                       // 重新加载列表
                       api.listKbSpaces().then(res => {
                         if (res.success) {
-                          const items: KBItem[] = res.data.map(sp => ({
+                          const items: KBItem[] = (res.data || []).map(sp => ({
                             id: sp.id, name: sp.name,
                             key: sp.name.toLowerCase().replace(/[^a-z0-9\u4e00-\u9fa5]/g, '_').replace(/\s+/g, '_'),
                             desc: sp.description || '', docs: sp.doc_count, chunks: sp.chunk_count,
@@ -760,7 +812,7 @@ function KBListContent({ onGoDocs }: { docCount: number; onGoDocs: () => void })
                       // 重新加载列表
                       api.listKbSpaces().then(res => {
                         if (res.success) {
-                          const items: KBItem[] = res.data.map(sp => ({
+                          const items: KBItem[] = (res.data || []).map(sp => ({
                             id: sp.id, name: sp.name,
                             key: sp.name.toLowerCase().replace(/[^a-z0-9\u4e00-\u9fa5]/g, '_').replace(/\s+/g, '_'),
                             desc: sp.description || '', docs: sp.doc_count, chunks: sp.chunk_count,
@@ -791,13 +843,20 @@ interface DocRow {
   chunks: number
   status: DocStatus
   updated: string
+  business_domain: string
+  kb_type: string
+  confidence: string
+  review_required: boolean
+  source_ref: string
 }
 
 function DocsContent({
-  fileRef, onUpload, onGoList, docs: realDocs
+  fileRef, onUpload, onGoList, docs: realDocs, uploadMeta, setUploadMeta
 }: {
   docs: KBDocument[]
   fileRef: React.RefObject<HTMLInputElement | null>
+  uploadMeta: KnowledgeUploadMeta
+  setUploadMeta: React.Dispatch<React.SetStateAction<KnowledgeUploadMeta>>
   onUpload: () => void
   onDelete: (id: number) => void
   onRefresh: () => void
@@ -826,6 +885,11 @@ function DocsContent({
     chunks: d.chunk_count || 0,
     status: d.enabled ? '已入库' as const : '待解析' as const,
     updated: d.created_at ? d.created_at.split('T')[0] : '',
+    business_domain: d.business_domain || 'db_migrate',
+    kb_type: d.kb_type || 'doc',
+    confidence: d.confidence || 'verified',
+    review_required: d.review_required || false,
+    source_ref: d.source_ref || '',
   }))
 
   const filtered = docRows.filter(d => {
@@ -957,6 +1021,8 @@ function DocsContent({
                 />
               </th>
               <th className="px-3 py-2.5 text-left text-[12px] font-medium text-[#9a9aa4]">文档名称</th>
+              <th className="px-3 py-2.5 text-left text-[12px] font-medium text-[#9a9aa4]">分类</th>
+              <th className="px-3 py-2.5 text-left text-[12px] font-medium text-[#9a9aa4]">可信度</th>
               <th className="px-3 py-2.5 text-center text-[12px] font-medium text-[#9a9aa4]">类型</th>
               <th className="px-3 py-2.5 text-center text-[12px] font-medium text-[#9a9aa4]">片段数</th>
               <th className="px-3 py-2.5 text-center text-[12px] font-medium text-[#9a9aa4]">状态</th>
@@ -977,6 +1043,29 @@ function DocsContent({
                     onChange={() => toggleOne(d.id)}
                     className="accent-indigo-500"
                   />
+                </td>
+                <td className="px-3 py-2.5">
+                  <div className="flex flex-wrap gap-1">
+                    <Badge className="text-[10px] border-0 bg-indigo-500/15 text-indigo-300">
+                      {BUSINESS_DOMAINS.find(x => x.value === d.business_domain)?.label || d.business_domain}
+                    </Badge>
+                    <Badge className="text-[10px] border-0 bg-cyan-500/15 text-cyan-300">
+                      {KNOWLEDGE_TYPES.find(x => x.value === d.kb_type)?.label || d.kb_type}
+                    </Badge>
+                  </div>
+                </td>
+                <td className="px-3 py-2.5">
+                  <div className="flex items-center gap-1">
+                    <Badge className={cn('text-[10px] border-0',
+                      d.confidence === 'model_generated' || d.confidence === 'pending_review'
+                        ? 'bg-yellow-500/15 text-yellow-300'
+                        : 'bg-green-500/15 text-green-300')}>
+                      {CONFIDENCE_LABEL[d.confidence] || d.confidence}
+                    </Badge>
+                    {d.review_required && (
+                      <Badge className="text-[10px] border-0 bg-red-500/15 text-red-300">待复核</Badge>
+                    )}
+                  </div>
                 </td>
                 <td className="px-3 py-2.5">
                   <button
@@ -1075,10 +1164,84 @@ function DocsContent({
               <Upload className="w-6 h-6 text-[#3a3a4a] mx-auto mb-2" />
               <div className="text-sm text-[#9a9aa4] mb-1">拖拽文件到这里，或点击选择文件</div>
               <div className="text-xs text-[#5a5a70]">支持：PDF、MD、TXT、DOCX</div>
-              <input type="file" ref={fileRef} accept=".md,.txt,.pdf,.docx" multiple className="hidden" />
-              <Button size="sm" className="bg-gradient-to-br from-[#5b7cfa] to-[#7a5bfa] text-white mt-3" onClick={onUpload}>
+              <input
+                type="file"
+                ref={fileRef}
+                accept=".md,.sql,.txt,.pdf"
+                className="hidden"
+                onChange={onUpload}
+              />
+              <Button
+                size="sm"
+                className="bg-gradient-to-br from-[#5b7cfa] to-[#7a5bfa] text-white mt-3"
+                onClick={() => fileRef.current?.click()}
+              >
                 选择文件
               </Button>
+            </div>
+            <div className="space-y-3 mb-4">
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="text-xs text-[#9a9aa4] block mb-1.5">业务域</label>
+                  <select
+                    className="w-full bg-[#16161e] border border-[#252530] rounded-lg px-3 py-2 text-[13px] text-[#e4e4e9]"
+                    value={uploadMeta.businessDomain}
+                    onChange={e => setUploadMeta({ ...uploadMeta, businessDomain: e.target.value })}
+                  >
+                    {BUSINESS_DOMAINS.map(item => (
+                      <option key={item.value} value={item.value}>{item.label}</option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <label className="text-xs text-[#9a9aa4] block mb-1.5">知识类型</label>
+                  <select
+                    className="w-full bg-[#16161e] border border-[#252530] rounded-lg px-3 py-2 text-[13px] text-[#e4e4e9]"
+                    value={uploadMeta.kb_type}
+                    onChange={e => setUploadMeta({ ...uploadMeta, kb_type: e.target.value })}
+                  >
+                    {KNOWLEDGE_TYPES.map(item => (
+                      <option key={item.value} value={item.value}>{item.label}</option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+              <div className="grid grid-cols-3 gap-3">
+                <div>
+                  <label className="text-xs text-[#9a9aa4] block mb-1.5">目标库</label>
+                  <Input value={uploadMeta.target_db} placeholder="dm"
+                    onChange={e => setUploadMeta({ ...uploadMeta, target_db: e.target.value })} />
+                </div>
+                <div>
+                  <label className="text-xs text-[#9a9aa4] block mb-1.5">阶段</label>
+                  <Input value={uploadMeta.stage} placeholder="transform"
+                    onChange={e => setUploadMeta({ ...uploadMeta, stage: e.target.value })} />
+                </div>
+                <div>
+                  <label className="text-xs text-[#9a9aa4] block mb-1.5">对象</label>
+                  <Input value={uploadMeta.object_type} placeholder="function"
+                    onChange={e => setUploadMeta({ ...uploadMeta, object_type: e.target.value })} />
+                </div>
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="text-xs text-[#9a9aa4] block mb-1.5">可信度</label>
+                  <select
+                    className="w-full bg-[#16161e] border border-[#252530] rounded-lg px-3 py-2 text-[13px] text-[#e4e4e9]"
+                    value={uploadMeta.confidence}
+                    onChange={e => setUploadMeta({ ...uploadMeta, confidence: e.target.value })}
+                  >
+                    {CONFIDENCE_OPTIONS.map(item => (
+                      <option key={item.value} value={item.value}>{item.label}</option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <label className="text-xs text-[#9a9aa4] block mb-1.5">来源标识</label>
+                  <Input value={uploadMeta.source_ref} placeholder="规则编号 / 人工录入人"
+                    onChange={e => setUploadMeta({ ...uploadMeta, source_ref: e.target.value })} />
+                </div>
+              </div>
             </div>
             {/* 文件列表 */}
             {uploadFiles.length > 0 && (
@@ -1094,7 +1257,11 @@ function DocsContent({
             )}
             <div className="flex justify-end gap-2">
               <Button size="sm" variant="outline" onClick={() => setShowUploadModal(false)}>取消</Button>
-              <Button size="sm" className="bg-gradient-to-br from-[#5b7cfa] to-[#7a5bfa] text-white">确认上传</Button>
+              <Button
+                size="sm"
+                className="bg-gradient-to-br from-[#5b7cfa] to-[#7a5bfa] text-white"
+                onClick={() => fileRef.current?.click()}
+              >确认上传</Button>
             </div>
           </div>
         </div>
@@ -1578,9 +1745,7 @@ function ChunksContent({ docs }: { docs: KBDocument[] }) {
 /* ---- 检索测试内容 ---- */
 interface SearchResultRow {
   index: number
-  score: number
-  content: string
-  metadata: string
+  hit: KnowledgeSearchHit
 }
 
 function SearchContent({
@@ -1592,7 +1757,12 @@ function SearchContent({
   const [kbOptions, setKbOptions] = useState<{ id: number; name: string }[]>([])
   const [selectedKB, setSelectedKB] = useState<number | null>(null)
   const [topK, setTopK] = useState(3)
-  const [threshold, setThreshold] = useState(0.70)
+  const [threshold, setThreshold] = useState(0.35)
+  const [businessDomain, setBusinessDomain] = useState('db_migrate')
+  const [knowledgeType, setKnowledgeType] = useState('')
+  const [targetDb, setTargetDb] = useState('')
+  const [stage, setStage] = useState('')
+  const [objectType, setObjectType] = useState('')
   const [searching, setSearching] = useState(false)
   const [searchError, setSearchError] = useState('')
   const [results, setResults] = useState<SearchResultRow[]>([])
@@ -1616,19 +1786,22 @@ function SearchContent({
     setSearching(true)
     setSearchError('')
     const t0 = performance.now()
-    api.searchKB(searchQ.trim(), { top_k: Math.max(topK * 2, 10), space_id: selectedKB ?? undefined }).then(r => {
+    api.searchKnowledge({
+      query: searchQ.trim(),
+      top_k: Math.max(topK * 2, 10),
+      space_id: selectedKB ?? undefined,
+      kb_types: knowledgeType ? [knowledgeType] : undefined,
+      business_domain: businessDomain,
+      target_db: targetDb,
+      stage,
+      object_type: objectType,
+      candidate_k: 20,
+      min_similarity: threshold,
+    }).then(r => {
       const elapsed = Math.round(performance.now() - t0)
       if (r.success) {
-        const hits = (r.data || [])
-          .filter(h => h.score >= threshold)
-          .slice(0, topK)
-          .map((h, i) => ({
-            index: i + 1,
-            score: h.score,
-            content: h.content,
-            metadata: `文档：${h.doc_name || '未知'} · chunk #${h.chunk_index}${h.type ? ` · ${h.type}` : ''}`,
-          }))
-        setResults(hits)
+        setResults((r.data?.results || []).slice(0, topK).map((hit, i) => ({ index: i + 1, hit })))
+        setSearchTime(Math.round(r.data?.elapsed_ms ?? elapsed))
       } else {
         setResults([])
         setSearchError(r.error || r.detail || '检索失败，请检查 Embedding 服务')
@@ -1643,6 +1816,27 @@ function SearchContent({
       setSearching(false)
       setHasSearched(true)
     })
+  }
+
+  const feedbackKnowledge = async (row: SearchResultRow, feedback: 'positive' | 'negative') => {
+    const reason = feedback === 'negative'
+      ? window.prompt('请输入不适用原因（可选）') || ''
+      : ''
+    const r = await api.feedbackKnowledge(row.hit.doc_id, feedback, reason)
+    if (!r.success) return
+    setResults(prev => prev.map(item => item.index === row.index ? {
+      ...item,
+      hit: {
+        ...item.hit,
+        confidence: r.data!.confidence,
+        confidence_score: r.data!.confidence === 'model_generated' ? 0.4
+          : r.data!.confidence === 'pending_review' ? 0.6 : 1.0,
+        negative_feedback_count: r.data!.negative_feedback_count,
+        review_required: r.data!.review_required,
+        needs_review: r.data!.review_required
+          || ['pending_review', 'model_generated'].includes(r.data!.confidence),
+      },
+    } : item))
   }
 
   return (
@@ -1677,6 +1871,52 @@ function SearchContent({
             </select>
           </div>
 
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="text-xs text-[#9a9aa4] block mb-1.5">业务域</label>
+              <select
+                value={businessDomain}
+                onChange={e => setBusinessDomain(e.target.value)}
+                className="w-full bg-[#16161e] border border-[#252530] rounded-lg px-3 py-2 text-[13px] text-[#e4e4e9]"
+              >
+                {BUSINESS_DOMAINS.map(item => (
+                  <option key={item.value} value={item.value}>{item.label}</option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <label className="text-xs text-[#9a9aa4] block mb-1.5">知识类型</label>
+              <select
+                value={knowledgeType}
+                onChange={e => setKnowledgeType(e.target.value)}
+                className="w-full bg-[#16161e] border border-[#252530] rounded-lg px-3 py-2 text-[13px] text-[#e4e4e9]"
+              >
+                <option value="">全部类型</option>
+                {KNOWLEDGE_TYPES.map(item => (
+                  <option key={item.value} value={item.value}>{item.label}</option>
+                ))}
+              </select>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-3 gap-3">
+            <div>
+              <label className="text-xs text-[#9a9aa4] block mb-1.5">目标库</label>
+              <Input value={targetDb} placeholder="dm"
+                onChange={e => setTargetDb(e.target.value)} />
+            </div>
+            <div>
+              <label className="text-xs text-[#9a9aa4] block mb-1.5">阶段</label>
+              <Input value={stage} placeholder="transform"
+                onChange={e => setStage(e.target.value)} />
+            </div>
+            <div>
+              <label className="text-xs text-[#9a9aa4] block mb-1.5">对象类型</label>
+              <Input value={objectType} placeholder="function"
+                onChange={e => setObjectType(e.target.value)} />
+            </div>
+          </div>
+
           {/* Query输入框 */}
           <div>
             <label className="text-xs text-[#9a9aa4] block mb-1.5">Query 输入框</label>
@@ -1703,7 +1943,7 @@ function SearchContent({
               />
             </div>
             <div>
-              <label className="text-xs text-[#9a9aa4] block mb-1.5">相似度阈值（低于该分数不召回）</label>
+              <label className="text-xs text-[#9a9aa4] block mb-1.5">余弦相似度阈值</label>
               <Input
                 type="number"
                 min={0}
@@ -1766,14 +2006,17 @@ function SearchContent({
           </div>
 
           {/* 结果表格 */}
-          <div className="border border-[#252530] rounded-lg overflow-hidden">
-            <table className="w-full text-[13px]">
+          <div className="border border-[#252530] rounded-lg overflow-x-auto">
+            <table className="w-full min-w-[980px] text-[13px]">
               <thead>
                 <tr className="bg-[#1a1a24] border-b border-[#252530]">
                   <th className="w-14 px-3 py-2.5 text-center text-[12px] font-medium text-[#9a9aa4]">序号</th>
+                  <th className="w-20 px-3 py-2.5 text-center text-[12px] font-medium text-[#9a9aa4]">融合分</th>
                   <th className="w-20 px-3 py-2.5 text-center text-[12px] font-medium text-[#9a9aa4]">相似度</th>
                   <th className="px-3 py-2.5 text-left text-[12px] font-medium text-[#9a9aa4]">Chunk 内容预览</th>
-                  <th className="px-3 py-2.5 text-left text-[12px] font-medium text-[#9a9aa4]">来源元数据</th>
+                  <th className="px-3 py-2.5 text-left text-[12px] font-medium text-[#9a9aa4]">可信度</th>
+                  <th className="px-3 py-2.5 text-left text-[12px] font-medium text-[#9a9aa4]">来源与维度</th>
+                  <th className="px-3 py-2.5 text-right text-[12px] font-medium text-[#9a9aa4]">反馈</th>
                 </tr>
               </thead>
               <tbody>
@@ -1783,22 +2026,61 @@ function SearchContent({
                     <td className="px-3 py-2.5 text-center">
                       <span className={cn(
                         'text-[13px] font-semibold',
-                        r.score >= 0.85 ? 'text-green-400' : r.score >= 0.70 ? 'text-cyan-400' : 'text-yellow-400'
+                        r.hit.fused_score >= 0.85 ? 'text-green-400' : r.hit.fused_score >= 0.70 ? 'text-cyan-400' : 'text-yellow-400'
                       )}>
-                        {r.score.toFixed(2)}
+                        {r.hit.fused_score.toFixed(2)}
                       </span>
+                    </td>
+                    <td className="px-3 py-2.5 text-center text-[#9a9aa4]">
+                      {r.hit.similarity.toFixed(2)}
                     </td>
                     <td className="px-3 py-2.5">
                       <button
                         className="text-[13px] text-[#9a9aa4] line-clamp-2 max-w-[400px] text-left hover:text-cyan-400 transition-colors"
                         onClick={() => setShowPreview(r)}
                       >
-                        {r.content}
-                      </button>
-                    </td>
-                    <td className="px-3 py-2.5">
-                      <span className="text-[12px] text-[#9a9aa4]">{r.metadata}</span>
-                    </td>
+                        {r.hit.content}
+                    </button>
+                  </td>
+                  <td className="px-3 py-2.5">
+                    <div className="flex flex-wrap items-center gap-1">
+                      <Badge className={cn('text-[10px] border-0',
+                        r.hit.needs_review ? 'bg-yellow-500/15 text-yellow-300' : 'bg-green-500/15 text-green-300')}>
+                        {CONFIDENCE_LABEL[r.hit.confidence] || r.hit.confidence}
+                      </Badge>
+                      {r.hit.match_type === 'exact' && (
+                        <Badge className="text-[10px] border-0 bg-blue-500/15 text-blue-300">精确命中</Badge>
+                      )}
+                    </div>
+                  </td>
+                  <td className="px-3 py-2.5">
+                    <div className="space-y-1 text-[11px] text-[#9a9aa4]">
+                      <div>{r.hit.doc_name} · {r.hit.chunk_id}</div>
+                      <div>
+                        {BUSINESS_DOMAINS.find(x => x.value === r.hit.business_domain)?.label || r.hit.business_domain}
+                        {' / '}
+                        {KNOWLEDGE_TYPES.find(x => x.value === r.hit.kb_type)?.label || r.hit.kb_type}
+                      </div>
+                      <div className="text-[#5a5a70]">
+                        {[r.hit.target_db, r.hit.stage, r.hit.object_type].filter(Boolean).join(' / ') || '未设置维度'}
+                        {r.hit.source_ref ? ` · ${r.hit.source_ref}` : ''}
+                      </div>
+                    </div>
+                  </td>
+                  <td className="px-3 py-2.5">
+                    <div className="flex justify-end gap-1">
+                      <button
+                        className="rounded px-1.5 py-0.5 text-[11px] text-[#9a9aa4] hover:bg-green-500/10 hover:text-green-300"
+                        onClick={() => feedbackKnowledge(r, 'positive')}
+                        title="确认有效"
+                      >有效</button>
+                      <button
+                        className="rounded px-1.5 py-0.5 text-[11px] text-[#9a9aa4] hover:bg-red-500/10 hover:text-red-300"
+                        onClick={() => feedbackKnowledge(r, 'negative')}
+                        title="标记为不适用"
+                      >无效</button>
+                    </div>
+                  </td>
                   </tr>
                 ))}
               </tbody>
@@ -1830,7 +2112,7 @@ function SearchContent({
           <div><span className="text-cyan-400 font-medium">提示：</span>本页面检索接口与 Agent 调用 RAG 工具使用<b className="text-cyan-400">同一个底层检索 API</b></div>
           <div>这里测出的召回效果，就是 Agent 实际拿到的召回结果</div>
           <div>检索只读取<b className="text-green-400">启用状态</b>的 Chunk，禁用的 Chunk 不会被召回</div>
-          <div>本页面仅用于调试，<b className="text-[#e4e4e9]">不会修改任何知识库 / Chunk 数据</b></div>
+          <div>反馈会更新文档可信度；其余操作仅用于调试，不修改 Chunk 文本</div>
         </div>
       </div>
 
@@ -1844,24 +2126,39 @@ function SearchContent({
             </div>
             <div className="space-y-3">
               <div>
-                <label className="text-xs text-[#5a5a70] block mb-1.5">相似度分数：</label>
+                <label className="text-xs text-[#5a5a70] block mb-1.5">融合分 / 相似度：</label>
                 <span className={cn(
                   'text-[14px] font-semibold',
-                  showPreview.score >= 0.85 ? 'text-green-400' : showPreview.score >= 0.70 ? 'text-cyan-400' : 'text-yellow-400'
+                  showPreview.hit.fused_score >= 0.85 ? 'text-green-400' : showPreview.hit.fused_score >= 0.70 ? 'text-cyan-400' : 'text-yellow-400'
                 )}>
-                  {showPreview.score.toFixed(2)}
+                  {showPreview.hit.fused_score.toFixed(2)} / {showPreview.hit.similarity.toFixed(2)}
                 </span>
               </div>
               <div>
                 <label className="text-xs text-[#5a5a70] block mb-1.5">完整文本：</label>
                 <div className="bg-[#16161e] border border-[#252530] rounded-lg p-4 max-h-[200px] overflow-y-auto">
-                  <p className="text-[13px] text-[#9a9aa4] leading-relaxed whitespace-pre-wrap">{showPreview.content}</p>
+                  <p className="text-[13px] text-[#9a9aa4] leading-relaxed whitespace-pre-wrap">{showPreview.hit.content}</p>
                 </div>
               </div>
               <div>
                 <label className="text-xs text-[#5a5a70] block mb-1.5">来源元数据：</label>
                 <div className="bg-[#16161e] border border-[#252530] rounded-lg p-3">
-                  <span className="text-[13px] text-[#9a9aa4]">{showPreview.metadata}</span>
+                  <div className="space-y-1 text-[13px] text-[#9a9aa4]">
+                    <div>{showPreview.hit.doc_name} · {showPreview.hit.chunk_id}</div>
+                    <div className="text-[12px] text-[#9a9aa4]">
+                      业务域 {showPreview.hit.business_domain} · 知识类型 {showPreview.hit.kb_type}
+                    </div>
+                    <div className="text-[12px] text-[#9a9aa4]">
+                      维度 {[showPreview.hit.target_db, showPreview.hit.stage, showPreview.hit.object_type].filter(Boolean).join(' / ') || '未设置'}
+                    </div>
+                    <div className="text-[12px] text-[#9a9aa4]">
+                      来源 {showPreview.hit.source}{showPreview.hit.source_ref ? ` · ${showPreview.hit.source_ref}` : ''}
+                    </div>
+                    <div className="text-[12px] text-[#9a9aa4]">
+                      可信度 {CONFIDENCE_LABEL[showPreview.hit.confidence] || showPreview.hit.confidence}
+                      （{showPreview.hit.confidence_score.toFixed(1)}） · 域匹配 {showPreview.hit.domain_match.toFixed(2)}
+                    </div>
+                  </div>
                 </div>
               </div>
             </div>

@@ -10,6 +10,8 @@ import { TaskBreadcrumb } from './task-breadcrumb'
 import { TaskTracePanel } from './task-trace-panel'
 import { ArtifactPanel } from '@/components/chat/delivery-panel'
 import { StateBoard, StageDrawer } from '@/components/migrate/state-board'
+import { DeleteTaskDialog } from './delete-task-dialog'
+import { mergeMigrateSnapshot, useMigrateStateSocket } from '@/hooks/use-migrate-state-socket'
 
 /** 长名截断：中间省略，hover 展示完整名称 */
 function ellipsis(name: string, max = 16): string {
@@ -31,7 +33,7 @@ export function TaskDetailPage({ taskId, onBack, onSelectConv, onNewConv, onBack
   /** 面包屑 / 所属路径点击：携带筛选回任务列表 */
   onBackToTasks?: (f: TaskFilter | null) => void
   /** 复制任务：打开新建任务弹窗并预填 */
-  onCopyTask?: (ctx: { space?: Space; subId?: number; agentId?: string; name?: string; description?: string; kbIds?: number[] }) => void
+  onCopyTask?: (ctx: { space?: Space; agentId?: string; name?: string; description?: string; kbIds?: number[] }) => void
 }) {
   const [detail, setDetail] = useState<TaskDetail | null>(null)
   const [tab, setTab] = useState<'会话' | '链路日志'>('会话')
@@ -40,10 +42,13 @@ export function TaskDetailPage({ taskId, onBack, onSelectConv, onNewConv, onBack
   const [descEditOpen, setDescEditOpen] = useState(false)
   const [descText, setDescText] = useState('')
   const [showArtifacts, setShowArtifacts] = useState(true)
+  const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false)
+  const [deletingTask, setDeletingTask] = useState(false)
   /** 关联的迁移任务详情（用于状态机看板展示） */
   const [migrateDetail, setMigrateDetail] = useState<MigrateTaskDetail | null>(null)
   /** 阶段详情抽屉：当前打开的展示节点下标 */
   const [drawerStage, setDrawerStage] = useState<number | null>(null)
+  const [retryingStage, setRetryingStage] = useState<string | null>(null)
   const moreRef = useRef<HTMLDivElement>(null)
 
   const load = () => {
@@ -54,6 +59,8 @@ export function TaskDetailPage({ taskId, onBack, onSelectConv, onNewConv, onBack
       else setMigrateDetail(null)
     }).catch(() => setMigrateDetail(null))
   }
+  const migrateSocket = useMigrateStateSocket(migrateDetail?.task_id, load)
+  const liveMigrateDetail = mergeMigrateSnapshot(migrateDetail, migrateSocket.snapshot)
   useEffect(() => { load() }, [taskId])
 
   // 任务运行中：每 5s 轮询状态，实时刷新卡片
@@ -81,8 +88,8 @@ export function TaskDetailPage({ taskId, onBack, onSelectConv, onNewConv, onBack
     }
     setTraces(arr.sort((a, b) => ((a as any).conv_id ?? 0) - ((b as any).conv_id ?? 0)))
   }
-  // 常驻加载（供链路面板使用）：detail 加载后即拉取全量 trace
-  useEffect(() => { loadTraces() }, [detail?.sessions?.length])
+  // 常驻加载（供链路面板使用）：任务轮询返回新 detail 时同步刷新 trace
+  useEffect(() => { void loadTraces() }, [detail])
 
   /* ===== 头部卡片操作 ===== */
 
@@ -94,20 +101,30 @@ export function TaskDetailPage({ taskId, onBack, onSelectConv, onNewConv, onBack
     load()
   }
 
-  // 复制任务：预填名称/描述/空间/子系统/主 Agent/知识库
+  /** 单节点重试：任务页直接在关联会话中后台执行，无需用户先进入会话。 */
+  const doRetryStage = async (stage: string) => {
+    if (!liveMigrateDetail || retryingStage) return
+    setRetryingStage(stage)
+    try {
+      const r = await api.retryMigrateTaskStage(liveMigrateDetail.task_id, stage)
+      if (!r.success || !r.data?.conv_id) throw new Error(r.error || '该迁移任务没有关联会话，无法重新执行')
+      await api.runMigrationStage(r.data.conv_id)
+      await load()
+    } catch (e) {
+      window.alert(e instanceof Error ? e.message : String(e))
+    } finally {
+      setRetryingStage(null)
+    }
+  }
+
+  // 复制任务：预填名称/描述/空间/主 Agent/知识库
   const copyTask = async () => {
     if (!detail || !onCopyTask) return
     const spaces = (await api.listSpaces().catch(() => ({ data: [] }))).data || []
     const space = spaces.find(x => x.id === detail.space_id)
-    const fallbackSpace: Space = {
-      id: detail.space_id, name: detail.space_name || '',
-      subsystems: (detail.sub_system_id && detail.sub_system_name)
-        ? [{ id: detail.sub_system_id, name: detail.sub_system_name }]
-        : [],
-    }
+    const fallbackSpace: Space = { id: detail.space_id, name: detail.space_name || '', subsystems: [] }
     onCopyTask({
       space: space || fallbackSpace,
-      subId: detail.sub_system_id ?? undefined,
       agentId: detail.agent_id,
       name: detail.name, description: detail.description, kbIds: detail.kb_ids,
     })
@@ -151,9 +168,19 @@ export function TaskDetailPage({ taskId, onBack, onSelectConv, onNewConv, onBack
   const clearSessions = async () => {
     if (!detail) return
     if (!window.confirm(`清空任务「${detail.name}」的会话记录？产物保留，仅删除对话消息。`)) return
-    for (const s of detail.sessions || []) await api.deleteConversation(s.id)
-    setMoreOpen(false)
-    load()
+    try {
+      for (const s of detail.sessions || []) {
+        const r = await api.deleteConversation(s.id)
+        if (!r.success) {
+          window.alert(`会话「${s.title}」删除失败，请稍后重试`)
+          return
+        }
+      }
+      setMoreOpen(false)
+      await load()
+    } catch {
+      window.alert('清空会话记录失败，请稍后重试')
+    }
   }
 
   // 删除单个会话（级联清理该会话的产物文件，知识库副本保留）
@@ -168,10 +195,18 @@ export function TaskDetailPage({ taskId, onBack, onSelectConv, onNewConv, onBack
   }
 
   // 删除任务（强确认，级联删除其下会话与产物理，知识库副本保留）
-  const removeTask = async () => {
+  const requestRemoveTask = () => {
     if (!detail) return
-    if (!window.confirm(`删除任务「${detail.name}」？将级联删除其下全部会话与产物（知识库已入库副本保留）。此操作不可恢复。`)) return
+    setMoreOpen(false)
+    setDeleteConfirmOpen(true)
+  }
+
+  const confirmRemoveTask = async () => {
+    if (!detail) return
+    setDeletingTask(true)
     await api.deleteTask(taskId)
+    setDeletingTask(false)
+    setDeleteConfirmOpen(false)
     onBack()
   }
 
@@ -180,16 +215,13 @@ export function TaskDetailPage({ taskId, onBack, onSelectConv, onNewConv, onBack
   const agentName = agents.find(a => a.id === detail.agent_id)?.name || detail.agent_id || '—'
   const isRunning = detail.status === 'running'
   const spaceFilter: TaskFilter | null = detail.space_id ? { spaceId: detail.space_id, spaceName: detail.space_name || '' } : null
-  const subFilter: TaskFilter | null = (detail.space_id && detail.sub_system_id)
-    ? { spaceId: detail.space_id, spaceName: detail.space_name || '', subId: detail.sub_system_id, subName: detail.sub_system_name || '' }
-    : null
 
   return (
     <div className="flex-1 flex min-h-0 overflow-hidden">
       {/* 左侧：任务详情（面包屑/头部卡片/链路面板/会话） */}
       <div className="flex-1 min-w-0 overflow-auto">
         <div className="max-w-3xl mx-auto p-6">
-        {/* 面包屑：任务 > 空间 / 子系统 / 任务名（前段可点击回退；最后一级任务名不可点） */}
+        {/* 面包屑：任务 > 空间 / 任务名（前段可点击回退；最后一级任务名不可点） */}
         <div className="flex items-center gap-1.5 mb-4">
           <button onClick={onBack} className="flex items-center gap-1 text-[12px] text-indigo-400 hover:text-indigo-300 hover:underline underline-offset-4 transition-colors">
             <ArrowLeft className="w-3 h-3" />
@@ -200,9 +232,6 @@ export function TaskDetailPage({ taskId, onBack, onSelectConv, onNewConv, onBack
               detail.space_name
                 ? { label: ellipsis(detail.space_name), full: detail.space_name, onClick: () => onBackToTasks?.(spaceFilter) }
                 : { label: '全部空间' },
-              detail.sub_system_name
-                ? { label: ellipsis(detail.sub_system_name, 12), full: detail.sub_system_name, onClick: () => onBackToTasks?.(subFilter) }
-                : { label: '全部子系统' },
               { label: ellipsis(detail.name, 24), full: detail.name },
             ]}
           />
@@ -225,12 +254,6 @@ export function TaskDetailPage({ taskId, onBack, onSelectConv, onNewConv, onBack
                 {detail.space_name}
               </button>
             ) : (detail.space_name || '-')}
-            <span className="text-[#3a3a48] mx-1.5">/</span>
-            {detail.sub_system_name && onBackToTasks ? (
-              <button className="text-indigo-400 hover:text-indigo-300 hover:underline underline-offset-4" onClick={() => onBackToTasks(subFilter)}>
-                {detail.sub_system_name}
-              </button>
-            ) : (detail.sub_system_name || '全局')}
           </div>
 
           {/* 元数据 */}
@@ -277,7 +300,7 @@ export function TaskDetailPage({ taskId, onBack, onSelectConv, onNewConv, onBack
                   </button>
                   <div className="border-t border-[#2a2a35] my-1" />
                   <button
-                    onClick={removeTask}
+                    onClick={requestRemoveTask}
                     disabled={isRunning}
                     title={isRunning ? '任务运行中，暂不可删除' : undefined}
                     className="w-full flex items-center gap-2 px-3 py-1.5 text-[12px] text-red-400 hover:bg-red-500/10 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
@@ -290,7 +313,7 @@ export function TaskDetailPage({ taskId, onBack, onSelectConv, onNewConv, onBack
           </div>
         </div>
 
-        {/* 编辑任务描述弹窗（仅能改描述，空间/子系统/主 Agent 不可修改） */}
+        {/* 编辑任务描述弹窗（仅能改描述，空间/主 Agent 不可修改） */}
         {descEditOpen && (
           <div className="fixed inset-0 z-50 bg-black/70 backdrop-blur-sm flex items-center justify-center" onClick={() => setDescEditOpen(false)}>
             <div className="bg-[#16161e] border border-[#252530] rounded-2xl w-[460px] p-5 shadow-2xl" onClick={e => e.stopPropagation()}>
@@ -318,13 +341,14 @@ export function TaskDetailPage({ taskId, onBack, onSelectConv, onNewConv, onBack
         )}
 
         {/* 状态机看板（有迁移任务时展示状态机，否则展示原始链路面板） */}
-        {migrateDetail ? (
-          <StateBoard detail={migrateDetail} onOpenStage={setDrawerStage} />
+        {liveMigrateDetail ? (
+          <StateBoard detail={liveMigrateDetail} onOpenStage={setDrawerStage} onRetryStage={doRetryStage} retryingStage={retryingStage} />
         ) : (
           <TaskTracePanel
             traces={traces}
             status={detail.status}
             updatedAt={detail.updated_at}
+            traceId={migrateDetail?.trace_id}
             onSelectConv={onSelectConv}
           />
         )}
@@ -389,6 +413,14 @@ export function TaskDetailPage({ taskId, onBack, onSelectConv, onNewConv, onBack
         </div>
       </div>
 
+      <DeleteTaskDialog
+        open={deleteConfirmOpen}
+        taskName={detail?.name || ''}
+        deleting={deletingTask}
+        onCancel={() => setDeleteConfirmOpen(false)}
+        onConfirm={confirmRemoveTask}
+      />
+
       {/* 右侧：产物面板（按任务加载；可收起/展开、拖拽调宽） */}
       {showArtifacts && (
         <ArtifactPanel
@@ -396,15 +428,14 @@ export function TaskDetailPage({ taskId, onBack, onSelectConv, onNewConv, onBack
           taskId={detail.id}
           taskName={detail.name}
           space={detail.space_name || ''}
-          subSystem={detail.sub_system_name || '全局'}
           activeAgent={agentName !== '—' ? agentName : (detail.agent_id || undefined)}
           onClose={() => setShowArtifacts(false)}
         />
       )}
 
       {/* 阶段详情抽屉（状态机看板点击节点时弹出） */}
-      {migrateDetail && drawerStage != null && (
-        <StageDrawer detail={migrateDetail} stageIdx={drawerStage} onClose={() => setDrawerStage(null)} />
+      {liveMigrateDetail && drawerStage != null && (
+        <StageDrawer detail={liveMigrateDetail} stageIdx={drawerStage} onClose={() => setDrawerStage(null)} />
       )}
     </div>
   )

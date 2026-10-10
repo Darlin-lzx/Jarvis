@@ -82,7 +82,7 @@ interface WelcomePageProps {
   setActiveAgent?: (id: string) => void
   quickMode?: boolean
   onModeChange?: (q: boolean) => void
-  onConvertToProject?: (spaceId: number, subId?: number) => void | Promise<unknown>
+  onConvertToProject?: (spaceId: number) => void | Promise<unknown>
   /** 后端智能体列表（用于下拉选择） */
   agentList?: Agent[]
 }
@@ -132,13 +132,10 @@ export function WelcomePage({ onConvCreated, activeAgent, setActiveAgent, quickM
 
   // ===== 对话头部栏状态 =====
   const [space, setSpace] = useState('浙江移动国产化')
-  const [subSystem, setSubSystem] = useState('') // 空 = 未指定子系统；进入页面按当前空间自动取第一个子系统
   const [convName, setConvName] = useState('未命名会话')
   const [editingConvName, setEditingConvName] = useState(false)
   const [showSpaceDrp, setShowSpaceDrp] = useState(false)
-  const [showSubDrp, setShowSubDrp] = useState(false)
   const spaceDrpRef = useRef<HTMLDivElement>(null)
-  const subDrpRef = useRef<HTMLDivElement>(null)
 
   // ===== 快速示例折叠 =====
   const [showExamples, setShowExamples] = useState(true)
@@ -186,17 +183,12 @@ export function WelcomePage({ onConvCreated, activeAgent, setActiveAgent, quickM
     }).catch(() => {})
   }, [])
 
-  // 加载全量空间（用于按会话 space_id 找到含 subsystems 的真实 Space）
-  // 进入页面时按当前选中空间自动取第一个子系统（若空间无子系统则保持「未指定子系统」）
+  // 加载全量空间（用于按会话 space_id 匹配真实空间）
   useEffect(() => {
     api.listSpaces().then(r => {
       if (!r.success) return
       const list = (r.data || []) as Space[]
       setAllSpaces(list)
-      if (subSystem === '') {
-        const first = list.find(s => s.name === space)?.subsystems?.[0]?.name
-        if (first) setSubSystem(first)
-      }
     }).catch(() => {})
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
@@ -239,7 +231,7 @@ export function WelcomePage({ onConvCreated, activeAgent, setActiveAgent, quickM
     }).catch(() => {})
   }, [])
 
-  // 会话归属信息（任务/空间/子系统）
+  // 会话归属信息（任务/空间）
   useEffect(() => {
     if (convId == null) { setConvInfo(null); return }
     api.getConversation(convId).then(r => { if (r.success) setConvInfo(r.data ?? null) }).catch(() => {})
@@ -250,12 +242,6 @@ export function WelcomePage({ onConvCreated, activeAgent, setActiveAgent, quickM
     // 全新对话：按顶部选中的空间名称匹配真实空间（场景 B 自动带入）
     return allSpaces.find(s => s.name === space) || null
   }, [allSpaces, convInfo?.space_id, space])
-
-  // 场景 B 子系统默认值：优先会话归属子系统，其次对话页当前选中的子系统
-  const dialogSubId = useMemo<number | undefined>(() => {
-    if (convInfo?.sub_system_id) return convInfo.sub_system_id
-    return realSpace?.subsystems.find(s => s.name === subSystem)?.id
-  }, [convInfo?.sub_system_id, realSpace, subSystem])
 
   useEffect(() => {
     if (scrollRef.current) scrollRef.current.scrollTop = scrollRef.current.scrollHeight
@@ -269,9 +255,6 @@ export function WelcomePage({ onConvCreated, activeAgent, setActiveAgent, quickM
       if (spaceDrpRef.current && !spaceDrpRef.current.contains(event.target as Node)) {
         setShowSpaceDrp(false)
       }
-      if (subDrpRef.current && !subDrpRef.current.contains(event.target as Node)) {
-        setShowSubDrp(false)
-      }
       if (modelDrpRef.current && !modelDrpRef.current.contains(event.target as Node)) {
         setShowModelDrp(false)
       }
@@ -282,11 +265,11 @@ export function WelcomePage({ onConvCreated, activeAgent, setActiveAgent, quickM
         setShowSkillDrp(false)
       }
     }
-    if (showConvDropdown || showSpaceDrp || showSubDrp || showModelDrp || showAgentDrp || showSkillDrp) {
+    if (showConvDropdown || showSpaceDrp || showModelDrp || showAgentDrp || showSkillDrp) {
       document.addEventListener('mousedown', handleClickOutside)
     }
     return () => document.removeEventListener('mousedown', handleClickOutside)
-  }, [showConvDropdown, showSpaceDrp, showSubDrp, showModelDrp, showAgentDrp, showSkillDrp])
+  }, [showConvDropdown, showSpaceDrp, showModelDrp, showAgentDrp, showSkillDrp])
 
   const handleSend = async () => {
     if (!input.trim() && selectedTags.length === 0 && uploadedFiles.length === 0 && references.length === 0 && attachments.length === 0) return
@@ -444,15 +427,7 @@ export function WelcomePage({ onConvCreated, activeAgent, setActiveAgent, quickM
     setSpace(name)
     setShowSpaceDrp(false)
     handleNewConversation()
-    // 切换空间后自动取该空间的第一个子系统（无子系统则「未指定子系统」）
-    const next = allSpaces.find(s => s.name === name)?.subsystems?.[0]?.name
-    setSubSystem(next || '')
     showToast(`已切换到「${name}」空间，所有对话与产物将归属该空间`)
-  }
-
-  const handleSwitchSubSystem = (name: string) => {
-    setSubSystem(name)
-    setShowSubDrp(false)
   }
 
   const commitConvName = () => {
@@ -691,10 +666,10 @@ export function WelcomePage({ onConvCreated, activeAgent, setActiveAgent, quickM
 
   const stepIndex = stepItems.findIndex(s => s.key === configStep)
 
-  // 根据当前子系统动态推荐示例
-  const examples = subSystem === '开通系统'
+  // 根据当前空间动态推荐示例
+  const examples = space === '开通系统'
     ? ['帮我把开通系统库的 Oracle DDL 转换成达梦数据库语法', '评估开通系统迁到达梦的改造工作量', '分析这条 SQL 慢查询，给出优化方案']
-    : subSystem === '账务系统'
+    : space === '账务系统'
       ? ['帮我把账务系统库的 Oracle DDL 转换成达梦数据库语法', '分析这条 SQL 慢查询，给出优化方案', '做数据库迁移评估，评估业务改造工作量']
       : examplePrompts
 
@@ -703,7 +678,7 @@ export function WelcomePage({ onConvCreated, activeAgent, setActiveAgent, quickM
       {/* ======== 顶部对话头部栏 ======== */}
       <div className="px-6 py-2.5 border-b border-[#1e1e28] bg-[#0f0f14]">
         <div className="flex items-center justify-between gap-4">
-          {/* 左侧：标题 + 空间 / 子系统 / 会话名 */}
+          {/* 左侧：标题 + 空间 / 会话名 */}
           <div className="flex items-center gap-3 min-w-0">
             <div className="flex items-center gap-2 pr-4 border-r border-[#252530] shrink-0 relative">
               <Bot className="w-4 h-4 text-indigo-400" />
@@ -767,37 +742,6 @@ export function WelcomePage({ onConvCreated, activeAgent, setActiveAgent, quickM
                     >
                       {s.name === space && <Check className="w-3.5 h-3.5" />}
                       <span className={s.name === space ? '' : 'pl-[22px]'}>{s.name}</span>
-                    </button>
-                  ))}
-                </div>
-              )}
-            </div>)}
-
-            {/* 子系统选择 —— 产物、会话自动绑定（仅项目会话模式）；悬浮提示可跳转子系统详情页 */}
-            {!quickMode && (<div className="relative shrink-0" ref={subDrpRef}>
-              <button
-                className="flex items-center gap-1 h-7 px-2 rounded-lg text-[12px] text-[#9a9aa4] hover:text-[#e4e4e9] hover:bg-white/[0.03] transition-colors whitespace-nowrap"
-                onClick={() => setShowSubDrp(!showSubDrp)}
-                title="点击跳转到对应子系统详情页"
-              >
-                <Database className="w-3.5 h-3.5 text-[#5a5a70]" />
-                <span>归属子系统：<span className="text-[#cdd3e0]">{subSystem || '未指定子系统'}</span></span>
-                <ChevronDown className={cn('w-3 h-3 text-[#5a5a70] transition-transform', showSubDrp && 'rotate-180')} />
-              </button>
-              {showSubDrp && (
-                <div className="absolute left-0 top-full mt-1.5 bg-[#1a1a24] border border-[#252530] rounded-lg shadow-xl z-50 w-44 py-1.5 overflow-hidden">
-                  {(realSpace?.subsystems ?? []).length === 0 ? (
-                    <div className="px-3 py-2 text-[11px] text-[#5a5a70]">暂无子系统</div>
-                  ) : (realSpace?.subsystems ?? []).map(ss => (
-                    <button
-                      key={ss.id}
-                      className={cn(
-                        'w-full text-left px-3 py-2 text-[12px] transition-colors',
-                        ss.name === subSystem ? 'bg-indigo-500/10 text-indigo-400' : 'text-[#cdd3e0] hover:bg-white/[0.05]'
-                      )}
-                      onClick={() => handleSwitchSubSystem(ss.name)}
-                    >
-                      {ss.name}
                     </button>
                   ))}
                 </div>
@@ -910,7 +854,7 @@ export function WelcomePage({ onConvCreated, activeAgent, setActiveAgent, quickM
                           <button
                             className="w-full flex items-center gap-2 px-3 py-2.5 text-[12px] text-[#9a9aa4] hover:bg-white/[0.05] hover:text-[#e4e4e9] transition-colors"
                             onClick={() => { setShowConvDropdown(false); setNewTaskOpen(true) }}
-                            title="从对话页新建任务（自动带入当前空间/子系统）"
+                            title="从对话页新建任务（自动带入当前空间）"
                           >
                             <FolderKanban className="w-3.5 h-3.5 text-[#5a5a70]" />
                             新建任务
@@ -1816,7 +1760,6 @@ export function WelcomePage({ onConvCreated, activeAgent, setActiveAgent, quickM
             convId={convId}
             onClose={() => setShowRightPanel(false)}
             space={space}
-            subSystem={subSystem}
             activeAgent={activeAgent}
             quickMode={quickMode}
             onReference={name => {
@@ -1859,9 +1802,9 @@ export function WelcomePage({ onConvCreated, activeAgent, setActiveAgent, quickM
         open={convertOpen}
         spaces={spacesForConvert}
         onClose={() => setConvertOpen(false)}
-        onConfirm={async (spaceId, subId) => {
+        onConfirm={async (spaceId) => {
           if (!convId) return
-          await onConvertToProject?.(spaceId, subId)
+          await onConvertToProject?.(spaceId)
           setConvertOpen(false)
           showToast('已转为项目会话，产物入库与空间知识库/数据源能力已解锁')
         }}
@@ -1872,7 +1815,7 @@ export function WelcomePage({ onConvCreated, activeAgent, setActiveAgent, quickM
         open={newTaskOpen}
         onClose={() => setNewTaskOpen(false)}
         context={realSpace
-          ? { space: realSpace, subId: dialogSubId, agentId: activeAgent, convId: convId ?? undefined }
+          ? { space: realSpace, agentId: activeAgent, convId: convId ?? undefined }
           : undefined}
         agents={agents}
         onCreate={(task, enterSession) => {
@@ -1886,7 +1829,7 @@ export function WelcomePage({ onConvCreated, activeAgent, setActiveAgent, quickM
             } else {
               // 全新对话：创建任务内会话并进入
               api.createConversation(task.name, {
-                space_id: task.space_id, sub_system_id: task.sub_system_id || undefined, task_id: task.id,
+                space_id: task.space_id, task_id: task.id,
               }).then(r => { if (r.success && r.data) onConvCreated?.(r.data.id) }).catch(() => {})
             }
           }

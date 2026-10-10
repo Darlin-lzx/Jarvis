@@ -245,6 +245,7 @@ export function SpaceDetailPage({ space, onNewTask, onOpenTask, onOpenSub }: {
   const [kbSpaces, setKbSpaces] = useState<{ id: number; doc_count: number }[]>([])
   const [dsCount, setDsCount] = useState(0)
   const [skillCount, setSkillCount] = useState(0)
+  const [activeSubTab, setActiveSubTab] = useState<'任务' | '会话' | '产物'>('任务')
 
   useEffect(() => {
     let mounted = true
@@ -284,7 +285,6 @@ export function SpaceDetailPage({ space, onNewTask, onOpenTask, onOpenSub }: {
 
   // 设置抽屉 tab
   const [settingsTab, setSettingsTab] = useState<'基础' | '成员' | '统计' | '智能体' | '高级'>('基础')
-  const [activeSubTab, setActiveSubTab] = useState<'任务' | '会话' | '产物'>('任务')
   const [showAllConvs, setShowAllConvs] = useState(false)
   const [showAllArts, setShowAllArts] = useState(false)
 
@@ -374,9 +374,11 @@ export function SpaceDetailPage({ space, onNewTask, onOpenTask, onOpenSub }: {
     )
   }
 
+  const allConvs = realConvs.map(toConvItem)
+  const allArts = realArts.map(toArtItem)
   const recentTasks = realTasks.slice(0, 5).map(toTaskItem)
-  const recentConvs = realConvs.slice(0, 3).map(toConvItem)
-  const recentArts = realArts.slice(0, 4).map(toArtItem)
+  const recentConvs = allConvs.slice(0, 3)
+  const recentArts = allArts.slice(0, 4)
   const events: LogItem[] = realArts.slice(0, 6).map(a => ({
     id: String(a.id),
     type: a.kb_doc_id ? '产物入库' : '产物保存',
@@ -573,7 +575,7 @@ export function SpaceDetailPage({ space, onNewTask, onOpenTask, onOpenSub }: {
               {recentConvs.length === 0 && (
                 <div className="py-4 text-center text-[12px] text-[#5a5a70]">暂无会话</div>
               )}
-              {(showAllConvs ? realConvs : recentConvs).map(c => (
+              {(showAllConvs ? allConvs : recentConvs).map(c => (
                 <div key={c.id} className="flex items-center gap-2 py-2">
                   <MessageSquare className="w-3.5 h-3.5 text-cyan-400 shrink-0" />
                   <div className="flex-1 min-w-0">
@@ -601,7 +603,7 @@ export function SpaceDetailPage({ space, onNewTask, onOpenTask, onOpenSub }: {
               {recentArts.length === 0 && (
                 <div className="py-4 text-center text-[12px] text-[#5a5a70]">暂无产物</div>
               )}
-              {(showAllArts ? realArts : recentArts).map(a => (
+              {(showAllArts ? allArts : recentArts).map(a => (
                 <div key={a.id} className="flex items-center gap-2 py-2">
                   <FileText className="w-3.5 h-3.5 text-amber-400 shrink-0" />
                   <div className="flex-1 min-w-0">

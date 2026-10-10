@@ -186,6 +186,75 @@ def test_migrate_task_reset_and_resume(tmp_path):
     print("RESET/RESUME OK")
 
 
+def test_migrate_task_retry_stage_resets_execution_context(tmp_path):
+    """单节点重试：回退到指定阶段，保留参数，并更新关联会话执行态。"""
+    import json
+
+    from db_loc_agent.db import Database, DbMigrateTask
+    from db_loc_agent.app import create_app
+
+    app = create_app(
+        db_path=str(tmp_path / "t.db"),
+        artifact_root=str(tmp_path / "artifacts"),
+        config_override={"llm": {"provider": "ollama", "model": "qwen2.5",
+                                 "base_url": "http://127.0.0.1:1"}, "mysql_url": ""},
+        embedding_function=FakeEmbedding(),
+    )
+    c = _client(app)
+    cid = c.post("/api/conversations", json={"title": "单节点重试"}).json()["data"]["id"]
+    db = Database(str(tmp_path / "t.db"))
+    from db_loc_agent.state_machine import MigrateStateService
+    svc = MigrateStateService(db)
+    task = svc.create(conv_id=cid, space_id=1)
+    with db.session() as s:
+        row = s.get(DbMigrateTask, task.id)
+        row.status = "VERIFY_STAGE"
+        row.source_ds_id = "src_retry"
+        row.source_db_type = "oracle"
+        row.target_db_type = "mysql"
+        row.db_capacity = "500GB"
+        s.commit()
+
+    r = c.post(f"/api/migrate/tasks/{task.id}/retry-stage",
+               json={"stage": "CODE_MIGRATE", "session_id": str(cid)})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["success"] is True
+    assert body["data"]["task"]["status"] == "CODE_MIGRATE"
+    assert body["data"]["task"]["source_ds_id"] == "src_retry"
+    assert body["data"]["conv_id"] == cid
+
+    conv = c.get(f"/api/conversations/{cid}").json()["data"]
+    state = json.loads(conv["task_state"] or "{}")
+    assert state["migrate_task_id"] == task.id
+    assert state["current_step"] == "CODE_MIGRATE"
+    assert state["step_status"] == "running"
+    assert state["awaiting_confirmation"] is False
+    assert state["pipeline_start"] is True
+
+    # 运行锁被其他会话持有时拒绝重试，避免并发执行同一任务。
+    with db.session() as s:
+        locked = s.get(DbMigrateTask, task.id)
+        locked.exec_lock_session_id = "other-session"
+        locked.lock_expire_time = None
+        from db_loc_agent.db import Conversation
+        locked_conv = s.get(Conversation, cid)
+        state_before_block = {
+            "migrate_task_id": task.id,
+            "current_step": "VERIFY_STAGE",
+            "step_status": "done",
+            "awaiting_confirmation": True,
+        }
+        locked_conv.task_state = json.dumps(state_before_block, ensure_ascii=False)
+        s.commit()
+    blocked = c.post(f"/api/migrate/tasks/{task.id}/retry-stage",
+                     json={"stage": "CODE_MIGRATE", "session_id": str(cid)})
+    assert blocked.status_code == 400
+    assert "任务正在执行中" in blocked.json()["detail"]
+    blocked_conv = c.get(f"/api/conversations/{cid}").json()["data"]
+    assert json.loads(blocked_conv["task_state"] or "{}") == state_before_block
+
+
 def test_migrate_task_strict_flow_toggle(tmp_path):
     """流程强校验是任务级开关：默认开启，可独立关闭且不影响逐级确认。"""
     from db_loc_agent.app import create_app

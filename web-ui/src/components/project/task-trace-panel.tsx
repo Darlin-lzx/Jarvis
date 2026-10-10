@@ -1,9 +1,11 @@
 import { useMemo, useState, useEffect } from 'react'
 import { createPortal } from 'react-dom'
-import { Check, X, Pause, Loader2, MessageSquare, Workflow, Radio, Copy, Download, ClipboardCopy, AlertTriangle, Bot, Wrench, FileJson, Terminal } from 'lucide-react'
-import type { TraceEvent, TaskStatus } from '@/lib/types'
+import { Check, X, Pause, Loader2, MessageSquare, Workflow, Radio, Copy, Download, ClipboardCopy, AlertTriangle, Bot, Wrench, FileJson, Terminal, Activity } from 'lucide-react'
+import { api } from '@/lib/api'
+import type { TraceEvent, TaskStatus, MigrateFlowNode, TraceLogItem } from '@/lib/types'
 import { agents } from '@/components/chat/agent-tabs'
 import { cn } from '@/lib/utils'
+import { taskStageDefsFromFlow, type TaskFlowStageDef } from '@/components/migrate/flow-stages'
 
 export type FlowStatus = 'pending' | 'running' | 'done' | 'failed' | 'paused'
 
@@ -19,28 +21,9 @@ const DOT_STATE: Record<FlowStatus, string> = {
   paused: 'bg-amber-500 text-white',
 }
 
-interface FlowStageDef {
-  id: string
-  label: string
-  agentId: string
-  keywords: string[]
-  routeAgents?: string[]
-}
-
-/** 兜底：任务 trace 为空时按此顺序全量展示 */
-const DEFAULT_STAGES: FlowStageDef[] = [
-  { id: 'receive', label: '需求接收', agentId: 'migration_commander', keywords: [] },
-  { id: 'assess', label: '评估分析', agentId: 'migration_assessor', keywords: ['评估'], routeAgents: ['migration_assessor'] },
-  { id: 'sql', label: 'SQL 转换', agentId: 'ddl_converter', keywords: ['DDL', '转换', 'SQL', '迁移'], routeAgents: ['ddl_converter'] },
-  { id: 'code', label: '代码改造', agentId: 'code_migrator', keywords: ['改造', 'PLSQL', '存储过程'], routeAgents: ['code_migrator'] },
-  { id: 'verify', label: '结果校验', agentId: 'migration_verifier', keywords: ['校验', '验证', '兼容', '风险', '检查'], routeAgents: ['migration_verifier'] },
-  { id: 'summarize', label: '任务汇总', agentId: 'migration_commander', keywords: ['汇总', '报告'] },
-]
-
-const STAGE_INDEX = new Map(DEFAULT_STAGES.map((s, i) => [s.id, i]))
 const agentName = (id: string) => agents.find(a => a.id === id)?.name || id
 
-export interface FlowStage extends FlowStageDef {
+export interface FlowStage extends TaskFlowStageDef {
   status: FlowStatus
   traces: TraceEvent[]
   startAt?: string
@@ -48,26 +31,28 @@ export interface FlowStage extends FlowStageDef {
   hidden?: boolean
 }
 
-/** 命中规则：将一条 trace 归因到链路阶段 */
-function matchStage(t: TraceEvent): FlowStageDef | null {
+/** 命中规则：优先按真实执行 Agent 归因，再按 trace 节点归到首尾阶段 */
+function matchStage(t: TraceEvent, stages: TaskFlowStageDef[]): TaskFlowStageDef | null {
+  const aid = t.agent_id || ''
+  // 指挥官同时承担入口与汇总，不能把入口事件提前归因到完成节点。
+  const byAgent = aid === 'migration_commander'
+    ? undefined
+    : stages.find(s => s.agentId === aid)
+  if (byAgent) return byAgent
+
   const node = t.node
-  if (node === 'parse') return DEFAULT_STAGES[0]
-  if (node === 'artifact') return DEFAULT_STAGES[5]
+  if (node === 'parse') return stages[0]
+  if (node === 'artifact') return stages[stages.length - 1]
   if (node === 'reply') {
     const err = typeof t.content === 'object' && t.content && (t.content as any).error
-    return err ? null : DEFAULT_STAGES[5]
+    return err ? null : stages[stages.length - 1]
   }
-  // skill：内容含技能名/描述
-  if (node === 'skill') {
-    const c = t.content
-    const text = typeof c === 'string' ? c : (c && typeof c === 'object' ? JSON.stringify(c) : '')
-    return DEFAULT_STAGES.find(s => s.keywords.some(k => text.includes(k))) || null
-  }
-  // route / agent：按 agent_id 或路由原因文本匹配
+
   const c = t.content
   const text = typeof c === 'string' ? c : (c && typeof c === 'object' ? JSON.stringify(c) : '')
-  const aid = t.agent_id || ''
-  return DEFAULT_STAGES.find(s => (s.routeAgents && s.routeAgents.includes(aid)) || s.keywords.some(k => text.includes(k))) || null
+  const agentInText = stages.find(s => text.includes(s.agentId))
+  if (agentInText) return agentInText
+  return stages.find(s => s.keywords.some(k => k && text.includes(k))) || null
 }
 
 function fmtDuration(ms?: number): string {
@@ -89,16 +74,25 @@ function fmtClock(iso?: string): string {
  *  - 任务已暂停 → 推演当前阶段标暂停
  *  - 可选中间节点（首尾之间从未触达）→ 动态隐藏，链路自动压缩
  */
-function deriveFlow(traces: TraceEvent[], status: TaskStatus, updatedAt?: string | null): FlowStage[] {
-  const stages: FlowStage[] = DEFAULT_STAGES.map(s => ({ ...s, status: 'pending' as FlowStatus, traces: [] }))
+function deriveFlow(
+  traces: TraceEvent[],
+  status: TaskStatus,
+  stageDefs: TaskFlowStageDef[],
+  updatedAt?: string | null,
+): FlowStage[] {
+  const stages: FlowStage[] = stageDefs.map(s => ({ ...s, status: 'pending' as FlowStatus, traces: [] }))
   if (traces.length === 0) return stages
+  const stageIndex = new Map(stages.map((s, i) => [s.id, i]))
 
   const hitMap = new Map<string, { traces: TraceEvent[]; firstAt?: string }>()
   const hasError = traces.some(t => t.node === 'error' || (typeof t.content === 'object' && t.content && !!(t.content as any).error))
-  const sorted = [...traces].sort((a, b) => ((a.created_at || '').localeCompare(b.created_at || '')))
+  const sorted = [...traces].sort((a, b) =>
+    (a.created_at || '').localeCompare(b.created_at || '')
+    || (a.conv_id || 0) - (b.conv_id || 0)
+    || a.id - b.id)
 
   for (const t of sorted) {
-    const st = matchStage(t)
+    const st = matchStage(t, stageDefs)
     if (!st) continue
     const hit = hitMap.get(st.id) || { traces: [] as TraceEvent[] }
     hit.traces.push(t)
@@ -110,7 +104,7 @@ function deriveFlow(traces: TraceEvent[], status: TaskStatus, updatedAt?: string
   // 命中时间排序 → 计算每阶段耗时（下一命中时间 - 本阶段首命中时间）
   const hits = [...hitMap.entries()].sort((a, b) => ((a[1].firstAt || '').localeCompare(b[1].firstAt || '')))
   hits.forEach(([sid, hit], i) => {
-    const st = stages[STAGE_INDEX.get(sid)!]
+    const st = stages[stageIndex.get(sid)!]
     st.status = 'done'
     st.traces = hit.traces
     st.startAt = hit.firstAt
@@ -123,7 +117,7 @@ function deriveFlow(traces: TraceEvent[], status: TaskStatus, updatedAt?: string
     }
   })
 
-  const doneIdx = hits.map(([sid]) => STAGE_INDEX.get(sid)!).sort((a, b) => a - b)
+  const doneIdx = hits.map(([sid]) => stageIndex.get(sid)!).sort((a, b) => a - b)
   const firstIdx = doneIdx[0]
   const lastIdx = doneIdx[doneIdx.length - 1]
 
@@ -586,15 +580,43 @@ function NodeItem({ stage, selected, onClick, onJump, hasJump }: {
   )
 }
 
-export function TaskTracePanel({ traces, status, updatedAt, onSelectConv }: {
+export function TaskTracePanel({ traces, status, updatedAt, traceId, onSelectConv }: {
   traces: TraceEvent[]
   status: TaskStatus
   updatedAt?: string | null
+  traceId?: string
   onSelectConv?: (cid: number) => void
 }) {
   const [selected, setSelected] = useState<string | null>(null)
   const [autoFollow, setAutoFollow] = useState(true)
-  const stages = useMemo(() => deriveFlow(traces, status, updatedAt), [traces, status, updatedAt])
+  const [flow, setFlow] = useState<MigrateFlowNode[] | null>(null)
+  const [globalLogs, setGlobalLogs] = useState<TraceLogItem[]>([])
+
+  useEffect(() => {
+    let alive = true
+    if (!traceId) {
+      setGlobalLogs([])
+      return
+    }
+    api.getTraceLogs(traceId).then(r => {
+      if (alive && r.success && r.data) setGlobalLogs(r.data)
+    }).catch(() => {})
+    return () => { alive = false }
+  }, [traceId])
+
+  useEffect(() => {
+    let alive = true
+    api.getMigrateFlow().then(r => {
+      if (alive && r.success && r.data) setFlow(r.data as MigrateFlowNode[])
+    }).catch(() => {})
+    return () => { alive = false }
+  }, [])
+
+  const stageDefs = useMemo(() => taskStageDefsFromFlow(flow), [flow])
+  const stages = useMemo(
+    () => deriveFlow(traces, status, stageDefs, updatedAt),
+    [traces, status, stageDefs, updatedAt],
+  )
   const visible = stages.filter(s => !s.hidden)
 
   // 自动滚动跟随执行：开启时自动选中当前运行/失败节点
@@ -625,7 +647,7 @@ export function TaskTracePanel({ traces, status, updatedAt, onSelectConv }: {
         <div className="text-[12px] font-semibold text-[#cdd3e0] flex items-center gap-1.5">
           <Workflow className="w-3.5 h-3.5 text-indigo-400" />
           任务执行链路
-          <span className="text-[10px] font-normal text-[#5a5a70]">依据会话 trace 推断</span>
+          <span className="text-[10px] font-normal text-[#5a5a70]">依据流程编排与会话 trace 推断</span>
         </div>
         <button
           onClick={() => setAutoFollow(f => !f)}
@@ -665,6 +687,36 @@ export function TaskTracePanel({ traces, status, updatedAt, onSelectConv }: {
           {visible.length === 0 && <div className="text-[12px] text-[#5a5a70] py-4 px-2">暂无链路数据</div>}
         </div>
       </div>
+
+      {traceId && (
+        <div className="mt-4 rounded-xl border border-[#2a2a35] bg-[#12121a] p-3">
+          <div className="flex items-center gap-2 mb-2">
+            <Activity className="w-3.5 h-3.5 text-blue-400" />
+            <span className="text-[12px] font-semibold text-[#cdd3e0]">全局追踪</span>
+            <button
+              onClick={() => navigator.clipboard?.writeText(traceId)}
+              className="ml-auto flex items-center gap-1 text-[10px] text-[#6a6a7a] hover:text-[#9a9aa4] transition-colors"
+              title="复制 TraceID"
+            >
+              <Copy className="w-3 h-3" />{traceId}
+            </button>
+          </div>
+          <div className="max-h-40 overflow-y-auto space-y-1 pr-1">
+            {globalLogs.length === 0 && (
+              <div className="text-[11px] text-[#5a5a70]">暂无全局追踪日志</div>
+            )}
+            {globalLogs.map(log => (
+              <div key={log.id} className="flex items-center gap-2 text-[11px]">
+                <span className="w-14 shrink-0 text-blue-300">{log.phase}</span>
+                <span className="w-28 truncate text-[#8b8b9e]" title={log.span}>{log.span || '—'}</span>
+                <span className={cn('w-12 shrink-0', log.level === 'error' ? 'text-red-400' : 'text-[#6a6a7a]')}>{log.level}</span>
+                <span className="w-14 shrink-0 text-right text-[#6a6a7a]">{fmtDuration(log.duration_ms ?? undefined)}</span>
+                <span className="flex-1 truncate text-[#cdd3e0]" title={log.message}>{log.message}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* 节点执行日志抽屉：点击节点 / 跟随运行中节点时从右侧滑出；切换节点直接刷新内容不重开 */}
       {drawerOpen && selectedStage && (

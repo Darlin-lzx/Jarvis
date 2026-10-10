@@ -3,6 +3,7 @@ import { Send, X, Database, RefreshCw, Loader2 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { api } from '@/lib/api'
 import type { Datasource } from '@/lib/types'
+import { parseOptions } from './ui-form-options'
 
 /**
  * UI_RENDER 结构化指令 → 动态表单渲染。
@@ -61,7 +62,9 @@ function normalize(data: Record<string, unknown>): { fields: FieldSpec[]; submit
   const title = typeof data.title === 'string' ? data.title : ''
   const submitText = typeof data.submit === 'string' ? data.submit : '提交'
   const rawFields = (Array.isArray(data.fields) ? data.fields : []) as unknown[]
-  const fields = rawFields.filter((f): f is FieldSpec => !!f && typeof f === 'object')
+  const fields = rawFields
+    .filter((f): f is FieldSpec => !!f && typeof f === 'object')
+    .map(f => ({ ...f, options: parseOptions(f.options) }))
   if (fields.length || typeof data.component !== 'string') {
     return { fields, submit: submitText, title }
   }
@@ -97,24 +100,6 @@ function normalize(data: Record<string, unknown>): { fields: FieldSpec[]; submit
     submit: submitText,
     title,
   }
-}
-
-/** options 防御性解析：数组直接用；字符串尝试 JSON 解析或按 、/, 拆分；过滤未解析的占位符残片。 */
-function parseOptions(raw: unknown): unknown[] {
-  let out: unknown[] = []
-  if (Array.isArray(raw)) out = raw
-  else if (typeof raw === 'string' && raw.trim()) {
-    const s = raw.trim()
-    if (s.startsWith('[')) {
-      try {
-        const p = JSON.parse(s)
-        if (Array.isArray(p)) out = p
-      } catch { /* 保留空 */ }
-    } else {
-      out = s.split(/[、,，]/).map(x => x.trim()).filter(Boolean)
-    }
-  }
-  return out.filter(o => !(typeof o === 'string' && /\{\{.*}}/.test(o)))
 }
 
 /** 选项显示文案：兼容字符串与 {label,name,text,title,value,...} 对象形状。

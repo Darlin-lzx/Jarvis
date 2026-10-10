@@ -95,6 +95,7 @@ export function useChatStream() {
   /** 本次运行状态机推进事件（迁移任务的阶段流转），流结束后取用 */
   const [migrateState, setMigrateState] = useState<MigrateEvent | null>(null)
   const abortRef = useRef<AbortController | null>(null)
+  const activeConvRef = useRef<number | null>(null)
   /** 本次运行的完整时间线快照（供发送方在流结束后持久化到会话视图） */
   const timelineRef = useRef<TimelineItem[]>([])
   /** 本次运行解析出的结构化 UI 指令（<UI_RENDER> 首个合法 JSON），流结束后取用 */
@@ -106,8 +107,20 @@ export function useChatStream() {
   const assistantTextTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   const stop = useCallback(() => {
-    abortRef.current?.abort()
-    abortRef.current = null
+    const convId = activeConvRef.current
+    const controller = abortRef.current
+    const abortLocal = () => controller?.abort()
+    if (convId == null) {
+      abortLocal()
+      abortRef.current = null
+      return
+    }
+    api.cancelChat(convId)
+      .catch(() => null)
+      .finally(() => {
+        abortLocal()
+        abortRef.current = null
+      })
   }, [])
 
   const send = useCallback(async (message: string, convId: number | null, agentId?: string, extra?: SendExtra) => {
@@ -127,6 +140,7 @@ export function useChatStream() {
 
     const controller = new AbortController()
     abortRef.current = controller
+    activeConvRef.current = convId
     const startTs = performance.now() // 用于链路节点真实耗时统计
 
     const flushAssistantText = (sync: boolean) => {
@@ -219,6 +233,7 @@ export function useChatStream() {
       flushAssistantText(true)
       setStreaming(false)
       abortRef.current = null
+      activeConvRef.current = null
     }
   }, [])
 

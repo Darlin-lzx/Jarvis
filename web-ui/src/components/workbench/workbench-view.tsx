@@ -19,12 +19,13 @@ import { MigratePanel } from './migrate-panel'
 interface WorkbenchViewProps {
   activeTab: string
   onTabChange?: (tab: string) => void
+  onNew?: () => void
 }
 
-export function WorkbenchView({ activeTab, onTabChange }: WorkbenchViewProps) {
+export function WorkbenchView({ activeTab, onTabChange, onNew }: WorkbenchViewProps) {
   const renderPanel = () => {
     switch (activeTab) {
-      case 'workspace': return <WorkspacePanel onTabChange={onTabChange} />
+      case 'workspace': return <WorkspacePanel onTabChange={onTabChange} onNew={onNew} />
       case 'kb': return <KBPanel />
       case 'kg': return <KGPanel />
       case 'artifacts': return <ArtifactsPanel />

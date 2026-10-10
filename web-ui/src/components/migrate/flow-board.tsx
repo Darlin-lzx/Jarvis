@@ -6,6 +6,7 @@ import { cn } from '@/lib/utils'
 import {
   Workflow, ArrowUp, ArrowDown, Plus, Trash2, RotateCw,
   Save, ToggleLeft, ToggleRight, ShieldCheck, Eye, EyeOff,
+  UserRound,
 } from 'lucide-react'
 
 /**
@@ -14,6 +15,14 @@ import {
  * - 支持上移/下移调整顺序、增删节点、开关「确认闸门」与「启用」；
  * - 保存后后端状态机按此表驱动流转（页面编排即真实生效）。
  */
+const STAGE_AGENT_META: Record<string, { agentId: string; alias: string; role: string }> = {
+  'DATA_COLLECTION': { agentId: 'migration_collector', alias: '小采', role: '数据采集' },
+  'ASSESSMENT_RUNNING': { agentId: 'migration_assessor', alias: '小评', role: '迁移评估' },
+  'SOLUTION_GENERATE': { agentId: 'migration_planner', alias: '小方', role: '迁移方案' },
+  'CODE_MIGRATE': { agentId: 'code_migrator', alias: '小改', role: '代码改造' },
+  'VERIFY_STAGE': { agentId: 'migration_verifier', alias: '小测', role: '迁移验证' },
+}
+
 export function FlowBoard() {
   const [nodes, setNodes] = useState<MigrateFlowNode[]>([])
   const [loading, setLoading] = useState(true)
@@ -135,6 +144,19 @@ export function FlowBoard() {
               {/* 序号 + 状态 */}
               <span className="text-[#5a5a70] w-5 text-right flex-shrink-0">{idx + 1}</span>
               <span className="text-[9px] px-1.5 py-0.5 rounded bg-[#1a1a24] border border-[#252530] text-[#8b8b9e] font-mono flex-shrink-0">{n.status}</span>
+              {(() => {
+                const stageAgent = STAGE_AGENT_META[n.status]
+                if (!stageAgent) return null
+                return (
+                  <span
+                    className="flex items-center gap-1 px-1.5 py-0.5 rounded border border-indigo-500/20 bg-indigo-500/10 text-[9px] text-indigo-300 flex-shrink-0"
+                    title={`图节点：${stageAgent.agentId}（${stageAgent.role}）`}
+                  >
+                    <UserRound className="w-2.5 h-2.5" />
+                    {stageAgent.alias}
+                  </span>
+                )
+              })()}
               {/* 节点名 / 说明（可编辑） */}
               <div className="flex-1 min-w-0 flex items-center gap-2">
                 <input value={n.label}

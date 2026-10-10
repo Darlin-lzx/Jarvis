@@ -5,8 +5,6 @@ import { TopBar } from '@/components/layout/top-bar'
 import { ChatView } from '@/components/chat/chat-view'
 import { WelcomePage } from '@/components/chat/welcome-page'
 import { WorkbenchView } from '@/components/workbench/workbench-view'
-import { SpaceDetailPage } from '@/components/space/space-detail-panel'
-import { SubSystemDetailPage } from '@/components/space/sub-system-detail-page'
 import { SettingsDialog } from '@/components/settings/settings-dialog'
 import { useConversations } from '@/hooks/use-conversations'
 import { useHealth } from '@/hooks/use-health'
@@ -27,17 +25,15 @@ export default function App() {
   const [showWelcome, setShowWelcome] = useState(false)
   const [activeAgent, setActiveAgent] = useState<string>('migration_assessor')
   const [agentList, setAgentList] = useState<Agent[]>([])
-  const [currentSpace, setCurrentSpace] = useState<WorkspaceGroup | null>(null)
   const [selectedTask, setSelectedTask] = useState<{ id: number; name: string } | null>(null)
   // 会话来源任务：从任务详情进入会话时记录，供「返回任务详情」恢复上下文
   const [chatFromTask, setChatFromTask] = useState<{ id: number; name: string } | null>(null)
-  const [selectedSub, setSelectedSub] = useState<{ spaceId: number; spaceName: string; subId: number } | null>(null)
   const [newTaskCtx, setNewTaskCtx] = useState<NewTaskContext | null>(null)
   const [newTaskOpen, setNewTaskOpen] = useState(false)
   const [quickMode, setQuickMode] = useState(false)
   const conv = useConversations()
   const healthy = useHealth()
-  // 任务页筛选（左侧空间/子系统点击联动）
+  // 任务页筛选（左侧空间点击联动）
   const [taskFilter, setTaskFilter] = useState<TaskFilter | null>(null)
 
   // 加载后端智能体列表，找到主智能体作为默认值
@@ -113,9 +109,7 @@ export default function App() {
   const handleQuickQA = () => {
     setQuickMode(true)
     setShowWelcome(true)
-    setCurrentSpace(null)
     setSelectedTask(null)
-    setSelectedSub(null)
     conv.setCurrentId(null)
   }
 
@@ -135,10 +129,8 @@ export default function App() {
   const handleNewConversation = async () => {
     setQuickMode(false)
     setShowWelcome(false)
-    setCurrentSpace(null)
     setSelectedTask(null)
     setChatFromTask(null)
-    setSelectedSub(null)
     conv.setCurrentId(null)
 
     try {
@@ -164,7 +156,6 @@ export default function App() {
 
   const handleSelectConv = (id: number | null) => {
     setShowWelcome(false)
-    setCurrentSpace(null)
     setChatFromTask(null) // 默认清空来源任务（从任务详情进入时会重新设置）
     conv.setCurrentId(id)
     // 进入已有会话时按会话归属自动同步模式（无空间/任务归属 = 快速问答）
@@ -178,33 +169,52 @@ export default function App() {
 
   const handleTabChange = (tab: string) => {
     setActiveTab(tab)
-    setCurrentSpace(null)
     conv.setCurrentId(null)
     setShowWelcome(false)
     setSelectedTask(null)
     setChatFromTask(null)
   }
 
-  // 左侧点击空间/子系统 → 进入任务页并按空间/子系统筛选
-  const handleSelectSubSystem = (g: WorkspaceGroup, child: { id: string; name: string }) => {
-    setTaskFilter({ spaceId: Number(g.id), spaceName: g.name, subId: Number(child.id), subName: child.name })
+  // 点击空间节点 → 任务页展示该空间全部任务
+  const handleSelectSpaceTasks = (g: WorkspaceGroup) => {
+    setTaskFilter({ spaceId: Number(g.id), spaceName: g.name })
     setSelectedTask(null)
-    setSelectedSub(null)
-    setCurrentSpace(null)
     setShowWelcome(false)
     conv.setCurrentId(null)
     setActiveTab('tasks')
   }
 
-  // 点击空间节点 → 任务页展示该空间所有子系统任务
-  const handleSelectSpaceTasks = (g: WorkspaceGroup) => {
-    setTaskFilter({ spaceId: Number(g.id), spaceName: g.name })
+  const handleCreateTaskInSpace = (group: WorkspaceGroup) => {
+    setTaskFilter({ spaceId: Number(group.id), spaceName: group.name })
     setSelectedTask(null)
-    setSelectedSub(null)
-    setCurrentSpace(null)
+    setChatFromTask(null)
     setShowWelcome(false)
     conv.setCurrentId(null)
     setActiveTab('tasks')
+    setNewTaskCtx({
+      space: { id: Number(group.id), name: group.name, subsystems: [] },
+      lockSpace: true,
+    })
+    setNewTaskOpen(true)
+  }
+
+  // 侧边栏任务节点 → 任务详情
+  const handleSelectTask = (spaceId: number, taskId: number) => {
+    if (taskFilter?.spaceId !== spaceId) setTaskFilter({ spaceId, spaceName: '' })
+    setSelectedTask({ id: taskId, name: '' })
+    setChatFromTask(null)
+    setShowWelcome(false)
+    conv.setCurrentId(null)
+    setActiveTab('tasks')
+  }
+
+  const handleTaskDeleted = (taskId: number) => {
+    bumpSidebarRefresh()
+    if (selectedTask?.id === taskId) {
+      setSelectedTask(null)
+      setChatFromTask(null)
+      setActiveTab('tasks')
+    }
   }
 
   const isChatView = conv.currentId !== null || showWelcome
@@ -225,8 +235,11 @@ export default function App() {
           activeTab={activeTab}
           onTabChange={handleTabChange}
           onSelectSpace={handleSelectSpaceTasks}
-          onSelectSubSystem={handleSelectSubSystem}
+          onCreateTask={handleCreateTaskInSpace}
+          onSelectTask={handleSelectTask}
+          onTaskDeleted={handleTaskDeleted}
           activeFilter={taskFilter}
+          activeTaskId={selectedTask?.id ?? null}
           onQuickQA={handleQuickQA}
           activeAgent={activeAgent}
           agents={builtinAgents}
@@ -234,34 +247,7 @@ export default function App() {
         />
         <main className="flex-1 flex flex-col min-w-0">
           <TopBar healthy={healthy} onSettings={() => setSettingsOpen(true)} />
-          {selectedSub ? (
-            <SubSystemDetailPage
-              spaceId={selectedSub.spaceId}
-              spaceName={selectedSub.spaceName}
-              subId={selectedSub.subId}
-              onBack={() => setSelectedSub(null)}
-              onOpenTask={(t) => setSelectedTask({ id: t.id, name: t.name })}
-              onNewTask={(ctx) => { setNewTaskCtx(ctx || {}); setNewTaskOpen(true) }}
-              onOpenConv={(id) => handleConvCreated(id)}
-              onTaskChanged={bumpSidebarRefresh}
-            />
-          ) : currentSpace ? (
-            <SpaceDetailPage
-              space={{
-                id: currentSpace.id,
-                name: currentSpace.name,
-                description: '浙江移动数据库国产化迁移项目，包含营业、开通两大业务系统',
-                tags: ['Oracle迁移', '达梦', '存量评估'],
-                owner: '张三',
-                createdAt: '2026-09-01',
-                children: currentSpace.children,
-              }}
-              onBack={() => { setCurrentSpace(null); setActiveTab('workspace') }}
-              onNewTask={(ctx) => { setNewTaskCtx(ctx || {}); setNewTaskOpen(true) }}
-              onOpenTask={(t) => setSelectedTask({ id: t.id, name: t.name })}
-              onOpenSub={(spaceId, spaceName, sub) => setSelectedSub({ spaceId, spaceName, subId: sub.id })}
-            />
-          ) : selectedTask ? (
+          {selectedTask ? (
             <TaskDetailPage
               taskId={selectedTask.id}
               onBack={() => setSelectedTask(null)}
@@ -293,7 +279,6 @@ export default function App() {
               onNewTask={() => {
                 setNewTaskCtx({
                   space: taskFilter ? { id: taskFilter.spaceId, name: taskFilter.spaceName, subsystems: [] } : undefined,
-                  subId: taskFilter?.subId ?? undefined,
                 })
                 setNewTaskOpen(true)
               }}
@@ -308,9 +293,9 @@ export default function App() {
                 setActiveAgent={setActiveAgent}
                 quickMode={quickMode}
                 onModeChange={setQuickMode}
-                onConvertToProject={(spaceId, subId) => {
+                onConvertToProject={(spaceId) => {
                   if (conv.currentId == null) return Promise.resolve()
-                  return api.attachSpace(conv.currentId, { space_id: spaceId, sub_system_id: subId }).then(r => {
+                  return api.attachSpace(conv.currentId, { space_id: spaceId }).then(r => {
                     if (r.success) setQuickMode(false)
                     return r
                   }).catch(() => null)
@@ -324,13 +309,13 @@ export default function App() {
                   setChatFromTask(null)
                   conv.setCurrentId(null)
                   setSelectedTask(t)
-                } : undefined} onConvertToProject={(spaceId, subId) => {
+                } : undefined} onConvertToProject={(spaceId) => {
                 if (conv.currentId == null) return Promise.resolve()
-                return api.attachSpace(conv.currentId, { space_id: spaceId, sub_system_id: subId }).then(r => { if (r.success) setQuickMode(false); return r }).catch(() => null)
+                return api.attachSpace(conv.currentId, { space_id: spaceId }).then(r => { if (r.success) setQuickMode(false); return r }).catch(() => null)
               }} agentList={agentList} />
             )
           ) : (
-            <WorkbenchView activeTab={activeTab} onTabChange={handleTabChange} />
+            <WorkbenchView activeTab={activeTab} onTabChange={handleTabChange} onNew={handleNewConversation} />
           )}
         </main>
         <NewTaskDialog open={newTaskOpen} onClose={() => setNewTaskOpen(false)} context={newTaskCtx || undefined}
@@ -340,7 +325,7 @@ export default function App() {
             bumpSidebarRefresh()
             if (enterSession) {
               // 创建并进入会话：先建任务内会话
-              api.createConversation(task.name, { space_id: task.space_id, sub_system_id: task.sub_system_id || undefined, task_id: task.id }).then(r => {
+              api.createConversation(task.name, { space_id: task.space_id, task_id: task.id }).then(r => {
                 if (r.success && r.data) handleConvCreated(r.data.id)
               })
             } else {

@@ -8,10 +8,19 @@ chroma_dir: data/chroma
 kb_collection: migration_kb
 rag_top_k: 4
 llm:
-  provider: bailian        # ollama | deepseek | bailian
+  provider: bailian          # ollama | deepseek | bailian | zhipu
   base_url: ""
-  model: qwen3.7-plus
+  model: qwen-plus-2025-07-28
   api_key: "sk-ws-H.PLIYYMP.OFe6.MEYCIQCS-IVSDlO7H6643vyPLRSCgMfyfLIVM8pk9mMQfpEaWwIhAKrnWGK7hGvMgqwDGbl3qBF8ig-xRLCt1kRyCTx5NmAt"
-  embedding_model: qwen3.7-text-embedding
+  embedding_model: embedding-3
   temperature: 0.2
   max_tokens: 4096
+reliability:
+  db_failure_threshold: 3
+  db_recovery_seconds: 30
+  llm_failure_threshold: 3
+  llm_recovery_seconds: 60
+  llm_retry_count: 3
+  llm_retry_backoff_seconds: 1
+  llm_timeout_seconds: 120
+  node_timeout_seconds: 300
