@@ -35,7 +35,7 @@ import { test } from 'node:test'
 const panel = readFileSync('src/components/chat/workspace-panel.tsx', 'utf8')
 
 test('workspace preview renders as a fullscreen overlay', () => {
-  assert.match(panel, /role="dialog" aria-modal="true"/)
+  assert.match(panel, /role="dialog"\s+aria-modal="true"/)
   assert.match(panel, /fixed inset-0 z-\[120\] flex flex-col/)
   assert.match(panel, /aria-label="关闭预览"/)
   assert.match(panel, /min-h-0 flex-1 overflow-auto/)
