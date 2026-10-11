@@ -90,13 +90,15 @@ class WorkspaceService:
         return result.stdout.strip() if result.returncode == 0 else ""
 
     def _status_items(self, root: Path) -> List[Dict[str, Any]]:
-        result = self._git(root, "status", "--porcelain=v1", "--untracked-files=all")
+        result = self._git(root, "status", "--porcelain=v1", "--untracked-files=normal")
         items: List[Dict[str, Any]] = []
         for line in result.stdout.splitlines()[:self.max_changes]:
             if len(line) < 4:
                 continue
             git_status = line[:2].strip() or line[1].strip()
             path = line[3:]
+            if path.endswith("/"):
+                continue
             if " -> " in path:
                 path = path.split(" -> ", 1)[1]
             additions, deletions = self._numstat(root, path, git_status)
@@ -167,7 +169,7 @@ class WorkspaceService:
                 "truncated": len(text) > self.max_diff_chars}
 
     def _status_items_map(self, root: Path) -> Dict[str, str]:
-        result = self._git(root, "status", "--porcelain=v1", "--untracked-files=all")
+        result = self._git(root, "status", "--porcelain=v1", "--untracked-files=normal")
         output: Dict[str, str] = {}
         for line in result.stdout.splitlines():
             if len(line) < 4:
@@ -193,7 +195,8 @@ class WorkspaceService:
             "path": item.relative_to(root).as_posix(),
             "type": "directory" if item.is_dir() else "file",
         } for item in children[:self.max_tree_items]]
-        return {"path": directory.relative_to(root).as_posix(), "items": items,
+        current_path = "" if directory == root else directory.relative_to(root).as_posix()
+        return {"path": current_path, "items": items,
                 "truncated": len(children) > self.max_tree_items}
 
     def file(self, agent_id: str, path: str) -> Dict[str, Any]:
