@@ -3,7 +3,10 @@ from __future__ import annotations
 
 import re
 from typing import Any
+from datetime import datetime
 import xml.etree.ElementTree as ET
+
+from sqlalchemy import Engine, text
 
 
 CONTENT_COLUMNS = ("content", *(f"content{i}" for i in range(1, 16)))
@@ -167,4 +170,86 @@ def parse_workflow_xml(xml_text: str) -> dict[str, Any]:
         "warnings": warnings,
         "width": bounds_width,
         "height": bounds_height,
+    }
+
+
+def select_workflow_template_versions(engine: Engine, template_tag: str) -> list[dict[str, Any]]:
+    """Read all stored chunks for each version of one template tag."""
+    sql = text("""
+        SELECT template_version_id, order_num, template_tag, create_staff_id,
+               create_date, modify_desc, valid_date, expire_date,
+               content, content1, content2, content3, content4, content5,
+               content6, content7, content8, content9, content10,
+               content11, content12, content13, content14, content15
+        FROM aif_comframe.vm_template_version
+        WHERE template_tag = :template_tag
+        ORDER BY valid_date DESC, template_version_id DESC
+    """)
+    with engine.connect() as conn:
+        return [dict(row._mapping) for row in conn.execute(sql, {"template_tag": template_tag})]
+
+
+def _time_value(value: Any) -> str | None:
+    if value is None or value == "":
+        return None
+    if isinstance(value, datetime):
+        return value.isoformat(sep=" ", timespec="milliseconds")
+    return str(value)
+
+
+def _as_datetime(value: Any) -> datetime:
+    if isinstance(value, datetime):
+        return value
+    try:
+        return datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return datetime.min
+
+
+def build_workflow_template_response(engine: Engine, template_tag: str) -> dict[str, Any]:
+    """Parse every matching version and select a usable default."""
+    rows = select_workflow_template_versions(engine, template_tag)
+    versions: list[dict[str, Any]] = []
+    now = datetime.now()
+
+    for row in rows:
+        content = normalize_template_content(*(row.get(column) for column in CONTENT_COLUMNS))
+        graph: dict[str, Any] | None = None
+        parse_error: str | None = None
+        try:
+            graph = parse_workflow_xml(content)
+        except ValueError as exc:
+            parse_error = str(exc)
+
+        valid_date = _time_value(row.get("valid_date"))
+        expire_date = _time_value(row.get("expire_date"))
+        versions.append({
+            "template_version_id": row.get("template_version_id"),
+            "order_num": row.get("order_num"),
+            "template_tag": row.get("template_tag", template_tag),
+            "create_staff_id": row.get("create_staff_id"),
+            "create_date": _time_value(row.get("create_date")),
+            "modify_desc": row.get("modify_desc"),
+            "valid_date": valid_date,
+            "expire_date": expire_date,
+            "is_expired": expire_date is not None and _as_datetime(expire_date) < now,
+            "workflow": graph,
+            "parse_error": parse_error,
+        })
+
+    parseable = [version for version in versions if version["workflow"] is not None]
+    active = [version for version in parseable if not version["is_expired"]]
+    candidates = active or parseable or versions
+    selected = max(
+        candidates,
+        key=lambda version: (
+            _as_datetime(version.get("valid_date")),
+            version.get("template_version_id") or 0,
+        ),
+        default=None,
+    )
+    return {
+        "template_tag": template_tag,
+        "selected_version_id": selected.get("template_version_id") if selected else None,
+        "versions": versions,
     }
