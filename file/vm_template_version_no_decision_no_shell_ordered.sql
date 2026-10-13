@@ -1,6 +1,6 @@
 -- Simplified workflow with execution-ordered, evenly spaced coordinates.
 INSERT INTO aif_comframe.vm_template_version (template_version_id,order_num,template_tag,create_staff_id,create_date,modify_desc,valid_date,expire_date,"content",content1,content2,content3,content4,content5,content6,content7,content8,content9,content10,content11,content12,content13,content14,content15) VALUES
-	(1789959874517,2,'com.ai.order.workflow.shedule.vm.DefaultGsmYdkjNewWFSchedule','103747','2026-10-09 19:36:10.000','按执行顺序纵向等距重排','2026-10-09 00:00:00.000','2099-12-31 00:00:00.000',
+	(1789959874518,3,'com.ai.order.workflow.shedule.vm.DefaultGsmYdkjNewWFSchedule','103747','2026-10-09 19:36:10.000','中轴执行顺序等距重排','2026-10-09 00:00:00.000','2099-12-31 00:00:00.000',
 '<?xml version="1.0" encoding="GBK" ?>
 <workflow label="" tasktype="workflow" tasktag="com.ai.order.workflow.shedule.vm.DefaultGsmYdkjNewWFSchedule" duration="" isusemq="true" owntype="CSF">
     <description />
@@ -183,7 +183,7 @@ INSERT INTO aif_comframe.vm_template_version (template_version_id,order_num,temp
         <gotoitem goto="1790220990229" />
     </task>
     <task id="1790220539112" label="增值策划订购/退订流程_订单处理" tasktype="csf_service" tasktag="_dealOrder">
-        <uiinfo>{"x":800,"y":1605}</uiinfo>
+        <uiinfo>{"x":460,"y":1605}</uiinfo>
         <user taskusertype="staff" taskuserid="" organizeid="" />
         <autodeal>
             <runtype>csfService</runtype>
@@ -220,7 +220,7 @@ INSERT INTO aif_comframe.vm_template_version (template_version_id,order_num,temp
         <gotoitem goto="1790220990229" />
     </task>
     <task id="1790220704715" label="增值策划订购流程_订单处理" tasktype="csf_service" tasktag="_dealOrder">
-        <uiinfo>{"x":800,"y":1865}</uiinfo>
+        <uiinfo>{"x":460,"y":1865}</uiinfo>
         <user taskusertype="staff" taskuserid="" organizeid="" />
         <autodeal>
             <runtype>csfService</runtype>
@@ -234,7 +234,7 @@ INSERT INTO aif_comframe.vm_template_version (template_version_id,order_num,temp
         <gotoitem goto="1790220990229" />
     </task>
     <task id="1790220802326" label="促销策划订购流程_订单处理" tasktype="csf_service" tasktag="_dealOrder">
-        <uiinfo>{"x":800,"y":2125}</uiinfo>
+        <uiinfo>{"x":460,"y":2125}</uiinfo>
         <user taskusertype="staff" taskuserid="" organizeid="" />
         <autodeal>
             <runtype>csfService</runtype>
@@ -247,7 +247,7 @@ INSERT INTO aif_comframe.vm_template_version (template_version_id,order_num,temp
         <gotoitem goto="1790220990229" />
     </task>
     <task id="1790220850257" label="预缴策划订购流程_订单处理" tasktype="csf_service" tasktag="_dealOrder">
-        <uiinfo>{"x":800,"y":2385}</uiinfo>
+        <uiinfo>{"x":460,"y":2385}</uiinfo>
         <user taskusertype="staff" taskuserid="" organizeid="" />
         <autodeal>
             <runtype>csfService</runtype>

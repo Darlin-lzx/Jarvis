@@ -10,9 +10,9 @@ Generate a new template version with coordinates that follow execution order, us
 
 ## Design
 
-Use a central vertical spine for `开始节点`, `Fork`, `AND`, `流程完成处理`, and `结束节点`. The first independent service sits on the left branch. The dependent service chain sits on the right and is ordered top to bottom by its execution sequence. The second-stage service chain also stays on the right in dependency order.
+Use a central vertical spine for `开始节点`, `Fork`, `AND`, the four second-stage services, `流程完成处理`, and `结束节点`. The first independent service sits on the left branch. The first dependent service chain sits on the right and is ordered top to bottom by its execution sequence.
 
-All adjacent stage centers are 260 pixels apart. The central spine uses x-center 520; the independent branch uses x-center 180; sequential service lanes use x-center 860. Only `<uiinfo>` coordinates change.
+All adjacent stage centers are 260 pixels apart. The central spine uses x-center 520; the independent branch uses x-center 180; the first sequential service lane uses x-center 860. Only `<uiinfo>` coordinates change.
 
 ## Output
 

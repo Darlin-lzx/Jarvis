@@ -25,10 +25,10 @@
   - Independent first-stage service `1790216116185`: `(120, 565)`
   - Sequential first-stage services `1790216253182`, `1790216330779`, `1790216397556`: `(800, 565)`, `(800, 825)`, `(800, 1085)`
   - AND: `(505, 1360)`
-  - Sequential second-stage services `1790220539112`, `1790220704715`, `1790220802326`, `1790220850257`: `(800, 1605)`, `(800, 1865)`, `(800, 2125)`, `(800, 2385)`
+  - Sequential second-stage services `1790220539112`, `1790220704715`, `1790220802326`, `1790220850257`: `(460, 1605)`, `(460, 1865)`, `(460, 2125)`, `(460, 2385)`
   - Auto-complete: `(460, 2645)`
   - Finish: `(505, 2920)`
-- Set the new version ID to `1789959874517`, `order_num` to `2`, and `modify_desc` to `按执行顺序纵向等距重排`.
+- Set the new version ID to `1789959874518`, `order_num` to `3`, and `modify_desc` to `中轴执行顺序等距重排`.
 - Split XML into 3900-character SQL content chunks.
 
 ### Task 2: Validate
