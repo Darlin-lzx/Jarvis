@@ -12,7 +12,7 @@ Generate a new template version with coordinates that follow execution order, us
 
 Use a central vertical spine for `开始节点`, `Fork`, `AND`, the four second-stage services, `流程完成处理`, and `结束节点`. The first independent service sits on the left branch. The first dependent service chain sits on the right and is ordered top to bottom by its execution sequence.
 
-All adjacent stage centers are 260 pixels apart. The central spine uses x-center 520; the independent branch uses x-center 180; the first sequential service lane uses x-center 860. Only `<uiinfo>` coordinates change.
+All adjacent stage centers are 88 pixels apart, reducing the previous 260-pixel spacing by about two-thirds while keeping integer XML coordinates. The central spine uses x-center 520; the independent branch uses x-center 180; the first sequential service lane uses x-center 860. Only `<uiinfo>` coordinates change.
 
 ## Output
 
@@ -21,6 +21,6 @@ Create a separate SQL file with a new template version ID and description. This 
 ## Validation
 
 - Parse the generated SQL and confirm 13 nodes, 28 edges, zero warnings, and no decision or shell nodes.
-- Verify intended adjacent node center distances are all 260 pixels.
+- Verify intended adjacent node center distances are all 88 pixels.
 - Confirm all task and goto references still resolve.
 - Render the parsed graph through the existing frontend routing logic and inspect the layout in a browser mock.
