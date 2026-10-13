@@ -28,7 +28,8 @@
   - Sequential second-stage services `1790220539112`, `1790220704715`, `1790220802326`, `1790220850257`: `(460, 1605)`, `(460, 1865)`, `(460, 2125)`, `(460, 2385)`
   - Auto-complete: `(460, 2645)`
   - Finish: `(505, 2920)`
-- Set the new version ID to `1789959874518`, `order_num` to `3`, and `modify_desc` to `中轴执行顺序等距重排`.
+- Set the new version ID to `1789959874519`, `order_num` to `4`, and `modify_desc` to `移除Fork到AND直连线`.
+- Remove the direct Fork-to-AND edge by deleting its `gotoitem` and matching `join`.
 - Split XML into 3900-character SQL content chunks.
 
 ### Task 2: Validate
@@ -36,6 +37,6 @@
 **Steps:**
 
 - Parse the generated SQL with `parse_workflow_xml`.
-- Confirm 13 nodes, 29 edges, zero warnings, no decision or shell nodes, and no unresolved task/goto references.
+- Confirm 13 nodes, 28 edges, zero warnings, no decision or shell nodes, and no unresolved task/goto references.
 - Assert all intended adjacent center distances equal 260.
 - Render the graph in a mocked browser and inspect the screenshot.

@@ -2,11 +2,11 @@
 
 ## Context
 
-The simplified workflow has 13 nodes and 29 edges. Its original coordinates retain the removed decision and shell nodes' historical positions, leaving uneven gaps and a visually unbalanced graph.
+The simplified workflow has 13 nodes and 28 edges after removing the direct Fork-to-AND edge. Its original coordinates retain the removed decision and shell nodes' historical positions, leaving uneven gaps and a visually unbalanced graph.
 
 ## Goal
 
-Generate a new template version with coordinates that follow execution order, use consistent spacing, and preserve all node IDs, service configuration, `gotoitem` references, and edge relationships.
+Generate a new template version with coordinates that follow execution order, use consistent spacing, and preserve all node IDs, service configuration, and edge relationships except for the visually misleading direct Fork-to-AND edge.
 
 ## Design
 
@@ -20,7 +20,7 @@ Create a separate SQL file with a new template version ID and description. This 
 
 ## Validation
 
-- Parse the generated SQL and confirm 13 nodes, 29 edges, zero warnings, and no decision or shell nodes.
+- Parse the generated SQL and confirm 13 nodes, 28 edges, zero warnings, and no decision or shell nodes.
 - Verify intended adjacent node center distances are all 260 pixels.
 - Confirm all task and goto references still resolve.
 - Render the parsed graph through the existing frontend routing logic and inspect the layout in a browser mock.

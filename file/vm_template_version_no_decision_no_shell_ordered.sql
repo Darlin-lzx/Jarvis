@@ -1,6 +1,6 @@
 -- Simplified workflow with execution-ordered, evenly spaced coordinates.
 INSERT INTO aif_comframe.vm_template_version (template_version_id,order_num,template_tag,create_staff_id,create_date,modify_desc,valid_date,expire_date,"content",content1,content2,content3,content4,content5,content6,content7,content8,content9,content10,content11,content12,content13,content14,content15) VALUES
-	(1789959874518,3,'com.ai.order.workflow.shedule.vm.DefaultGsmYdkjNewWFSchedule','103747','2026-10-09 19:36:10.000','中轴执行顺序等距重排','2026-10-09 00:00:00.000','2099-12-31 00:00:00.000',
+	(1789959874519,4,'com.ai.order.workflow.shedule.vm.DefaultGsmYdkjNewWFSchedule','103747','2026-10-09 19:36:10.000','移除Fork到AND直连线','2026-10-09 00:00:00.000','2099-12-31 00:00:00.000',
 '<?xml version="1.0" encoding="GBK" ?>
 <workflow label="" tasktype="workflow" tasktag="com.ai.order.workflow.shedule.vm.DefaultGsmYdkjNewWFSchedule" duration="" isusemq="true" owntype="CSF">
     <description />
@@ -33,7 +33,6 @@ INSERT INTO aif_comframe.vm_template_version (template_version_id,order_num,temp
     <task id="1790215737919" label="Fork" tasktype="fork" tasktag="">
         <uiinfo>{"x":505,"y":320}</uiinfo>
         <gotoitem goto="1790216116185" />
-        <gotoitem goto="1790216516296" />
         <gotoitem goto="1790216253182" />
         <gotoitem goto="1790216330779" />
         <gotoitem goto="1790216397556" />
@@ -284,10 +283,6 @@ INSERT INTO aif_comframe.vm_template_version (template_version_id,order_num,temp
 ' <condition />
     </join>
     <join id="vueflow__edge-1790215737919-bypass-1790216116185" name="vueflow__edge-1790215737919-bypass-1790216116185" taska="1790215737919" taskb="1790216116185">
-        <uiinfo>[]</uiinfo>
-        <condition />
-    </join>
-    <join id="vueflow__edge-1790215737919-bypass-1790216516296" name="vueflow__edge-1790215737919-bypass-1790216516296" taska="1790215737919" taskb="1790216516296">
         <uiinfo>[]</uiinfo>
         <condition />
     </join>
