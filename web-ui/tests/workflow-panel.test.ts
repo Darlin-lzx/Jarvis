@@ -19,6 +19,7 @@ test('workflow panel queries by encoded template tag', () => {
   assert.equal(apiSource.includes('getWorkflowTemplate: async (tag: string)'), true)
   assert.equal(apiSource.includes('encodeURIComponent(tag)'), true)
   assert.equal(source.includes('api.getWorkflowTemplate(trimmed)'), true)
+  assert.equal(source.includes("const DEFAULT_TAG = 'com.ai.order.workflow.shedule.vm.GsmYdkjNewWFSchedule'"), true)
   assert.equal(source.includes('void query(DEFAULT_TAG)'), false)
   assert.equal(source.includes('请输入 template_tag 后查询'), true)
 })

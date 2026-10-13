@@ -11,7 +11,7 @@ import {
   ZoomIn, ZoomOut,
 } from 'lucide-react'
 
-const DEFAULT_TAG = 'com.ai.order.workflow.shedule.vm.DefaultYdkjNewWFSchedule'
+const DEFAULT_TAG = 'com.ai.order.workflow.shedule.vm.GsmYdkjNewWFSchedule'
 const VIEW_WIDTH = 1280
 const VIEW_HEIGHT = 800
 const MIN_ZOOM = 0.25
