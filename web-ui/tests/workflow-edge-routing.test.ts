@@ -12,7 +12,12 @@ const node = (id: string, x: number, y: number, width = 120, height = 56) => ({
   height,
 })
 
-test('vertical edges use spread ports and an orthogonal channel', () => {
+function points(path: string) {
+  return [...path.matchAll(/(-?\d+(?:\.\d+)?) (-?\d+(?:\.\d+)?)/g)]
+    .map(match => ({ x: Number(match[1]), y: Number(match[2]) }))
+}
+
+test('fan-out edges share one source trunk', () => {
   const source = node('source', 100, 100)
   const targets = [
     node('left', 0, 300),
@@ -31,8 +36,29 @@ test('vertical edges use spread ports and an orthogonal channel', () => {
   assert.ok(left?.startsWith('M '))
   assert.ok(right?.startsWith('M '))
   assert.notEqual(left, right)
-  assert.ok(left!.includes(' L '))
-  assert.ok(right!.includes(' L '))
+  const leftPoints = points(left!)
+  const rightPoints = points(right!)
+  assert.deepEqual(leftPoints.slice(0, 2), rightPoints.slice(0, 2))
+  assert.equal(leftPoints[1].y, rightPoints[1].y)
+})
+
+test('fan-in edges share one target trunk', () => {
+  const target = node('target', 100, 500)
+  const routes = buildWorkflowEdgeRoutes({
+    nodes: [
+      node('left', 0, 100),
+      node('right', 260, 100),
+      target,
+    ],
+    edges: [
+      { id: 'left-edge', source: 'left', target: 'target' },
+      { id: 'right-edge', source: 'right', target: 'target' },
+    ],
+  })
+  const left = points(routes.get('left-edge')!)
+  const right = points(routes.get('right-edge')!)
+  assert.deepEqual(left.slice(2), right.slice(2))
+  assert.equal(left[2].y, right[2].y)
 })
 
 test('horizontal edges leave and enter on opposite sides', () => {
