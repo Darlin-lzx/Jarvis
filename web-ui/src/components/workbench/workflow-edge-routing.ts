@@ -135,13 +135,12 @@ function verticalSegmentClear(
 }
 
 function findVerticalChannel(
-  source: RoutingNode,
-  target: RoutingNode,
-  downward: boolean,
+  sx: number,
+  tx: number,
+  start: number,
+  end: number,
   obstacles: RoutingNode[],
 ) {
-  const start = downward ? source.y + source.height : target.y + target.height
-  const end = downward ? target.y : source.y
   const middle = (start + end) / 2
   const candidates = [middle]
   const distance = Math.max(320, Math.abs(end - start))
@@ -151,8 +150,35 @@ function findVerticalChannel(
   return candidates.find(y =>
     y > start + OBSTACLE_MARGIN &&
     y < end - OBSTACLE_MARGIN &&
-    horizontalSegmentClear(source.x, source.x + source.width, y, obstacles),
+    horizontalSegmentClear(Math.min(sx, tx), Math.max(sx, tx), y, obstacles),
   ) ?? middle
+}
+
+function findVerticalBypass(
+  sx: number,
+  sy: number,
+  tx: number,
+  ty: number,
+  obstacles: RoutingNode[],
+) {
+  const preferredX = (sx + tx) / 2
+  const candidates: number[] = []
+  for (const node of obstacles) {
+    candidates.push(
+      node.x - OBSTACLE_MARGIN - CHANNEL_STEP,
+      node.x + node.width + OBSTACLE_MARGIN + CHANNEL_STEP,
+    )
+  }
+  return candidates
+    .filter(x => x !== sx && x !== tx)
+    .filter(x => verticalSegmentClear(sy, ty, x, obstacles))
+    .filter(x => horizontalSegmentClear(
+      Math.min(x, tx),
+      Math.max(x, tx),
+      ty,
+      obstacles,
+    ))
+    .sort((a, b) => Math.abs(a - preferredX) - Math.abs(b - preferredX))[0]
 }
 
 function findHorizontalChannel(
@@ -212,11 +238,46 @@ export function buildWorkflowEdgeRoutes(graph: RoutingGraph) {
     const ty = downward ? target.y : target.y + target.height
     const obstacles = graph.nodes.filter(node =>
       node.id !== source.id && node.id !== target.id)
-    const channel = findVerticalChannel(source, target, downward, obstacles)
+    const channel = findVerticalChannel(sx, tx, sy, ty, obstacles)
+    const directIsClear = horizontalSegmentClear(
+      Math.min(sx, tx),
+      Math.max(sx, tx),
+      channel,
+      obstacles,
+    )
+    if (directIsClear) {
+      routes.set(edge.id, formatPath([
+        { x: sx, y: sy },
+        { x: sx, y: channel },
+        { x: tx, y: channel },
+        { x: tx, y: ty },
+      ]))
+    } else {
+      const bypass = findVerticalBypass(sx, sy, tx, ty, obstacles) ?? tx
+      routes.set(edge.id, formatPath([
+        { x: sx, y: sy },
+        { x: bypass, y: sy },
+        { x: bypass, y: ty },
+        { x: tx, y: ty },
+      ]))
+    }
+  }
+
+  for (const edge of horizontalEdges) {
+    const source = nodeMap.get(edge.source)!
+    const target = nodeMap.get(edge.target)!
+    const sourceIsLeft = center(source).x <= center(target).x
+    const sy = horizontalPorts.sourcePorts.get(edge.id) ?? center(source).y
+    const ty = horizontalPorts.targetPorts.get(edge.id) ?? center(target).y
+    const sx = sourceIsLeft ? source.x + source.width : source.x
+    const tx = sourceIsLeft ? target.x : target.x + target.width
+    const obstacles = graph.nodes.filter(node =>
+      node.id !== source.id && node.id !== target.id)
+    const channel = findHorizontalChannel(source, target, sourceIsLeft, obstacles)
     routes.set(edge.id, formatPath([
       { x: sx, y: sy },
-      { x: sx, y: channel },
-      { x: tx, y: channel },
+      { x: channel, y: sy },
+      { x: channel, y: ty },
       { x: tx, y: ty },
     ]))
   }

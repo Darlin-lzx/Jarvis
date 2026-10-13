@@ -64,3 +64,19 @@ test('node avoidance moves a vertical channel out of an obstacle', () => {
   const numbers = path.match(/-?\d+(?:\.\d+)?/g)!.map(Number)
   assert.ok(numbers.some(value => value < 100 || value > 220))
 })
+
+test('offset vertical edges route around blocking nodes', () => {
+  const routes = buildWorkflowEdgeRoutes({
+    nodes: [
+      node('source', 0, 100),
+      node('blocker', 20, 160, 100, 340),
+      node('target', 300, 500),
+    ],
+    edges: [{ id: 'edge', source: 'source', target: 'target' }],
+  })
+  const path = routes.get('edge')!
+  const numbers = [...path.matchAll(/-?\d+(?:\.\d+)?/g)].map(match => Number(match[0]))
+  const xs = numbers.filter((_, index) => index % 2 === 0)
+  assert.ok(xs[xs.length - 2] > 130, path)
+  assert.notEqual(xs[xs.length - 2], xs[xs.length - 1])
+})
