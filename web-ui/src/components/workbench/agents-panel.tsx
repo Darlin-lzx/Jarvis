@@ -4,7 +4,8 @@ import { Input } from '@/components/ui/input'
 import { Badge } from '@/components/ui/badge'
 import { cn } from '@/lib/utils'
 import { api } from '@/lib/api'
-import type { Prompt } from '@/lib/types'
+import { buildAgentSavePayload } from '@/lib/agent-save'
+import type { KnowledgeBaseInfo, Prompt } from '@/lib/types'
 import {
   Plus, Search, ChevronRight, Trash2,
   Bot, FileText, Database, Wrench,
@@ -18,6 +19,7 @@ interface AgentRow {
   id: string
   name: string
   alias?: string
+  project_dir?: string
   uniqueKey: string
   type: AgentType
   boundKBs: string[]
@@ -32,7 +34,7 @@ interface AgentRow {
 
 // 意图到 Agent 类型的映射
 const INTENT_TO_TYPE: Record<string, AgentType> = {
-  'migration_assess': '主Agent',
+  'jarvis_overall': '主Agent',
   'ddl_convert': '子Agent',
   'code_migrate': '子Agent',
   'nl2sql': '子Agent',
@@ -42,7 +44,7 @@ const INTENT_TO_TYPE: Record<string, AgentType> = {
 
 // 意图到工具权限的映射
 const INTENT_TO_TOOLS: Record<string, string[]> = {
-  'migration_assess': ['RAG知识库检索', '结果汇总'],
+  'jarvis_overall': ['RAG知识库检索', '结果汇总'],
   'ddl_convert': ['RAG知识库检索', '代码生成'],
   'code_migrate': ['RAG知识库检索', '代码生成'],
   'nl2sql': ['RAG知识库检索', '数据库查询'],
@@ -59,6 +61,7 @@ function backendToUI(agent: any): AgentRow {
     id: agent.id || agent.agent_id,
     name: agent.name || agent.id,
     alias: agent.alias || '',
+    project_dir: agent.project_dir || '',
     uniqueKey: agent.id || agent.agent_id,
     type: (agent.agent_type === '主Agent' || agent.agent_type === '子Agent') ? agent.agent_type : (INTENT_TO_TYPE[intent] || '子Agent'),
     boundKBs: boundKbs,
@@ -114,12 +117,15 @@ export function AgentsPanel({ onNavigate }: { onNavigate?: (tab: string) => void
   // 编辑/新建表单
   const [formName, setFormName] = useState('')
   const [formAlias, setFormAlias] = useState('')
+  const [formProjectDir, setFormProjectDir] = useState('')
   const [formKey, setFormKey] = useState('')
   const [formType, setFormType] = useState<AgentType>('子Agent')
   const [formStatus, setFormStatus] = useState<AgentStatus>('启用')
   const [formDesc, setFormDesc] = useState('')
   const [formPrompt, setFormPrompt] = useState('')
   const [formTools, setFormTools] = useState<string[]>([])
+  const [formBoundKBs, setFormBoundKBs] = useState<string[]>([])
+  const [knowledgeBases, setKnowledgeBases] = useState<KnowledgeBaseInfo[]>([])
 
   // 系统角色提示词（只有 type=system_role 的提示词可选）
   const [systemRolePrompts, setSystemRolePrompts] = useState<Prompt[]>([])
@@ -176,29 +182,42 @@ export function AgentsPanel({ onNavigate }: { onNavigate?: (tab: string) => void
     setFormDesc('')
     setFormPrompt('')
     setFormTools([])
+    setFormBoundKBs([])
     setFormSystemRoleId('')
     setFormError('')
     loadSystemRolePrompts()
+    api.listKbs().then(r => {
+      if (r.success) setKnowledgeBases(r.data || [])
+    }).catch(() => setKnowledgeBases([]))
     setShowCreateModal(true)
   }
 
   const openEditModal = (agent: AgentRow) => {
     setFormName(agent.name)
     setFormAlias(agent.alias || '')
+    setFormProjectDir(agent.project_dir || '')
     setFormKey(agent.uniqueKey)
     setFormType(agent.type)
     setFormStatus(agent.status)
     setFormDesc(agent.description)
     setFormPrompt(agent.prompt)
     setFormTools([...agent.tools])
+    setFormBoundKBs([...agent.boundKBs])
     setFormSystemRoleId(agent.system_role_prompt_id != null ? String(agent.system_role_prompt_id) : '')
     setFormError('')
     loadSystemRolePrompts()
+    api.listKbs().then(r => {
+      if (r.success) setKnowledgeBases(r.data || [])
+    }).catch(() => setKnowledgeBases([]))
     setShowEditModal(agent)
   }
 
   const toggleTool = (tool: string) => {
     setFormTools(prev => prev.includes(tool) ? prev.filter(x => x !== tool) : [...prev, tool])
+  }
+
+  const toggleBoundKB = (name: string) => {
+    setFormBoundKBs(prev => prev.includes(name) ? prev.filter(x => x !== name) : [...prev, name])
   }
 
   const handleSave = async () => {
@@ -216,18 +235,18 @@ export function AgentsPanel({ onNavigate }: { onNavigate?: (tab: string) => void
     }
 
     const agentId = formKey || formName.toLowerCase().replace(/[^a-z0-9_]/g, '_').replace(/\s+/g, '_')
-    const enabled = formStatus === '启用'
-    const payload = {
+    const payload = buildAgentSavePayload({
       name: formName,
       alias: formAlias,
+      projectDir: formProjectDir,
       description: formDesc,
-      default_prompt: formPrompt,
-      enabled,
-      system_role_prompt_id: formSystemRoleId ? Number(formSystemRoleId) : null,
-      // 持久化字段：类型 / 工具权限（bound_kbs 已废弃：知识库按 Space 绑定）
-      agent_type: formType,
+      prompt: formPrompt,
+      enabled: formStatus === '启用',
+      systemRolePromptId: formSystemRoleId,
+      type: formType,
       tools: formTools,
-    }
+      boundKBs: formBoundKBs,
+    })
 
     try {
       if (showEditModal) {
@@ -244,7 +263,8 @@ export function AgentsPanel({ onNavigate }: { onNavigate?: (tab: string) => void
             ? {
                 ...a,
                 name: formName, alias: formAlias, type: formType, status: formStatus, description: formDesc,
-                prompt: formPrompt, tools: formTools,
+                project_dir: formProjectDir.trim(),
+                prompt: formPrompt, tools: formTools, boundKBs: formBoundKBs,
                 system_role_prompt_id: payload.system_role_prompt_id,
                 system_role_name: role?.name ?? null,
                 system_role_enabled: role?.enabled ?? null,
@@ -471,7 +491,12 @@ export function AgentsPanel({ onNavigate }: { onNavigate?: (tab: string) => void
                     </Badge>
                   </td>
                   <td className="px-3 py-2.5">
-                    <span className="text-[11px] text-[#9a9aa4]">按 Space 绑定</span>
+                    <div className="flex flex-wrap gap-1">
+                      {a.boundKBs.map(kb => (
+                        <span key={kb} className="text-[11px] text-[#9a9aa4] bg-[#16161e] px-1.5 py-0.5 rounded">{kb}</span>
+                      ))}
+                      {a.boundKBs.length === 0 && <span className="text-[11px] text-[#3a3a4a]">未绑定</span>}
+                    </div>
                   </td>
                   <td className="px-3 py-2.5">
                     <div className="flex flex-wrap gap-1">
@@ -609,6 +634,16 @@ export function AgentsPanel({ onNavigate }: { onNavigate?: (tab: string) => void
                   />
                 </div>
                 <div>
+                  <label className="text-xs text-[#9a9aa4] block mb-1.5">工程目录</label>
+                  <Input
+                    className="bg-[#1a1a24] border-[#252530] text-[13px] font-mono"
+                    placeholder="该智能体负责的工程代码根目录（绝对路径，可留空）"
+                    value={formProjectDir}
+                    onChange={e => setFormProjectDir(e.target.value)}
+                  />
+                  <div className="text-[11px] text-[#5a5a70] mt-1">配置后该智能体执行任务时会以此目录为工程上下文</div>
+                </div>
+                <div>
                   <label className="text-xs text-[#9a9aa4] block mb-1.5">Agent 唯一标识 *</label>
                   <Input
                     className={cn('bg-[#1a1a24] border-[#252530] text-[13px] font-mono', showEditModal && 'opacity-60 cursor-not-allowed')}
@@ -694,7 +729,7 @@ export function AgentsPanel({ onNavigate }: { onNavigate?: (tab: string) => void
                 onChange={e => setFormPrompt(e.target.value)}
               />
               <div className="text-[11px] text-[#5a5a70] mt-1">
-                {formType === '主Agent' ? '主Agent的Prompt是任务调度、拆解、分发的指令' : '子Agent是专项执行指令'}
+                {formType === '主Agent' ? '可留空；留空时系统按主Agent职责自动生成轻量角色说明' : '可留空；留空时系统按智能体名称和描述生成轻量角色说明'}
               </div>
             </div>
 
@@ -768,15 +803,27 @@ export function AgentsPanel({ onNavigate }: { onNavigate?: (tab: string) => void
               </div>
             </div>
 
-            {/* 知识库归属（按 Space 绑定，Agent 不再直接绑定知识库） */}
+            {/* 知识库归属 */}
             <div className="bg-[#16161e] border border-[#252530] rounded-lg p-4 mb-4">
               <h4 className="text-[13px] font-medium text-[#e4e4e9] mb-3 flex items-center gap-2">
                 <Database className="w-4 h-4 text-indigo-400" />
                 知识库归属
               </h4>
-              <div className="text-[12px] text-[#9a9aa4] leading-relaxed">
-                知识库已改为按空间（Space）绑定：检索时自动限定在当前空间的知识库文档范围内，无需在 Agent 上单独绑定。
-                如需为 Agent 补充知识，请将文档上传/入库到对应空间的知识库。
+              <div className="grid grid-cols-2 gap-2">
+                {knowledgeBases.map(kb => (
+                  <label key={kb.id} className="flex items-center gap-2 cursor-pointer py-1">
+                    <input
+                      type="checkbox"
+                      checked={formBoundKBs.includes(kb.name)}
+                      onChange={() => toggleBoundKB(kb.name)}
+                      className="accent-indigo-500"
+                    />
+                    <span className="text-[13px] text-[#e4e4e9]">{kb.name}</span>
+                  </label>
+                ))}
+                {knowledgeBases.length === 0 && (
+                  <div className="text-[12px] text-[#5a5a70] col-span-2">暂无可选知识库</div>
+                )}
               </div>
             </div>
 

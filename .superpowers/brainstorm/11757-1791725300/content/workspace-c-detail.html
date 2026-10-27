@@ -1,0 +1,143 @@
+<h2>C 方向细化：Agent Review Workspace</h2>
+<p class="subtitle">右侧随当前选中智能体切换；Changes 使用 Git 真实差异，Evidence 使用本会话代码工具痕迹。</p>
+
+<div class="section">
+  <div class="split">
+    <div class="mockup">
+      <div class="mockup-header">order-center · Changes</div>
+      <div class="mockup-body" style="display:flex;flex-direction:column;min-height:360px">
+        <div style="display:flex;align-items:center;gap:6px;padding:10px;border-bottom:1px solid #30363d">
+          <div style="display:flex;gap:4px">
+            <span style="font-size:10px;padding:4px 8px;background:#1f6feb33;color:#79c0ff;border-radius:99px">Changes 3</span>
+            <span style="font-size:10px;padding:4px 8px;background:#161b22;color:#8b949e;border-radius:99px">Project</span>
+            <span style="font-size:10px;padding:4px 8px;background:#161b22;color:#8b949e;border-radius:99px">Evidence 2</span>
+          </div>
+        </div>
+        <div style="padding:8px 10px;border-bottom:1px solid #21262d">
+          <div style="font-size:10px;color:#8b949e">family-order-center</div>
+          <div style="font-size:11px;color:#e6edf3;margin-top:3px;font-family:ui-monospace">feature/gsm-ydkj · 3 changed</div>
+        </div>
+        <div style="flex:1;padding:8px">
+          <div style="background:#111827;border:1px solid #30363d;border-radius:8px;padding:8px;margin-bottom:6px">
+            <div style="display:flex;align-items:center;gap:6px">
+              <span style="font-size:9px;color:#7ee787;background:#7ee7871a;padding:2px 5px;border-radius:4px">M</span>
+              <span style="font-size:11px;color:#e6edf3;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">GsmYdkjOpenConvertHandler.java</span>
+            </div>
+            <div style="font-size:10px;color:#7ee787;margin-top:4px">+42 <span style="color:#ff7b72">-8</span></div>
+          </div>
+          <div style="background:#111827;border:1px solid #30363d;border-radius:8px;padding:8px;margin-bottom:6px">
+            <div style="display:flex;align-items:center;gap:6px">
+              <span style="font-size:9px;color:#a5b4fc;background:#a5b4fc1a;padding:2px 5px;border-radius:4px">A</span>
+              <span style="font-size:11px;color:#e6edf3">SGsmYdkjAcceptRequest.java</span>
+            </div>
+            <div style="font-size:10px;color:#7ee787;margin-top:4px">+36 <span style="color:#ff7b72">-0</span></div>
+          </div>
+          <div style="background:#111827;border:1px solid #30363d;border-radius:8px;padding:8px">
+            <div style="display:flex;align-items:center;gap:6px">
+              <span style="font-size:9px;color:#f0883e;background:#f0883e1a;padding:2px 5px;border-radius:4px">M</span>
+              <span style="font-size:11px;color:#e6edf3">gsm-ydkj-accept.flow.xml</span>
+            </div>
+            <div style="font-size:10px;color:#7ee787;margin-top:4px">+6 <span style="color:#ff7b72">-1</span></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="mockup">
+      <div class="mockup-header">order-center · Project</div>
+      <div class="mockup-body" style="min-height:360px;padding:10px">
+        <div style="display:flex;align-items:center;gap:5px;margin-bottom:10px">
+          <span style="font-size:10px;color:#79c0ff;background:#1f6feb33;padding:4px 7px;border-radius:5px">order-center</span>
+          <span style="font-size:10px;color:#8b949e">/ business / plugin / rboss</span>
+        </div>
+        <div style="background:#111827;border:1px solid #30363d;border-radius:8px;overflow:hidden">
+          <div style="padding:7px 9px;font-size:11px;color:#79c0ff;border-bottom:1px solid #21262d"> broadband/</div>
+          <div style="padding:7px 9px 7px 20px;font-size:11px;color:#e6edf3;background:#161b22;border-bottom:1px solid #21262d">GsmYdkjOpenConvertHandler.java</div>
+          <div style="padding:7px 9px 7px 20px;font-size:11px;color:#8b949e;border-bottom:1px solid #21262d">YdkjOpenConvertHandler.java</div>
+          <div style="padding:7px 9px;font-size:11px;color:#79c0ff"> config/</div>
+        </div>
+        <div style="margin-top:10px;background:#0d1117;border:1px solid #30363d;border-radius:8px;padding:8px">
+          <div style="font-size:10px;color:#8b949e;margin-bottom:5px">GsmYdkjOpenConvertHandler.java</div>
+          <div style="font-family:ui-monospace;font-size:10px;color:#c9d1d9;line-height:1.7">
+            public OrderCustData convertPojo(Object param) {<br>
+            &nbsp;&nbsp;validateGsmCreateParams(params);<br>
+            &nbsp;&nbsp;return buildOrderCustData(params);<br>
+            }
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="section">
+  <div class="mockup">
+    <div class="mockup-header">order-center · Evidence</div>
+    <div class="mockup-body" style="padding:10px">
+      <div style="display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;margin-bottom:10px">
+        <div style="background:#111827;border:1px solid #30363d;border-radius:8px;padding:8px;text-align:center">
+          <div style="font-size:15px;color:#e6edf3">2</div>
+          <div style="font-size:9px;color:#8b949e;margin-top:3px">READ</div>
+        </div>
+        <div style="background:#111827;border:1px solid #30363d;border-radius:8px;padding:8px;text-align:center">
+          <div style="font-size:15px;color:#e6edf3">3</div>
+          <div style="font-size:9px;color:#8b949e;margin-top:3px">SEARCH</div>
+        </div>
+        <div style="background:#111827;border:1px solid #30363d;border-radius:8px;padding:8px;text-align:center">
+          <div style="font-size:15px;color:#e6edf3">1</div>
+          <div style="font-size:9px;color:#8b949e;margin-top:3px">KB</div>
+        </div>
+      </div>
+      <div style="background:#111827;border:1px solid #30363d;border-radius:8px;padding:9px;margin-bottom:6px">
+        <div style="display:flex;align-items:center;gap:6px">
+          <span style="font-size:9px;color:#a5b4fc;background:#a5b4fc1a;padding:2px 5px;border-radius:4px">code_read</span>
+          <span style="font-size:11px;color:#e6edf3">GsmYdkjOpenConvertHandler.java</span>
+        </div>
+        <div style="font-size:10px;color:#8b949e;margin-top:4px">21:17:33 · conv 15</div>
+      </div>
+      <div style="background:#111827;border:1px solid #30363d;border-radius:8px;padding:9px;margin-bottom:6px">
+        <div style="display:flex;align-items:center;gap:6px">
+          <span style="font-size:9px;color:#7ee787;background:#7ee7871a;padding:2px 5px;border-radius:4px">code_search</span>
+          <span style="font-size:11px;color:#e6edf3">移动看家 / 参数转换 / GsmYdkjOpenConvertHandler</span>
+        </div>
+        <div style="font-size:10px;color:#8b949e;margin-top:4px">9 files matched</div>
+      </div>
+      <div style="background:#111827;border:1px solid #30363d;border-radius:8px;padding:9px">
+        <div style="display:flex;align-items:center;gap:6px">
+          <span style="font-size:9px;color:#f0883e;background:#f0883e1a;padding:2px 5px;border-radius:4px">rag_search</span>
+          <span style="font-size:11px;color:#e6edf3">order-center知识库</span>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="section">
+  <h3>交互与数据规则</h3>
+  <div class="cards">
+    <div class="card">
+      <div class="card-body">
+        <h3>Changes</h3>
+        <p>读取当前智能体 project_dir 的 Git working tree。M/A/D/R/U 分色，点击文件看 unified diff；非 Git 工程明确提示，不伪造 diff。</p>
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-body">
+        <h3>Project</h3>
+        <p>按当前智能体绑定工程懒加载目录树；文件只读预览，路径访问强制限制在 project_dir 内。</p>
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-body">
+        <h3>Evidence</h3>
+        <p>从会话 trace 中提取 code_read / code_search / rag_search。读过的是 READ，检索命中是 SEARCH；不会标成 Git 修改。</p>
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-body">
+        <h3>Agent 切换</h3>
+        <p>选中 boot / hall-center / order-center 等智能体时，右侧工作区整体切换到对应 project_dir；未绑定工程显示空状态。</p>
+      </div>
+    </div>
+  </div>
+</div>

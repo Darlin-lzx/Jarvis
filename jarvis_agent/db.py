@@ -503,6 +503,49 @@ class JarvisFlow(Base):
     updated_at: Any = Column(DateTime, default=utcnow, onupdate=utcnow)
 
 
+class AnalysisCenter(Base):
+    """数据分析业务中心（如家庭订单中心），表名规则支持 {table}/{city}/{month} 占位符"""
+    __tablename__ = "analysis_center"
+    id: Any = Column(Integer, primary_key=True)
+    center_code: Any = Column(String(50), unique=True, nullable=False)
+    center_name: Any = Column(String(100), nullable=False)
+    icon: Any = Column(String(50), default="")
+    default_city: Any = Column(String(10), default="574")
+    in_transit_table_rule: Any = Column(String(200), default="{table}_{city}")
+    history_table_rule: Any = Column(String(200), default="{table}_h_{city}_{month}")
+    sort_order: Any = Column(Integer, default=0)
+    enabled: Any = Column(Boolean, default=True)
+
+
+class AnalysisScene(Base):
+    """查询场景（一个中心下的一组级联查询，如订单信息）"""
+    __tablename__ = "analysis_scene"
+    id: Any = Column(Integer, primary_key=True)
+    center_id: Any = Column(Integer, nullable=False, index=True)
+    scene_code: Any = Column(String(50), nullable=False)
+    scene_name: Any = Column(String(100), nullable=False)
+    render_mode: Any = Column(String(50), default="cascade")
+    sort_order: Any = Column(Integer, default=0)
+    enabled: Any = Column(Boolean, default=True)
+
+
+class AnalysisNode(Base):
+    """级联查询节点：根节点按业务主键查，子节点按父节点结果的关联字段 IN 查询"""
+    __tablename__ = "analysis_node"
+    id: Any = Column(Integer, primary_key=True)
+    scene_id: Any = Column(Integer, nullable=False, index=True)
+    node_code: Any = Column(String(50), nullable=False)
+    node_name: Any = Column(String(100), nullable=False)
+    table_name: Any = Column(String(100), nullable=False)
+    query_field: Any = Column(String(100), nullable=False)
+    parent_node_code: Any = Column(String(50), default="", comment="父节点编码，空=根节点")
+    parent_field: Any = Column(String(100), default="", comment="取父节点结果集哪个字段的值做 IN 查询")
+    datasource_name: Any = Column(String(100), nullable=False, comment="Jarvis 数据源名称")
+    color: Any = Column(String(20), default="blue")
+    sort_order: Any = Column(Integer, default=0)
+    enabled: Any = Column(Boolean, default=True)
+
+
 class Database:
     """SQLite/MySQL 连接与建表服务"""
 

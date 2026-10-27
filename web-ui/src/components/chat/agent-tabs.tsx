@@ -10,13 +10,13 @@ import {
 export type AgentTabStatus = 'executing' | 'done' | 'failed' | 'idle'
 
 export const builtinAgentTabs = [
-  { id: 'migration_commander', name: '迁移指挥官', role: '总控智能体', desc: '多 Agent 编排调度', icon: Workflow, color: '#22d3ee', version: 'v1.0.0' },
-  { id: 'migration_assessor', name: '迁移评估', role: '评估智能体', desc: '迁移兼容性评估', icon: ClipboardCheck, color: '#6366f1', version: 'v2.1.0' },
-  { id: 'ddl_converter', name: 'DDL 转换', role: '转换智能体', desc: 'DDL/DML 语法转换', icon: FileText, color: '#8b5cf6', version: 'v1.8.2' },
-  { id: 'code_migrator', name: '代码改造', role: '改造智能体', desc: '代码适配改造', icon: Code2, color: '#a855f7', version: 'v2.0.4' },
-  { id: 'migration_verifier', name: '智能问答', role: '验证/问答智能体', desc: '迁移验证 与 知识问答', icon: MessageSquare, color: '#06b6d4', version: 'v1.6.0' },
-  { id: 'ops_monitor', name: '运维监控', role: '运维智能体', desc: '性能诊断与监控', icon: Monitor, color: '#10b981', version: 'v2.3.0' },
-  { id: 'gov_manager', name: '数据治理', role: '治理智能体', desc: '数据质量与合规', icon: BarChart3, color: '#f59e0b', version: 'v1.9.3' },
+  { id: 'jarvis_commander', name: '贾维斯', role: '总控智能体', desc: '跨工程迭代总调度与多 Agent 编排', icon: Workflow, color: '#22d3ee', version: 'v1.0.0' },
+  { id: 'boot_agent', name: '页面展示', role: '业务域智能体', desc: '前端/布点层诉求梳理（小前）', icon: ClipboardCheck, color: '#6366f1', version: 'v2.1.0' },
+  { id: 'customer_order_agent', name: '下单拆单', role: '业务域智能体', desc: '下单入口与拆单调度规则（小订）', icon: FileText, color: '#8b5cf6', version: 'v1.8.2' },
+  { id: 'family_order_agent', name: '订单受理', role: '业务域智能体', desc: '订单受理与工作流交互（小受）', icon: Code2, color: '#a855f7', version: 'v2.0.4' },
+  { id: 'rule_center_agent', name: '规则配置', role: '业务域智能体', desc: '业务规则与配置分支（小规）', icon: Monitor, color: '#06b6d4', version: 'v1.6.0' },
+  { id: 'customer_center_agent', name: '客户数据', role: '业务域智能体', desc: '客户数据范围与取数逻辑（小客）', icon: BarChart3, color: '#10b981', version: 'v2.3.0' },
+  { id: 'nl2sql_qa', name: '离线问答', role: '问答智能体', desc: '跨工程开发与代码理解知识问答', icon: MessageSquare, color: '#f59e0b', version: 'v1.9.3' },
 ]
 
 // 兼容旧导入路径；别名优先规则集中在 React-free helper，便于测试与复用。
@@ -31,21 +31,21 @@ const DEFAULT_COLORS = ['#22d3ee', '#6366f1', '#8b5cf6', '#a855f7', '#06b6d4', '
 /* ---- 技能分组（单一事实源：welcome-page / composer 共用，共 8 个技能） ---- */
 export const skillGroups = [
   {
-    label: '迁移改造类',
+    label: '跨工程迭代类',
     skills: [
-      { label: '迁移评估', tooltip: '分析源库 Schema，输出国产化迁移评估报告' },
-      { label: 'DDL 转换', tooltip: '将原库 DDL 语法，转换成国产数据库兼容版本' },
-      { label: '代码改造', tooltip: '分析 JDBC/ORM 代码，输出国产库适配改造建议' },
-      { label: '兼容性检查', tooltip: '检查 SQL 语法、数据类型与国产库的兼容性' },
+      { label: '页面展示', tooltip: '梳理前端/布点层诉求，输出页面展示与布点方案' },
+      { label: '下单拆单', tooltip: '梳理下单入口与拆单调度规则，输出代码改动清单' },
+      { label: '订单受理', tooltip: '梳理受理工程与工作流交互，输出代码改动清单' },
+      { label: '规则配置', tooltip: '梳理业务规则与配置分支，输出代码改动清单' },
     ],
   },
   {
-    label: 'SQL & 分析类',
+    label: '代码 & 分析类',
     skills: [
-      { label: '自然语言查数', tooltip: '用自然语言描述需求，自动生成 SQL 查询' },
-      { label: '慢查询分析', tooltip: '上传 SQL，分析慢 SQL 问题并给出优化方案' },
-      { label: '数据质量评估', tooltip: '对数据源做质量评分（非空率/唯一性/空值率）' },
-      { label: 'SQL 优化', tooltip: '分析 SQL 执行计划，给出索引和写法优化建议' },
+      { label: '代码理解', tooltip: '分析接口/调用链/字段，理解跨工程代码结构' },
+      { label: '改动清单生成', tooltip: '根据业务场景生成跨工程代码改动清单' },
+      { label: '客户数据梳理', tooltip: '梳理客户数据范围与取数逻辑' },
+      { label: '离线知识问答', tooltip: '结合离线知识库回答跨工程开发与代码理解问题' },
     ],
   },
 ]

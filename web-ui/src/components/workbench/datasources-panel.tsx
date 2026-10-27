@@ -10,7 +10,7 @@ import { cn } from '@/lib/utils'
 import {
   Search, Plus, Trash2, X, AlertTriangle,
   CheckCircle2, Circle, Loader2, Send,
-  Settings, Zap, Power, Clock, Database, FileSpreadsheet,
+  Settings, Zap, Power, Clock, Database, FileSpreadsheet, Eye, EyeOff,
 } from 'lucide-react'
 
 type TypeFilter = '全部' | 'Oracle' | 'MySQL' | 'PostgreSQL' | 'Excel'
@@ -34,7 +34,7 @@ const emptyForm: DrawerForm = {
   username: '', password: '', timeout: '60', description: '', tags: '',
 }
 
-const DB_KINDS = ['Oracle', 'MySQL', 'PostgreSQL', 'Excel']
+const DB_KINDS = ['Oracle', 'OceanBase', 'MySQL', 'PostgreSQL', 'Excel']
 
 export function DatasourcesPanel() {
   const [datasources, setDatasources] = useState<Datasource[]>([])
@@ -51,12 +51,33 @@ export function DatasourcesPanel() {
   const [formErrors, setFormErrors] = useState<Record<string, string>>({})
   const [saving, setSaving] = useState(false)
   const [testingConn, setTestingConn] = useState(false)
+  const [showPassword, setShowPassword] = useState(false)
   const [testResult, setTestResult] = useState<{ ok: boolean; msg: string } | null>(null)
+  const [testingName, setTestingName] = useState<string | null>(null)
+  // 批量探活：数据源名 → 是否可达（测试期间逐个发起）
+  const [healthMap, setHealthMap] = useState<Record<string, boolean>>({})
+  const [healthRunning, setHealthRunning] = useState(false)
   const [excelFile, setExcelFile] = useState<File | null>(null)
   const [excelFileName, setExcelFileName] = useState('')
 
   // Delete confirm
   const [deleteTarget, setDeleteTarget] = useState<Datasource | null>(null)
+
+  /** 全部测试：逐个调用测试接口，结果写入 healthMap（表格里显示 ●通/●不通） */
+  async function testAll() {
+    if (healthRunning) return
+    setHealthRunning(true)
+    setHealthMap({})
+    for (const item of datasources) {
+      try {
+        const r = await api.testDatasource(item.name)
+        setHealthMap(map => ({ ...map, [item.name]: !!r.success && !!r.data?.ok }))
+      } catch {
+        setHealthMap(map => ({ ...map, [item.name]: false }))
+      }
+    }
+    setHealthRunning(false)
+  }
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -97,15 +118,17 @@ export function DatasourcesPanel() {
   const openEdit = (ds: Datasource) => {
     setEditingDs(ds)
     const isExcel = ds.kind === 'excel'
-    const [host, port] = isExcel ? [] : (ds.location || '').split(':')
+    // location 格式 host:port/database，库名回填到「服务名/数据库名」
+    const [hostPort = '', database = ''] = isExcel ? [] : (ds.location || '').split('/')
+    const [host, port] = hostPort.split(':')
     setForm({
       name: ds.name,
-      kind: isExcel ? 'Excel' : ds.kind,
+      kind: isExcel ? 'Excel' : (DB_KINDS.find(item => item.toLowerCase() === ds.kind) || 'Oracle'),
       host: host || '',
       port: port || '',
-      database: '',
+      database,
       username: ds.username || '',
-      password: '',
+      password: ds.password || '',
       timeout: String(ds.timeout || 60),
       description: ds.description || '',
       tags: (ds.tags || []).join(', '),
@@ -167,7 +190,8 @@ export function DatasourcesPanel() {
     if (Object.keys(errors).length > 0) return
 
     setSaving(true)
-    const location = form.port ? `${form.host}:${form.port}` : form.host
+    const base = form.port ? `${form.host}:${form.port}` : form.host
+    const location = form.database.trim() ? `${base}/${form.database.trim()}` : base
     const payload = {
       name: form.name.trim(),
       kind: form.kind.toLowerCase(),
@@ -204,9 +228,10 @@ export function DatasourcesPanel() {
     setTestResult(null)
     const r = await api.testDatasource(editingDs.name)
     setTestingConn(false)
-    setTestResult(r.success
-      ? { ok: true, msg: JSON.stringify(r.data, null, 2) || '连接成功' }
-      : { ok: false, msg: r.detail || '连接失败' }
+    const data = r.data
+    setTestResult(r.success && data?.ok
+      ? { ok: true, msg: data?.message || '连接成功' }
+      : { ok: false, msg: data?.message || r.error || r.detail || '连接失败' }
     )
   }
 
@@ -274,6 +299,9 @@ export function DatasourcesPanel() {
       {/* ---- 顶部标题栏 ---- */}
       <div className="flex items-center justify-between mb-4">
         <h2 className="text-[15px] font-semibold text-[#e4e4e9]">数据源</h2>
+        <Button variant="outline" className="h-8 text-[12px]" disabled={healthRunning} onClick={() => void testAll()}>
+          {healthRunning ? '巡检中…' : '全部测试'}
+        </Button>
         <Button className="h-8 text-[12px] bg-gradient-to-br from-[#5b7cfa] to-[#7a5bfa] text-white hover:opacity-90" onClick={openAdd}>
           <Plus className="w-3.5 h-3.5 mr-1" />
           新增数据源
@@ -364,20 +392,34 @@ export function DatasourcesPanel() {
                   </Badge>
                   <span className="text-[12px] text-[#5a5a70] font-mono">{ds.location}</span>
                   {getStatusBadge(ds)}
+                  {healthMap[ds.name] !== undefined && (
+                    <span className={cn('rounded border px-1.5 py-0.5 text-[10px]',
+                      healthMap[ds.name]
+                        ? 'border-emerald-500/40 bg-emerald-500/10 text-emerald-300'
+                        : 'border-red-500/40 bg-red-500/10 text-red-300')}>
+                      {healthMap[ds.name] ? '● 连通' : '● 不通'}
+                    </span>
+                  )}
                 </div>
                 <div className="flex items-center gap-1">
                   <Button size="sm" variant="ghost" className="h-7 text-[11px] text-[#9a9aa4] hover:text-[#cdd3e0]" onClick={() => openEdit(ds)}>
                     <Settings className="w-3 h-3 mr-1" />配置
                   </Button>
-                  <Button size="sm" variant="ghost" className="h-7 text-[11px] text-[#9a9aa4] hover:text-[#cdd3e0]" onClick={async () => {
+                  <Button size="sm" variant="ghost" className="h-7 text-[11px] text-[#9a9aa4] hover:text-[#cdd3e0]" disabled={testingName === ds.name} onClick={async () => {
                     setTestResult(null)
-                    const r = await api.testDatasource(ds.name)
-                    setTestResult(r.success
-                      ? { ok: true, msg: '可达' }
-                      : { ok: false, msg: r.detail || '不可达' }
-                    )
+                    setTestingName(ds.name)
+                    try {
+                      const r = await api.testDatasource(ds.name)
+                      const data = r.data
+                      setTestResult(r.success && data?.ok
+                        ? { ok: true, msg: data?.message || '可达' }
+                        : { ok: false, msg: data?.message || r.error || r.detail || '不可达' }
+                      )
+                    } finally {
+                      setTestingName(null)
+                    }
                   }}>
-                    <Zap className="w-3 h-3 mr-1" />测试连接
+                    <Zap className="w-3 h-3 mr-1" />{testingName === ds.name ? '测试中...' : '测试连接'}
                   </Button>
                   <Button size="sm" variant="ghost" className={cn('h-7 text-[11px]', ds.enabled ? 'text-yellow-400 hover:text-yellow-300' : 'text-green-400 hover:text-green-300')} onClick={() => handleToggle(ds)}>
                     <Power className="w-3 h-3 mr-1" />{ds.enabled ? '停用' : '启用'}
@@ -548,17 +590,27 @@ export function DatasourcesPanel() {
               </div>
               )}
 
-              {/* 密码（非 Excel） */}
+              {/* 密码（非 Excel）：编辑时留空表示不修改已存密码 */}
               {form.kind !== 'Excel' && (
               <div>
                 <label className="text-[11px] text-[#8b8b9e] mb-1 block">密码</label>
-                <Input
-                  className="h-8 text-[12px] bg-[#16161e] border border-[#252530] placeholder:text-[#4a4a5a]"
-                  type="password"
-                  placeholder="password"
-                  value={form.password}
-                  onChange={e => setForm({ ...form, password: e.target.value })}
-                />
+                <div className="relative">
+                  <Input
+                    className="h-8 text-[12px] bg-[#16161e] border border-[#252530] placeholder:text-[#4a4a5a] pr-9"
+                    type={showPassword ? 'text' : 'password'}
+                    placeholder="password"
+                    value={form.password}
+                    onChange={e => setForm({ ...form, password: e.target.value })}
+                  />
+                  <button
+                    type="button"
+                    className="absolute right-2 top-1/2 -translate-y-1/2 text-[#5a5a70] hover:text-[#cdd3e0]"
+                    title={showPassword ? '隐藏密码' : '显示密码'}
+                    onClick={() => setShowPassword(value => !value)}
+                  >
+                    {showPassword ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+                  </button>
+                </div>
               </div>
               )}
 

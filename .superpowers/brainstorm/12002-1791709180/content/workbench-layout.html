@@ -1,0 +1,99 @@
+<h2>贾维斯工作台：选一个主布局方向</h2>
+<p class="subtitle">目标：像“指挥中枢”，但不牺牲数据库迁移场景里的执行效率。</p>
+
+<style>
+  .wb-frame{width:100%;aspect-ratio:16/10;background:#08090d;border:1px solid #232633;border-radius:10px;overflow:hidden;display:flex;color:#dce2ec;font-size:8px;line-height:1.25}
+  .wb-side{width:22%;background:#0d0f16;border-right:1px solid #20242f;padding:8px;display:flex;flex-direction:column;gap:6px}
+  .wb-main{flex:1;padding:8px;display:flex;flex-direction:column;gap:7px;min-width:0}
+  .wb-right{width:28%;background:#0c0e14;border-left:1px solid #20242f;padding:8px;display:flex;flex-direction:column;gap:6px}
+  .wb-top{height:16px;border-radius:5px;background:linear-gradient(90deg,rgba(56,189,248,.16),rgba(124,58,237,.10));border:1px solid #243044;display:flex;align-items:center;padding:0 6px;color:#7dd3fc;letter-spacing:.06em}
+  .wb-panel{background:#11131c;border:1px solid #232735;border-radius:6px;padding:6px;min-height:0}
+  .wb-label{font-size:6px;color:#7c8496;text-transform:uppercase;letter-spacing:.08em;margin-bottom:4px}
+  .wb-bar{height:4px;border-radius:99px;background:#242a36;margin:3px 0}
+  .wb-chip{display:inline-flex;align-items:center;gap:2px;border:1px solid #263141;border-radius:99px;padding:1px 4px;color:#7dd3fc;background:#0d1622}
+  .wb-metric{display:grid;grid-template-columns:repeat(3,1fr);gap:4px}
+  .wb-dot{width:4px;height:4px;border-radius:50%;background:#22c55e;display:inline-block;margin-right:3px}
+  .wb-grid2{display:grid;grid-template-columns:1.3fr .7fr;gap:7px;flex:1;min-height:0}
+  .wb-grid4{display:grid;grid-template-columns:repeat(2,1fr);gap:7px;flex:1;min-height:0}
+  .wb-console{flex:1;background:#0a0c12;border:1px solid #1f2531;border-radius:6px;padding:7px;display:flex;flex-direction:column;gap:5px}
+  .wb-msg{max-width:78%;border-radius:6px;padding:4px 5px;background:#161b26;border:1px solid #272d3b}
+  .wb-msg.ai{background:#101c26;border-color:#224454;color:#bfe8f8}
+  .wb-action{display:flex;align-items:center;gap:3px;color:#94a3b8}
+  .wb-action b{color:#e2e8f0;font-weight:600}
+</style>
+
+<div class="options">
+  <div class="option" data-choice="command-cockpit" onclick="toggleSelect(this)">
+    <div class="letter">A</div>
+    <div class="content">
+      <h3>指挥舱布局 · 推荐</h3>
+      <p>左侧是任务/智能体编队，中央是贾维斯对话与执行控制台，右侧是系统状态、知识上下文和产物。信息分层最完整。</p>
+      <div class="wb-frame">
+        <div class="wb-side">
+          <div class="wb-label">Mission</div>
+          <div class="wb-panel"><b>国产库迁移</b><div class="wb-bar" style="background:#22c55e;width:72%"></div>7/10 nodes</div>
+          <div class="wb-label">Agents</div>
+          <div class="wb-panel"><span class="wb-dot"></span>boot · 待命<br><span class="wb-dot" style="background:#f59e0b"></span>hall-center · 执行<br><span class="wb-dot"></span>rule-center · 待命</div>
+          <div class="wb-panel" style="flex:1">Projects<br><div class="wb-bar"></div><div class="wb-bar"></div><div class="wb-bar"></div></div>
+        </div>
+        <div class="wb-main">
+          <div class="wb-top">JARVIS · OPERATIONAL</div>
+          <div class="wb-metric">
+            <div class="wb-panel">执行中 3</div><div class="wb-panel">产物 28</div><div class="wb-panel">风险 1</div>
+          </div>
+          <div class="wb-console">
+            <div class="wb-msg ai">已完成 DDL 兼容性扫描，发现 3 个存储过程需要转换。</div>
+            <div class="wb-msg">继续处理，指定 rule-center 复核规则。</div>
+            <div class="wb-msg ai">已分派 rule-center，预计产出：兼容性报告。</div>
+            <div class="wb-action">▶ 指定执行 <b>order-center</b> · 绑定知识库 · 生成产物</div>
+          </div>
+        </div>
+        <div class="wb-right">
+          <div class="wb-label">System</div>
+          <div class="wb-panel">GLM-5.3 · Online<br>LLM latency 0.8s</div>
+          <div class="wb-label">Knowledge</div>
+          <div class="wb-panel">boot知识库 · 12<br>rule-center知识库 · 31</div>
+          <div class="wb-panel" style="flex:1">Recent Artifacts<br><div class="wb-bar"></div><div class="wb-bar"></div><div class="wb-bar"></div></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="option" data-choice="operations-grid" onclick="toggleSelect(this)">
+    <div class="letter">B</div>
+    <div class="content">
+      <h3>作战面板布局</h3>
+      <p>顶部是全局态势，下方四宫格分别承载任务、智能体、知识库和产物。适合一次监控多个迁移任务。</p>
+      <div class="wb-frame">
+        <div class="wb-main" style="width:100%">
+          <div class="wb-top">GLOBAL STATUS · 3 RUNNING · 1 REVIEW</div>
+          <div class="wb-grid4">
+            <div class="wb-panel"><div class="wb-label">Active Tasks</div>数据库迁移<br><div class="wb-bar" style="background:#38bdf8;width:64%"></div></div>
+            <div class="wb-panel"><div class="wb-label">Agent Fleet</div>boot / hall / order / rule / cust</div>
+            <div class="wb-panel"><div class="wb-label">Knowledge</div>5 isolated KBs · 68 docs</div>
+            <div class="wb-panel"><div class="wb-label">Artifacts</div>DDL报告 · 兼容清单 · 迁移方案</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="option" data-choice="conversation-first" onclick="toggleSelect(this)">
+    <div class="letter">C</div>
+    <div class="content">
+      <h3>对话优先布局</h3>
+      <p>贾维斯对话占据主视图，任务、智能体和知识库以轻量侧栏悬浮呈现。最安静，适合以自然语言驱动为主。</p>
+      <div class="wb-frame">
+        <div class="wb-main" style="width:100%;flex-direction:row">
+          <div class="wb-side" style="width:18%">Context<br><span class="wb-chip">rule-center</span></div>
+          <div class="wb-console" style="flex:1">
+            <div class="wb-msg ai">贾维斯在线，请下达任务。</div>
+            <div class="wb-msg">把 Oracle 订单模块迁移到达梦。</div>
+            <div class="wb-msg ai">正在建立执行计划。</div>
+          </div>
+          <div class="wb-right" style="width:20%">Status<br><div class="wb-bar"></div><div class="wb-bar"></div></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>

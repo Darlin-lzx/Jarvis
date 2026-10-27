@@ -386,9 +386,9 @@ export function SpaceDetailPage({ space, onNewTask, onOpenTask, onOpenSub }: {
     status: '成功' as const,
     time: fmtTime(a.created_at),
   }))
-  const migrationSegments = [
-    { label: '待评估', value: realTasks.filter(t => t.status === 'pending' || t.status === 'paused').length, color: '#6a6a7a' },
-    { label: '转换中', value: realTasks.filter(t => t.status === 'running').length, color: '#f59e0b' },
+  const taskSegments = [
+    { label: '待处理', value: realTasks.filter(t => t.status === 'pending' || t.status === 'paused').length, color: '#6a6a7a' },
+    { label: '进行中', value: realTasks.filter(t => t.status === 'running').length, color: '#f59e0b' },
     { label: '已完成', value: realTasks.filter(t => t.status === 'done').length, color: '#5b7cfa' },
     { label: '失败', value: realTasks.filter(t => t.status === 'failed').length, color: '#ef4444' },
   ]
@@ -530,15 +530,15 @@ export function SpaceDetailPage({ space, onNewTask, onOpenTask, onOpenSub }: {
             <div className="text-[11px] text-[#5a5a70] mt-2.5">点击子系统卡片进入资源列表</div>
           </div>
 
-          {/* 项目迁移进度 */}
+          {/* 项目任务进度 */}
           <div className="rounded-xl border border-[#252530] bg-[#1d1d22] p-4">
             <div className="flex items-center gap-1.5 text-[13px] font-semibold text-[#e4e4e9] mb-3">
-              <RefreshCw className="w-4 h-4 text-cyan-400" />项目迁移进度概览
+              <RefreshCw className="w-4 h-4 text-cyan-400" />项目任务进度概览
             </div>
-            <RingChart segments={migrationSegments} />
+            <RingChart segments={taskSegments} />
             <div className="flex items-center gap-4 text-[11px] text-[#5a5a70] mt-3 pt-3 border-t border-[#252530]">
-              <span className="inline-flex items-center gap-1"><CheckCircle2 className="w-3 h-3 text-indigo-400" />迁移评估</span>
-              <span className="inline-flex items-center gap-1"><Circle className="w-3 h-3 text-amber-400" />DDL 转换</span>
+              <span className="inline-flex items-center gap-1"><CheckCircle2 className="w-3 h-3 text-indigo-400" />页面展示</span>
+              <span className="inline-flex items-center gap-1"><Circle className="w-3 h-3 text-amber-400" />进行中</span>
               <span className="inline-flex items-center gap-1"><Clock className="w-3 h-3 text-[#6a6a7a]" />SQL 优化</span>
             </div>
           </div>
@@ -833,11 +833,12 @@ function MetricMini({ label, value, icon: Icon, tint }: { label: string; value: 
 
 /* ---- 设置抽屉 ---- */
 function SettingsDrawer({ space, tab, setTab, onClose, onSave, metrics, members,
-  realSpaceId, enabledAgents, onSaveAgents, }: {
+  realSpaceId, enabledAgents, onSaveAgents, onDeleted, }: {
   space: SpaceInfo; tab: string; setTab: (t: '基础' | '成员' | '统计' | '智能体' | '高级') => void; onClose: () => void
   onSave: (name: string, desc: string, tags: string[], owner: string) => void
   metrics: MetricDef[]; members: string[]
   realSpaceId?: number | null; enabledAgents?: string[]; onSaveAgents?: (ids: string[]) => void
+  onDeleted?: () => void
 }) {
   const [name, setName] = useState(space.name)
   const [desc, setDesc] = useState(space.description)
@@ -965,7 +966,16 @@ function SettingsDrawer({ space, tab, setTab, onClose, onSave, metrics, members,
                 <span className="flex-1 text-left">归档空间<span className="text-[10px] text-[#5a5a70] block">归档后空间不可编辑，可随时恢复</span></span>
                 <ChevronRight className="w-3 h-3 text-[#3a3a4a]" />
               </button>
-              <button className="w-full flex items-center gap-2.5 p-3 rounded-lg bg-[#16161e] border border-[#252530] text-[12px] text-[#cdd3e0] hover:border-red-500/30 transition-colors">
+              <button className="w-full flex items-center gap-2.5 p-3 rounded-lg bg-[#16161e] border border-[#252530] text-[12px] text-[#cdd3e0] hover:border-red-500/30 transition-colors"
+                onClick={async () => {
+                  if (realSpaceId == null) { window.alert('演示空间无需删除'); return }
+                  if (!window.confirm(`确定删除空间「${space.name}」？删除后不可恢复。`)) return
+                  try {
+                    const r = await api.deleteSpace(realSpaceId)
+                    if (r.success) { onClose(); onDeleted?.() }
+                    else window.alert('删除失败，请稍后重试')
+                  } catch { window.alert('删除失败，请稍后重试') }
+                }}>
                 <Trash className="w-4 h-4 text-red-400" />
                 <span className="flex-1 text-left">删除空间<span className="text-[10px] text-[#5a5a70] block">删除后不可恢复，将清空本空间所有资源</span></span>
                 <ChevronRight className="w-3 h-3 text-[#3a3a4a]" />

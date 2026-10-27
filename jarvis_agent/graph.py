@@ -1319,6 +1319,7 @@ class GraphRuntime:
             f"当前智能体绑定的工程目录：{project_dir}。\n"
             "只要问题涉及代码定位、类名、组件、方法、接口、流程、字段、配置或改动方案，"
             "必须先调用 code_search 检索工程，再用 code_read 阅读命中的文件；"
+            "回答中的文件位置必须写成“path:line”，例如 Handler.java:38，方便用户跳转到对应代码行。"
             "不能只凭业务语义、命名习惯或记忆推断类名、文件路径和内部逻辑。\n"
             "知识库结果只能作为背景线索；工程代码结论必须以 code_read 返回的内容为准。"
             "如果检索无命中，明确说明无命中，不要编造文件。"
@@ -1508,12 +1509,16 @@ class GraphRuntime:
             content = candidate.read_text(encoding="utf-8", errors="replace")
         except OSError as exc:
             return {"ok": False, "error": f"读取失败: {exc}"}
+        numbered_content = '\n'.join(
+            f'{line_no}: {line}'
+            for line_no, line in enumerate(content.splitlines(), 1)
+        )
         max_chars = 20000
-        truncated = len(content) > max_chars
+        truncated = len(numbered_content) > max_chars
         return {
             "ok": True,
             "path": candidate.relative_to(root).as_posix(),
-            "content": content[:max_chars],
+            "content": numbered_content[:max_chars],
             "truncated": truncated,
         }
 

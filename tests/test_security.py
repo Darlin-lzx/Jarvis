@@ -3,8 +3,8 @@ import time
 
 import pytest
 
-from db_loc_agent.db import Database, SecurityLog
-from db_loc_agent.security import SecurityGateway
+from jarvis_agent.db import Database, SecurityLog
+from jarvis_agent.security import SecurityGateway
 
 
 def test_auth_allowed_when_key_empty():
@@ -64,7 +64,7 @@ def test_audit_disabled(tmp_path):
 def test_sql_audit_via_dbtools(tmp_path):
     """DbTools 只读查询经 audit 回调记录 SQL 与拦截写语句"""
     import sqlite3
-    from db_loc_agent.db_tools import DbTools
+    from jarvis_agent.db_tools import DbTools
     db = Database(str(tmp_path / "t.db"))
     db_file = tmp_path / "x.db"
     sqlite3.connect(str(db_file)).close()  # 只读模式要求文件存在

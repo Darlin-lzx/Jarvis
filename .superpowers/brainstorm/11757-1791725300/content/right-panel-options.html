@@ -1,0 +1,97 @@
+<h2>会话右侧工作区：你更倾向哪种 Codex 结构？</h2>
+<p class="subtitle">共同点：右侧跟随当前选中的智能体，显示它的工程路径、变更文件、只读代码预览。</p>
+
+<div class="options">
+  <div class="option" data-choice="a" onclick="toggleSelect(this)">
+    <div class="letter">A</div>
+    <div class="content">
+      <h3>Codex Files 风格：变更优先</h3>
+      <p>默认展示本轮修改/引用的文件，顶部小型工程上下文；点击文件进入侧边内嵌预览。工程树收进二级抽屉。</p>
+      <div class="mockup" style="margin-top:14px">
+        <div class="mockup-header">order-center · /IdeaProjects/asiainfo/order-center</div>
+        <div class="mockup-body" style="display:grid;grid-template-columns:150px 1fr;min-height:240px">
+          <div style="border-right:1px solid #333;padding:10px">
+            <div class="label" style="color:#7dd3fc;margin-bottom:8px">CHANGES</div>
+            <div style="font-size:11px;color:#c9d1d9;background:#161b22;border-radius:6px;padding:6px;margin-bottom:6px">GsmYdkjOpenConvertHandler.java</div>
+            <div style="font-size:11px;color:#8b949e;padding:6px">SGsmYdkjRequestParams.java</div>
+            <div style="font-size:11px;color:#8b949e;padding:6px">order-accept.flow.xml</div>
+            <div class="label" style="color:#a5b4fc;margin:12px 0 6px">PROJECT</div>
+            <div style="font-size:11px;color:#8b949e">打开工程树 →</div>
+          </div>
+          <div style="padding:10px;background:#0b0f14">
+            <div style="font-size:10px;color:#7ee787;margin-bottom:6px">modified · +42 / -8</div>
+            <div style="font-family:ui-monospace;font-size:10px;line-height:1.6;color:#c9d1d9;background:#111827;border-radius:6px;padding:8px">
+              - public OrderCustData convert(Object param) {<br>
+              + public OrderCustData convertPojo(Object param) {<br>
+              + &nbsp;&nbsp;validateGsmCreateParams(params);<br>
+              + &nbsp;&nbsp;buildDeviceOrdBusiData(deviceList);<br>
+              &nbsp;&nbsp;return builder.build();
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="option" data-choice="b" onclick="toggleSelect(this)">
+    <div class="letter">B</div>
+    <div class="content">
+      <h3>IDE Workspace 风格：文件树优先</h3>
+      <p>默认打开当前智能体的工程目录树，变更文件用彩色角标置顶。更像 IDE，但聊天主区域会被强工程感挤压。</p>
+      <div class="mockup" style="margin-top:14px">
+        <div class="mockup-header">PROJECT · order-center</div>
+        <div class="mockup-body" style="display:grid;grid-template-columns:170px 1fr;min-height:240px">
+          <div style="border-right:1px solid #333;padding:10px;font-size:11px;color:#c9d1d9">
+            <div style="color:#f0883e;background:#f0883e1a;border-radius:5px;padding:5px;margin-bottom:4px">▾ aiorder-parent</div>
+            <div style="padding-left:12px;color:#8b949e">▾ business</div>
+            <div style="padding-left:24px;color:#c9d1d9">▾ plugin / rboss</div>
+            <div style="padding-left:36px;background:#161b22;border-radius:5px;padding:4px 6px">GsmYdkj...java ●</div>
+            <div style="padding-left:36px;color:#8b949e">YdkjOpen...java</div>
+            <div style="padding-left:24px;color:#8b949e">▾ flow</div>
+            <div style="padding-left:36px;color:#f0883e">order-accept.flow.xml ●</div>
+          </div>
+          <div style="padding:10px;background:#0b0f14">
+            <div style="font-size:11px;color:#e6edf3;margin-bottom:8px">GsmYdkjOpenConvertHandler.java</div>
+            <div style="height:8px;background:#21262d;border-radius:4px;margin-bottom:6px;width:82%"></div>
+            <div style="height:8px;background:#21262d;border-radius:4px;margin-bottom:6px;width:68%"></div>
+            <div style="height:8px;background:#1f6feb33;border-radius:4px;margin-bottom:6px;width:74%"></div>
+            <div style="height:8px;background:#21262d;border-radius:4px;width:58%"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="option" data-choice="c" onclick="toggleSelect(this)">
+    <div class="letter">C</div>
+    <div class="content">
+      <h3>Agent Review 风格：证据 + 变更一体</h3>
+      <p>右侧分 Changes / Project / Evidence 三页。Changes 看改动，Project 浏览工程，Evidence 看智能体为什么引用这个文件。信息最完整，复杂度也最高。</p>
+      <div class="mockup" style="margin-top:14px">
+        <div class="mockup-header">order-center · Changes | Project | Evidence</div>
+        <div class="mockup-body" style="min-height:240px;padding:10px;background:#0b0f14">
+          <div style="display:flex;gap:6px;margin-bottom:10px">
+            <div style="font-size:10px;padding:4px 8px;background:#1f6feb33;color:#79c0ff;border-radius:99px">Changes 3</div>
+            <div style="font-size:10px;padding:4px 8px;background:#161b22;color:#8b949e;border-radius:99px">Project</div>
+            <div style="font-size:10px;padding:4px 8px;background:#161b22;color:#8b949e;border-radius:99px">Evidence</div>
+          </div>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
+            <div style="background:#111827;border-radius:8px;padding:8px">
+              <div style="font-size:10px;color:#7ee787">modified</div>
+              <div style="font-size:11px;color:#e6edf3;margin-top:4px">GsmYdkjOpenConvertHandler.java</div>
+              <div style="font-size:10px;color:#8b949e;margin-top:3px">order-center · +42 / -8</div>
+            </div>
+            <div style="background:#111827;border-radius:8px;padding:8px">
+              <div style="font-size:10px;color:#a5b4fc">evidence</div>
+              <div style="font-size:10px;color:#c9d1d9;margin-top:5px;line-height:1.5">code_read 命中：GSM 手机受理移动看家参数转换组件</div>
+            </div>
+          </div>
+          <div style="margin-top:8px;background:#111827;border-radius:8px;padding:8px">
+            <div style="font-size:10px;color:#7ee787">modified</div>
+            <div style="font-size:11px;color:#e6edf3;margin-top:4px">order-accept.flow.xml</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>

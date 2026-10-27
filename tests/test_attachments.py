@@ -5,9 +5,9 @@ import json
 import pytest
 from fastapi.testclient import TestClient
 
-from db_loc_agent import app as app_module
-from db_loc_agent.app import create_app
-from db_loc_agent.attachments import extract_text
+from jarvis_agent import app as app_module
+from jarvis_agent.app import create_app
+from jarvis_agent.attachments import extract_text
 
 
 class FakeEmbedding:
@@ -29,8 +29,8 @@ def _client(tmp_path, with_seed=False):
         embedding_function=FakeEmbedding(),
     )
     if with_seed:
-        from db_loc_agent.bootstrap import bootstrap
-        from db_loc_agent.db import Database
+        from jarvis_agent.bootstrap import bootstrap
+        from jarvis_agent.db import Database
         bootstrap(Database(db_path))
     return TestClient(application)
 
@@ -206,7 +206,7 @@ def test_upload_attachments_no_files(tmp_path):
 
 
 def test_upload_attachments_auto_import(tmp_path):
-    from db_loc_agent.db import Database, Space
+    from jarvis_agent.db import Database, Space
     db = Database(str(tmp_path / "t.db"))
     with db.session() as s:
         sp = Space(name="测试空间", description="", kb_ids="[]", members="[]")
@@ -231,7 +231,7 @@ def test_upload_attachments_auto_import(tmp_path):
 # ---------- GET /api/kg/entities ----------
 
 def test_kg_entities_api(tmp_path):
-    from db_loc_agent.db import Database, KGEntity
+    from jarvis_agent.db import Database, KGEntity
     c = _client(tmp_path)
     assert c.get("/api/kg/entities").json()["success"] is True
     # 空库返回空列表

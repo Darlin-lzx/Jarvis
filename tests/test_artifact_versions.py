@@ -2,8 +2,8 @@ import pytest
 
 
 def _service(tmp_path):
-    from db_loc_agent.artifacts import ArtifactService
-    from db_loc_agent.db import Database
+    from jarvis_agent.artifacts import ArtifactService
+    from jarvis_agent.db import Database
 
     return ArtifactService(
         Database(str(tmp_path / "t.db")), str(tmp_path / "artifacts")

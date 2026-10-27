@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
+import { getToken } from '@/lib/api'
 import type {
   MigrateStateEventFrame,
   MigrateStateSnapshot,
@@ -7,7 +8,9 @@ import type {
 
 function migrateSocketUrl(taskId: number): string {
   const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
-  return `${protocol}//${window.location.host}/ws/migrate/${taskId}`
+  const token = getToken()
+  const query = token ? `?token=${encodeURIComponent(token)}` : ''
+  return `${protocol}//${window.location.host}/ws/jarvis/${taskId}${query}`
 }
 
 export function useMigrateStateSocket(

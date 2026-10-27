@@ -1,0 +1,87 @@
+<h2>工作流节点视觉层级</h2>
+<p class="subtitle">三种方案都保留原始 XML 坐标，只改变节点形态和视觉权重。点击选择你偏好的方案。</p>
+
+<style>
+  .style-cards { display: grid; grid-template-columns: repeat(1, minmax(0, 1fr)); gap: 18px; }
+  @media (min-width: 1100px) { .style-cards { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
+  .style-card { border-radius: 12px; border: 1px solid #333; background: #111; overflow: hidden; }
+  .style-card.selected { border-color: #818cf8; box-shadow: 0 0 0 2px rgba(129,140,248,.22); }
+  .style-preview { background: #08080d; padding: 10px; }
+  .style-copy { padding: 14px 16px 18px; }
+  .style-copy h3 { margin: 0 0 6px; font-size: 15px; }
+  .style-copy p { margin: 0; color: #9c9cad; font-size: 12px; line-height: 1.6; }
+  .svg-grid { width: 100%; height: 300px; display: block; }
+  .edge { fill: none; stroke: #4c5462; stroke-width: 1.5; }
+  .label { font-size: 9px; fill: #d8dbe4; font-family: sans-serif; }
+  .muted-label { font-size: 8px; fill: #9aa0ad; font-family: sans-serif; }
+  .legend { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+  .legend span { font-size: 10px; color: #a9adbb; border: 1px solid #333; padding: 3px 7px; border-radius: 999px; }
+</style>
+
+<div class="cards style-cards">
+  <div class="card style-card" data-choice="a-weight" onclick="toggleSelect(this)">
+    <div class="style-preview">
+      <svg class="svg-grid" viewBox="0 0 360 300" role="img" aria-label="方案A">
+        <defs><marker id="a-arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0 0L8 4L0 8z" fill="#6b7280"></path></marker></defs>
+        <path class="edge" d="M60 42L60 80L150 80L150 116" marker-end="url(#a-arrow)"></path>
+        <path class="edge" d="M150 156L150 194L95 194L95 228" marker-end="url(#a-arrow)"></path>
+        <path class="edge" d="M150 156L150 194L220 194L220 228" marker-end="url(#a-arrow)"></path>
+        <path class="edge" d="M95 268L95 280L330 280L330 72L277 72" marker-end="url(#a-arrow)"></path>
+        <circle cx="60" cy="27" r="15" fill="#123b2b" stroke="#34d399" stroke-width="2"></circle><text x="60" y="58" text-anchor="middle" class="muted-label">开始</text>
+        <polygon points="150,96 196,126 150,156 104,126" fill="#1a1523" stroke="#f472b6" stroke-width="1.2" stroke-dasharray="5 4" opacity=".78"></polygon><text x="150" y="129" text-anchor="middle" class="muted-label">条件判断</text>
+        <rect x="35" y="228" width="120" height="40" rx="6" fill="#1b2140" stroke="#6366f1" stroke-width="2"></rect><text x="95" y="251" text-anchor="middle" class="label">核心服务</text>
+        <rect x="170" y="228" width="100" height="40" rx="6" fill="#123338" stroke="#14b8a6" stroke-width="2"></rect><text x="220" y="251" text-anchor="middle" class="label">Shell</text>
+        <rect x="257" y="52" width="80" height="40" rx="6" fill="#272733" stroke="#8b8b9e" stroke-width="1.6"></rect><text x="297" y="75" text-anchor="middle" class="muted-label">完成</text>
+      </svg>
+    </div>
+    <div class="style-copy">
+      <h3>A. 权重分层</h3>
+      <p>核心服务和 Shell 保持实色、粗边框；条件判断用虚线、低饱和菱形，明显退到次要层级。最容易突出主流程。</p>
+      <div class="legend"><span>核心：实色粗边</span><span>判断：虚线菱形</span><span>结束：灰色</span></div>
+    </div>
+  </div>
+
+  <div class="card style-card" data-choice="b-shape" onclick="toggleSelect(this)">
+    <div class="style-preview">
+      <svg class="svg-grid" viewBox="0 0 360 300" role="img" aria-label="方案B">
+        <defs><marker id="b-arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0 0L8 4L0 8z" fill="#6b7280"></path></marker></defs>
+        <path class="edge" d="M60 42L60 80L150 80L150 100" marker-end="url(#b-arrow)"></path>
+        <path class="edge" d="M190 130L235 130L235 172" marker-end="url(#b-arrow)"></path>
+        <path class="edge" d="M110 130L70 130L70 172" marker-end="url(#b-arrow)"></path>
+        <path class="edge" d="M70 212L70 255L300 255L300 88L287 88" marker-end="url(#b-arrow)"></path>
+        <circle cx="60" cy="27" r="15" fill="#123b2b" stroke="#34d399" stroke-width="2"></circle><text x="60" y="58" text-anchor="middle" class="muted-label">开始</text>
+        <polygon points="150,100 190,130 150,160 110,130" fill="#3b1b2b" stroke="#f472b6" stroke-width="1.6"></polygon><text x="150" y="133" text-anchor="middle" class="muted-label">条件</text>
+        <rect x="15" y="172" width="110" height="40" rx="4" fill="#1b2140" stroke="#6366f1" stroke-width="1.8"></rect><text x="70" y="195" text-anchor="middle" class="label">核心服务</text>
+        <path d="M235 168 L280 188 L235 208 L190 188 Z" fill="#2b2411" stroke="#a3e635" stroke-width="1.6"></path><text x="235" y="191" text-anchor="middle" class="label">Shell</text>
+        <rect x="247" y="68" width="80" height="40" rx="20" fill="#272733" stroke="#8b8b9e" stroke-width="1.5"></rect><text x="287" y="91" text-anchor="middle" class="muted-label">完成</text>
+      </svg>
+    </div>
+    <div class="style-copy">
+      <h3>B. 形状语言</h3>
+      <p>服务是圆角矩形，判断是菱形，Shell 是平行四边形，开始/结束是圆形/胶囊。类型识别最直观，适合节点类型很多的工作流。</p>
+      <div class="legend"><span>服务：矩形</span><span>判断：菱形</span><span>Shell：斜形</span></div>
+    </div>
+  </div>
+
+  <div class="card style-card" data-choice="c-core-path" onclick="toggleSelect(this)">
+    <div class="style-preview">
+      <svg class="svg-grid" viewBox="0 0 360 300" role="img" aria-label="方案C">
+        <defs><marker id="c-arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0 0L8 4L0 8z" fill="#6b7280"></path></marker></defs>
+        <path class="edge" d="M60 42L60 80L150 80L150 114" marker-end="url(#c-arrow)"></path>
+        <path class="edge" d="M150 154L150 194L100 194L100 226" marker-end="url(#c-arrow)"></path>
+        <path class="edge" d="M150 154L150 194L230 194L230 226" marker-end="url(#c-arrow)"></path>
+        <path class="edge" d="M100 266L100 280L320 280L320 74L282 74" marker-end="url(#c-arrow)"></path>
+        <circle cx="60" cy="27" r="15" fill="#123b2b" stroke="#34d399" stroke-width="2"></circle><text x="60" y="58" text-anchor="middle" class="muted-label">开始</text>
+        <rect x="105" y="114" width="90" height="40" rx="999" fill="#151221" stroke="#8d557d" stroke-width="1.2"></rect><text x="150" y="137" text-anchor="middle" class="muted-label">条件判断</text>
+        <rect x="35" y="226" width="130" height="40" rx="7" fill="#151b38" stroke="#6366f1" stroke-width="1.8"></rect><path d="M35 226v40" stroke="#a5b4fc" stroke-width="5"></path><text x="103" y="249" text-anchor="middle" class="label">核心服务</text>
+        <rect x="180" y="226" width="100" height="40" rx="7" fill="#11282b" stroke="#14b8a6" stroke-width="1.8"></rect><path d="M180 226v40" stroke="#5eead4" stroke-width="5"></path><text x="235" y="249" text-anchor="middle" class="label">Shell</text>
+        <rect x="252" y="54" width="70" height="40" rx="7" fill="#1e1e26" stroke="#8b8b9e" stroke-width="1.2"></rect><text x="287" y="77" text-anchor="middle" class="muted-label">完成</text>
+      </svg>
+    </div>
+    <div class="style-copy">
+      <h3>C. 主路径强调</h3>
+      <p>核心节点左侧加亮色竖条，判断节点是小号胶囊。视觉最克制，适合流程很长、希望页面保持安静的场景。</p>
+      <div class="legend"><span>核心：左竖条</span><span>判断：小胶囊</span><span>整体更克制</span></div>
+    </div>
+  </div>
+</div>

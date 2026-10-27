@@ -1,12 +1,12 @@
 import pytest
 
-from db_loc_agent.config import LLMSettings
-from db_loc_agent.embedding import (
+from jarvis_agent.config import LLMSettings
+from jarvis_agent.embedding import (
     ZHIPU_EMBED_MODEL,
     ZhipuEmbeddingFunction,
     create_embedding_function,
 )
-from db_loc_agent.llm import ZHIPU_BASE, create_chat_model
+from jarvis_agent.llm import ZHIPU_BASE, create_chat_model
 
 
 def test_bailian_missing_key_raises():
@@ -36,8 +36,8 @@ def test_zhipu_uses_official_openai_compatible_base_url():
 
 
 def test_remote_chat_model_applies_reliability_timeout():
-    from db_loc_agent.config import ReliabilitySettings
-    from db_loc_agent.reliability import ReliableChatModel
+    from jarvis_agent.config import ReliabilitySettings
+    from jarvis_agent.reliability import ReliableChatModel
 
     m = create_chat_model(
         LLMSettings(provider="zhipu", base_url="", model="GLM-5.3", api_key="test-key"),
@@ -45,6 +45,26 @@ def test_remote_chat_model_applies_reliability_timeout():
     )
     assert isinstance(m, ReliableChatModel)
     assert m.model.request_timeout == 17
+
+
+def test_reliable_chat_model_passes_bind_tools_to_underlying_model():
+    from jarvis_agent.config import ReliabilitySettings
+    from jarvis_agent.reliability import ReliableChatModel
+
+    class ToolModel:
+        def bind_tools(self, tools, **kwargs):
+            self.bound_tools = tools
+            self.bound_kwargs = kwargs
+            return "bound-model"
+
+    model = ToolModel()
+    reliable = ReliableChatModel(model, ReliabilitySettings())
+    tools = [{"type": "function", "function": {"name": "code_read"}}]
+
+    assert hasattr(reliable, "bind_tools")
+    assert reliable.bind_tools(tools, tool_choice="auto") == "bound-model"
+    assert model.bound_tools is tools
+    assert model.bound_kwargs == {"tool_choice": "auto"}
 
 
 def test_zhipu_uses_zhipu_embedding_function():

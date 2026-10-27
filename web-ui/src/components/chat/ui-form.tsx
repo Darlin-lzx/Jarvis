@@ -12,7 +12,7 @@ import { parseOptions } from './ui-form-options'
  * 只保留首个合法 JSON。支持的表单结构：
  *
  * {
- *   "title": "数据库迁移评估",              // 可选：表单标题
+ *   "title": "跨工程迭代评估",              // 可选：表单标题
  *   "fields": [                            // 必选：字段列表
  *     { "name": "source_db", "label": "源库", "type": "select", "options": ["Oracle","MySQL"] },
  *     { "name": "target_db", "label": "目标库", "type": "select", "options": ["达梦","OceanBase"] },
@@ -82,7 +82,7 @@ function normalize(data: Record<string, unknown>): { fields: FieldSpec[]; submit
   }
   const name = typeof data.param_key === 'string' && data.param_key ? data.param_key : 'value'
   // 字段标签：仅用模型显式给出的 label/question；标题已在卡片头部展示，不再复用 title，
-  // 避免「确认迁移任务信息」在同一张表单里出现两次（标题 + 字段标签）
+  // 避免「确认跨工程迭代任务信息」在同一张表单里出现两次（标题 + 字段标签）
   const label = typeof data.label === 'string' ? data.label
     : typeof data.question === 'string' ? data.question
     : (title ? '' : name)

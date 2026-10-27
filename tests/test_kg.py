@@ -1,8 +1,8 @@
 """知识图谱测试：规则提取（SQL DDL 外键/中英关系句式）、重建、图谱扩展"""
 import pytest
 
-from db_loc_agent.db import Database
-from db_loc_agent.kg import KnowledgeGraph
+from jarvis_agent.db import Database
+from jarvis_agent.kg import KnowledgeGraph
 
 SQL_DDL = """CREATE TABLE USER_ORDER (
   order_id NUMBER NOT NULL PRIMARY KEY,
@@ -27,7 +27,7 @@ def kg(tmp_path):
 
 def _seed_doc(kg, name, content, source_type="sql"):
     from pathlib import Path
-    from db_loc_agent.db import DocumentRecord
+    from jarvis_agent.db import DocumentRecord
     p = Path(kg.db.db_path).parent / name
     p.write_text(content, encoding="utf-8")
     with kg.db.session() as s:

@@ -15,44 +15,44 @@ export interface TaskFlowStageDef {
 
 const DEFAULT_FLOW: MigrateFlowNode[] = [
   {
-    sort_order: 0, status: 'DATA_COLLECTION', label: '数据采集',
-    description: '采集源库元数据/表结构/对象清单（小采），并确认源/目标库、容量、停机窗口等参数',
+    sort_order: 0, status: 'PAGE_SHOW', label: '页面展示',
+    description: '页面展示专家（小前）梳理前端/布点层诉求，输出页面展示与布点方案',
     need_confirm: true, required_fields: [], enabled: true,
   },
   {
-    sort_order: 1, status: 'ASSESSMENT_RUNNING', label: '迁移评估',
-    description: '评估专家（小评）结合规则命中做兼容性风险与工作量评估',
+    sort_order: 1, status: 'ORDER_SPLIT', label: '下单拆单',
+    description: '下单拆单专家（小订）梳理下单入口与拆单调度规则',
     need_confirm: true, required_fields: [], enabled: true,
   },
   {
-    sort_order: 2, status: 'SOLUTION_GENERATE', label: '迁移方案',
-    description: '方案专家（小方）汇总采集与评估结果，生成国产化迁移落地方案',
+    sort_order: 2, status: 'ORDER_ACCEPT', label: '订单受理',
+    description: '订单受理专家（小受）梳理受理工程与工作流/外围系统交互',
     need_confirm: true, required_fields: [], enabled: true,
   },
   {
-    sort_order: 3, status: 'CODE_MIGRATE', label: '代码改造',
-    description: '改造专家（小改）做 JDBC/ORM/存储过程应用代码适配',
+    sort_order: 3, status: 'RULE_CHECK', label: '规则配置',
+    description: '规则配置专家（小规）梳理业务规则与配置分支',
     need_confirm: true, required_fields: [], enabled: true,
   },
   {
-    sort_order: 4, status: 'VERIFY_STAGE', label: '迁移验证',
-    description: '验证专家（小测）校验语法与结构一致性',
+    sort_order: 4, status: 'CUSTOMER_CHECK', label: '客户数据',
+    description: '客户数据专家（小客）梳理客户数据范围与取数逻辑',
     need_confirm: true, required_fields: [], enabled: true,
   },
   {
     sort_order: 5, status: 'FINISHED', label: '完成',
-    description: '生成结构化资产与完整报告',
+    description: '任务全部完成，汇总跨工程改动包与报告产物',
     need_confirm: false, required_fields: [], enabled: true,
   },
 ]
 
 const STAGE_AGENTS: Record<string, string> = {
-  DATA_COLLECTION: 'migration_collector',
-  ASSESSMENT_RUNNING: 'migration_assessor',
-  SOLUTION_GENERATE: 'migration_planner',
-  CODE_MIGRATE: 'code_migrator',
-  VERIFY_STAGE: 'migration_verifier',
-  FINISHED: 'migration_commander',
+  PAGE_SHOW: 'boot_agent',
+  ORDER_SPLIT: 'customer_order_agent',
+  ORDER_ACCEPT: 'family_order_agent',
+  RULE_CHECK: 'rule_center_agent',
+  CUSTOMER_CHECK: 'customer_center_agent',
+  FINISHED: 'jarvis_commander',
 }
 
 export function enabledMigrateFlow(flow?: MigrateFlowNode[] | null): MigrateFlowNode[] {
@@ -72,7 +72,7 @@ export function taskStageDefsFromFlow(flow?: MigrateFlowNode[] | null): TaskFlow
   return enabledMigrateFlow(flow).map(n => ({
     id: n.status,
     label: n.label || n.status,
-    agentId: STAGE_AGENTS[n.status] || 'migration_commander',
+    agentId: STAGE_AGENTS[n.status] || 'jarvis_commander',
     keywords: [n.label || '', n.status],
   }))
 }

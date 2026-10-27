@@ -44,8 +44,8 @@
 ### Task 3: Backend Ownership Simplification
 
 **Files:**
-- Modify: `db_loc_agent/project.py`
-- Modify: `db_loc_agent/app.py`
+- Modify: `jarvis_agent/project.py`
+- Modify: `jarvis_agent/app.py`
 
 - [x] Keep `list_tasks` signature compatible but ignore `sub_system_id`.
 - [x] Remove subsystem validation from `create_task`; new tasks always store `NULL`.

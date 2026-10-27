@@ -1,5 +1,5 @@
-from db_loc_agent.db import DocumentRecord, Database
-from db_loc_agent.rag import RAGStore, extract_pdf_text, split_markdown, split_sql
+from jarvis_agent.db import DocumentRecord, Database
+from jarvis_agent.rag import RAGStore, extract_pdf_text, split_markdown, split_sql
 
 
 class FakeEmbedding:
@@ -62,6 +62,20 @@ def test_add_search_delete(tmp_path):
     assert "dm.md" == hits[0]["doc_name"]
     store.delete_document(doc.id)
     assert store.count() == 0
+
+
+def test_empty_kb_ids_is_an_explicit_deny_filter(tmp_path):
+    db, store = _store(tmp_path)
+    row = DocumentRecord(name="手册.md", source_type="md", doc_path="")
+    with db.session() as s:
+        s.add(row)
+        s.commit()
+        s.refresh(row)
+    path = tmp_path / "手册.md"
+    path.write_text("# 达梦\n达梦数据库支持 LIMIT。", encoding="utf-8")
+    store.add_document(row.id, row.name, "md", str(path))
+
+    assert store.search("达梦 LIMIT", kb_ids=[]) == []
 
 
 def test_search_uses_domain_confidence_and_fusion_scoring(tmp_path):

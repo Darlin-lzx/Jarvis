@@ -1,9 +1,9 @@
 import pytest
 
-from db_loc_agent.artifacts import (ArtifactService, NamespaceError,
+from jarvis_agent.artifacts import (ArtifactService, NamespaceError,
                                     make_namespace, primary_object_name,
                                     safe_object_name)
-from db_loc_agent.db import Database
+from jarvis_agent.db import Database
 
 
 def test_make_namespace_ok():
@@ -59,8 +59,8 @@ def test_write_and_read_binary_xlsx(tmp_path):
     wb.save(buf)
     db = Database(str(tmp_path / "t.db"))
     svc = ArtifactService(db, str(tmp_path / "artifacts"))
-    ns = make_namespace("sess_xlsx", "code_migrator", "user_order", "20260928T103000")
-    res = svc.write(ns, conv_id=1, agent_id="code_migrator", object_name="user_order",
+    ns = make_namespace("sess_xlsx", "boot_agent", "user_order", "20260928T103000")
+    res = svc.write(ns, conv_id=1, agent_id="boot_agent", object_name="user_order",
                     files={"改造清单.xlsx": buf.getvalue()})
 
     assert svc.read_bytes(res["files"][0]["id"]) == buf.getvalue()

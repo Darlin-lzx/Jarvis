@@ -1,10 +1,12 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import { TooltipProvider } from '@/components/ui/tooltip'
 import { Sidebar, type WorkspaceGroup, type TaskFilter } from '@/components/layout/sidebar'
 import { TopBar } from '@/components/layout/top-bar'
 import { ChatView } from '@/components/chat/chat-view'
 import { WelcomePage } from '@/components/chat/welcome-page'
 import { WorkbenchView } from '@/components/workbench/workbench-view'
+import { LoginPage } from '@/components/layout/login-page'
+import { clearToken, getToken } from '@/lib/api'
 import { SettingsDialog } from '@/components/settings/settings-dialog'
 import { useConversations } from '@/hooks/use-conversations'
 import { useHealth } from '@/hooks/use-health'
@@ -15,7 +17,19 @@ import { TaskListPage } from '@/components/project/task-list-page'
 import { TaskDetailPage } from '@/components/project/task-detail-page'
 import { NewTaskDialog, type NewTaskContext } from '@/components/project/new-task-dialog'
 
+const JARVIS_CONV_STORAGE_KEY = 'jarvis.console.convId'
+
+function readStoredJarvisConvId(): number | null {
+  const raw = window.localStorage.getItem(JARVIS_CONV_STORAGE_KEY)
+  const id = raw == null ? Number.NaN : Number.parseInt(raw, 10)
+  return Number.isInteger(id) && id > 0 ? id : null
+}
+
 export default function App() {
+  // 登录门禁：无令牌先展示登录页；有令牌经 /api/auth/me 校验，失效即踢回
+  const [authed, setAuthed] = useState(() => !!getToken())
+  const [authUser, setAuthUser] = useState('')
+  const [authRole, setAuthRole] = useState<'admin' | 'user'>('user')
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [activeTab, setActiveTab] = useState<string>(() => {
     // 支持直达工作台面板：#/workspace/{tab}（如数据源管理 dbs），避免首帧闪回默认面板
@@ -23,7 +37,8 @@ export default function App() {
     return m ? m[1] : 'workspace'
   })
   const [showWelcome, setShowWelcome] = useState(false)
-  const [activeAgent, setActiveAgent] = useState<string>('migration_assessor')
+  const [activeAgent, setActiveAgent] = useState<string>('jarvis_commander')
+  const [jarvisConvId, setJarvisConvId] = useState<number | null>(() => readStoredJarvisConvId())
   const [agentList, setAgentList] = useState<Agent[]>([])
   const [selectedTask, setSelectedTask] = useState<{ id: number; name: string } | null>(null)
   // 会话来源任务：从任务详情进入会话时记录，供「返回任务详情」恢复上下文
@@ -35,6 +50,19 @@ export default function App() {
   const healthy = useHealth()
   // 任务页筛选（左侧空间点击联动）
   const [taskFilter, setTaskFilter] = useState<TaskFilter | null>(null)
+
+  useEffect(() => {
+    if (!authed) return
+    api.authMe().then(response => {
+      if (response.success && response.data) {
+        setAuthUser(response.data.display_name || response.data.username)
+        setAuthRole(response.data.role === 'admin' ? 'admin' : 'user')
+      } else {
+        clearToken()
+        setAuthed(false)
+      }
+    })
+  }, [authed])
 
   // 加载后端智能体列表，找到主智能体作为默认值
   useEffect(() => {
@@ -89,7 +117,7 @@ export default function App() {
 
   // 同步 URL hash 与当前会话 / 工作台面板（主动保留 {tab}，避免 #/workspace/dbs 被覆写后回跳）
   // 注意：非工作台面板（如任务页 tasks）不写 hash，避免写入 #/workspace 后又经 hashchange 弹回工作台
-  const workbenchTabs = ['kb', 'artifacts', 'vector', 'kg', 'agents', 'conversations', 'skills', 'prompts', 'templates', 'dbs', 'mcp', 'ops', 'gov', 'security', 'models', 'migrate']
+  const workbenchTabs = ['kb', 'artifacts', 'vector', 'kg', 'agents', 'conversations', 'skills', 'prompts', 'templates', 'dbs', 'mcp', 'migrate', 'workflows', 'analysis', 'sql', 'users']
   useEffect(() => {
     if (conv.currentId != null) {
       window.location.hash = `#/chat/${conv.currentId}`
@@ -148,6 +176,34 @@ export default function App() {
     }
   }
 
+  const ensureJarvisConversation = useCallback(async () => {
+    if (jarvisConvId != null) {
+      const existing = await api.getConversation(jarvisConvId).catch(() => null)
+      if (existing?.success && existing.data) return jarvisConvId
+      window.localStorage.removeItem(JARVIS_CONV_STORAGE_KEY)
+      setJarvisConvId(null)
+    }
+
+    const spaceResponse = await api.getDefaultSpace()
+    if (!spaceResponse.success || !spaceResponse.data) {
+      throw new Error(spaceResponse.error || '默认空间不可用')
+    }
+
+    const conversationResponse = await api.createConversation('贾维斯控制台', {
+      space_id: spaceResponse.data.id,
+      agent_id: 'jarvis_commander',
+    })
+    if (!conversationResponse.success || !conversationResponse.data) {
+      throw new Error(conversationResponse.error || '会话创建失败')
+    }
+
+    const id = conversationResponse.data.id
+    window.localStorage.setItem(JARVIS_CONV_STORAGE_KEY, String(conversationResponse.data.id))
+    setJarvisConvId(id)
+    void conv.reload()
+    return id
+  }, [conv.reload, jarvisConvId])
+
   const handleConvCreatedFromWelcome = (id: number) => {
     setShowWelcome(false)
     conv.setCurrentId(id)
@@ -163,10 +219,6 @@ export default function App() {
       api.getConversation(id).then(r => { if (r.success && r.data) setQuickMode(!r.data.space_id && !r.data.task_id) }).catch(() => {})
     }
   }
-  const handleRenameConv = (id: number, title: string) => {
-    api.renameConversation(id, title).then(() => conv.reload()).catch(() => {})
-  }
-
   const handleTabChange = (tab: string) => {
     setActiveTab(tab)
     conv.setCurrentId(null)
@@ -220,19 +272,17 @@ export default function App() {
   const isChatView = conv.currentId !== null || showWelcome
   const showTasksPage = activeTab === 'tasks' && !selectedTask && !isChatView
 
+  if (!authed) {
+    return <LoginPage onSuccess={() => setAuthed(true)} />
+  }
+
   return (
     <TooltipProvider>
       <div className="bg-[#0f0f12] text-[#e4e4e9] h-screen flex overflow-hidden text-sm">
         <Sidebar
-          conversations={conv.conversations}
-          currentId={conv.currentId}
-          searchKw={conv.searchKw}
-          onSearch={conv.setSearchKw}
-          onSelect={handleSelectConv}
-          onNew={handleNewConversation}
-          onDelete={conv.remove}
-          onRenameConv={handleRenameConv}
           activeTab={activeTab}
+          authName={authUser}
+          isAdmin={authRole === 'admin'}
           onTabChange={handleTabChange}
           onSelectSpace={handleSelectSpaceTasks}
           onCreateTask={handleCreateTaskInSpace}
@@ -246,7 +296,8 @@ export default function App() {
           refreshKey={sidebarRefreshKey}
         />
         <main className="flex-1 flex flex-col min-w-0">
-          <TopBar healthy={healthy} onSettings={() => setSettingsOpen(true)} />
+          <TopBar healthy={healthy} onSettings={() => setSettingsOpen(true)}
+                        authUser={authUser} onLogout={() => { clearToken(); setAuthed(false) }} />
           {selectedTask ? (
             <TaskDetailPage
               taskId={selectedTask.id}
@@ -262,7 +313,7 @@ export default function App() {
                 setSelectedTask(null)
                 // 新建会话默认智能体 = 任务主智能体（为空时回退到任务链路的执行主控）
                 api.getTask(selectedTask.id).then(r => {
-                  const agent = (r.success && r.data?.agent_id) || 'migration_commander'
+                  const agent = (r.success && r.data?.agent_id) || 'jarvis_commander'
                   setActiveAgent(agent)
                   api.createConversation(selectedTask.name, { task_id: selectedTask.id }).then(cr => {
                     if (cr.success && cr.data) handleConvCreated(cr.data.id)
@@ -315,7 +366,14 @@ export default function App() {
               }} agentList={agentList} />
             )
           ) : (
-            <WorkbenchView activeTab={activeTab} onTabChange={handleTabChange} onNew={handleNewConversation} />
+            <WorkbenchView
+              activeTab={activeTab}
+              authUser={authUser}
+              onTabChange={handleTabChange}
+              onNew={handleNewConversation}
+              jarvisConvId={jarvisConvId}
+              ensureJarvisConversation={ensureJarvisConversation}
+            />
           )}
         </main>
         <NewTaskDialog open={newTaskOpen} onClose={() => setNewTaskOpen(false)} context={newTaskCtx || undefined}

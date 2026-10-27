@@ -487,7 +487,7 @@ export function SubSystemDetailPage({ spaceId, spaceName, subId, onBack, onOpenT
           {tab === 'datasources' && (
             <section>
               <div className="flex items-center justify-between mb-2.5">
-                <div className="text-[13px] font-semibold text-[#e4e4e9]">数据源（源库 / 目标国产库）</div>
+                <div className="text-[13px] font-semibold text-[#e4e4e9]">数据源（跨工程工程数据源）</div>
                 <Button size="sm" className="h-7 text-[12px] bg-gradient-to-br from-[#5b7cfa] to-[#7a5bfa] text-white" onClick={() => setAddDsOpen(true)}>
                   <Database className="w-3.5 h-3.5 mr-1" />添加数据源
                 </Button>

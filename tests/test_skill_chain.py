@@ -1,8 +1,8 @@
 """技能链测试：chain 声明解析、顺序执行、上下文传递、失败中断"""
 import pytest
 
-from db_loc_agent.db import Database
-from db_loc_agent.skills import SkillService
+from jarvis_agent.db import Database
+from jarvis_agent.skills import SkillService
 
 
 @pytest.fixture()

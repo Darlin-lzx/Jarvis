@@ -3,7 +3,7 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Badge } from '@/components/ui/badge'
 import { api } from '@/lib/api'
-import type { KBDocument, KnowledgeSearchHit } from '@/lib/types'
+import type { KBDocument, KnowledgeBaseInfo, KnowledgeSearchHit } from '@/lib/types'
 import { cn } from '@/lib/utils'
 import {
   Database, FileText, Layers, Search, Settings,
@@ -16,9 +16,9 @@ import {
 type Tab = 'list' | 'docs' | 'chunks' | 'search' | 'settings'
 
 const BUSINESS_DOMAINS = [
-  { value: 'db_migrate', label: '数据库迁移' },
+  { value: 'db_migrate', label: '跨工程迭代' },
   { value: 'sql_audit', label: 'SQL 审计' },
-  { value: 'code_migrate', label: '代码迁移' },
+  { value: 'code_change', label: '跨工程改造' },
   { value: 'db_inspect', label: '数据库巡检' },
 ]
 
@@ -122,21 +122,25 @@ const subTabs: {
 export function KBPanel() {
   const [activeTab, setActiveTab] = useState<Tab>('list')
   const [docs, setDocs] = useState<KBDocument[]>([])
+  const [kbs, setKbs] = useState<KnowledgeBaseInfo[]>([])
+  const [selectedKb, setSelectedKb] = useState<number | ''>('')
   const [searchQ, setSearchQ] = useState('')
   const [showVectorInfo, setShowVectorInfo] = useState(false)
   const fileRef = useRef<HTMLInputElement>(null)
   const [uploadMeta, setUploadMeta] = useState<KnowledgeUploadMeta>(DEFAULT_UPLOAD_META)
 
   const load = async () => {
-    const r = await api.listDocuments()
+    const r = await api.listDocuments(undefined, undefined, selectedKb || undefined)
     if (r.success) setDocs((r.data as KBDocument[]) || [])
   }
-  useEffect(() => { load() }, [])
+  useEffect(() => { api.listKbs().then(r => { if (r.success) setKbs((r.data as KnowledgeBaseInfo[]) || []) }).catch(() => {}) }, [])
+  useEffect(() => { load() }, [selectedKb])
 
   const handleUpload = async () => {
     const file = fileRef.current?.files?.[0]
     if (!file) return
     const r = await api.uploadDocument(file, {
+      kb_id: selectedKb || undefined,
       kb_type: uploadMeta.kb_type,
       business_domain: uploadMeta.businessDomain,
       target_db: uploadMeta.target_db,
@@ -146,7 +150,12 @@ export function KBPanel() {
       source: 'human',
       source_ref: uploadMeta.source_ref,
     })
-    if (r.success) { if (fileRef.current) fileRef.current.value = ''; load() }
+    if (r.success) {
+      if (fileRef.current) fileRef.current.value = ''
+      load()
+      const d = r.data as { embed_error?: string } | null
+      if (d?.embed_error) alert('文档已保存，但向量化失败（embedding 服务暂不可用），可稍后在文档详情中重解析。')
+    }
     else alert('上传失败: ' + (r.detail || '未知错误'))
   }
   const handleDelete = async (id: number) => {
@@ -239,6 +248,9 @@ export function KBPanel() {
             {activeTab === 'docs' && (
               <DocsContent
                 docs={docs}
+                kbs={kbs}
+                selectedKb={selectedKb}
+                onKbChange={setSelectedKb}
                 fileRef={fileRef}
                 uploadMeta={uploadMeta}
                 setUploadMeta={setUploadMeta}
@@ -402,12 +414,25 @@ export function KBPanel() {
 interface KBItem {
   id: number
   name: string
-  key: string
+  agentNames: string[]
   desc: string
   docs: number
   chunks: number
   status: '启用' | '禁用'
   created: string
+}
+
+function toKBItem(kb: KnowledgeBaseInfo): KBItem {
+  return {
+    id: kb.id,
+    name: kb.name,
+    agentNames: kb.bound_agent_names || [],
+    desc: kb.description || '',
+    docs: kb.doc_count || 0,
+    chunks: kb.chunk_count || 0,
+    status: kb.enabled === false ? '禁用' as const : '启用' as const,
+    created: kb.created_at ? kb.created_at.split('T')[0] : '',
+  }
 }
 
 function KBListContent({ onGoDocs }: { docCount: number; onGoDocs: () => void }) {
@@ -419,38 +444,28 @@ function KBListContent({ onGoDocs }: { docCount: number; onGoDocs: () => void })
   const [showBatchMenu, setShowBatchMenu] = useState(false)
   const [showCreateModal, setShowCreateModal] = useState(false)
   const [newKBName, setNewKBName] = useState('')
-  const [newKBKey, setNewKBKey] = useState('')
   const [newKBDesc, setNewKBDesc] = useState('')
-  const [newKBChunkSize, setNewKBChunkSize] = useState(512)
-  const [newKBOverlap, setNewKBOverlap] = useState(50)
-  const [newKBModel, setNewKBModel] = useState('text-embedding-ada-002')
   const [currentPage, setCurrentPage] = useState(1)
   const [pageSize] = useState(10)
   const [showDeleteConfirm, setShowDeleteConfirm] = useState<number | null>(null)
 
   // 加载真实知识库数据
-  useEffect(() => {
-    api.listKbSpaces().then(r => {
+  const loadKBs = () => {
+    api.listKbs().then(r => {
       if (r.success) {
-        const items: KBItem[] = (r.data || []).map(sp => ({
-          id: sp.id,
-          name: sp.name,
-          key: sp.name.toLowerCase().replace(/[^a-z0-9\u4e00-\u9fa5]/g, '_').replace(/\s+/g, '_'),
-          desc: sp.description || '',
-          docs: sp.doc_count,
-          chunks: sp.chunk_count,
-          status: sp.enabled ? '启用' as const : '禁用' as const,
-          created: sp.created_at ? sp.created_at.split('T')[0] : '',
-        }))
+        const items: KBItem[] = (r.data || []).map(toKBItem)
         setMockKBs(items)
       }
       setLoading(false)
     }).catch(() => setLoading(false))
-  }, [])
+  }
+
+  useEffect(() => { loadKBs() }, [])
 
   const filtered = mockKBs.filter(kb => {
     if (statusFilter !== '全部' && kb.status !== statusFilter) return false
-    if (searchQ && !kb.name.includes(searchQ) && !kb.key.includes(searchQ)) return false
+    if (searchQ && !kb.name.includes(searchQ)
+      && !kb.agentNames.some(name => name.includes(searchQ))) return false
     return true
   })
 
@@ -470,13 +485,6 @@ function KBListContent({ onGoDocs }: { docCount: number; onGoDocs: () => void })
       kb.id === id ? { ...kb, status: kb.status === '启用' ? '禁用' as const : '启用' as const } : kb
     ))
   }
-
-  // 自动生成 key
-  useEffect(() => {
-    if (newKBName) {
-      setNewKBKey(newKBName.toLowerCase().replace(/[^a-z0-9\u4e00-\u9fa5]/g, '_').replace(/\s+/g, '_'))
-    }
-  }, [newKBName])
 
   return (
     <div className="space-y-4">
@@ -557,7 +565,7 @@ function KBListContent({ onGoDocs }: { docCount: number; onGoDocs: () => void })
                     />
                   </th>
                   <th className="px-3 py-2.5 text-left text-[12px] font-medium text-[#9a9aa4]">知识库名称</th>
-                  <th className="px-3 py-2.5 text-left text-[12px] font-medium text-[#9a9aa4]">唯一标识</th>
+                  <th className="px-3 py-2.5 text-left text-[12px] font-medium text-[#9a9aa4]">绑定智能体</th>
                   <th className="px-3 py-2.5 text-center text-[12px] font-medium text-[#9a9aa4]">文档数量</th>
                   <th className="px-3 py-2.5 text-center text-[12px] font-medium text-[#9a9aa4]">片段总数</th>
                   <th className="px-3 py-2.5 text-center text-[12px] font-medium text-[#9a9aa4]">状态</th>
@@ -589,7 +597,13 @@ function KBListContent({ onGoDocs }: { docCount: number; onGoDocs: () => void })
                   </button>
                 </td>
                 <td className="px-3 py-2.5">
-                  <code className="text-[12px] text-[#9a9aa4] bg-[#16161e] px-1.5 py-0.5 rounded">{kb.key}</code>
+                  <div className="flex flex-wrap items-center gap-1">
+                    {kb.agentNames.length ? kb.agentNames.map(name => (
+                      <span key={name} className="text-[11px] text-indigo-300 bg-indigo-500/10 border border-indigo-500/20 px-1.5 py-0.5 rounded">
+                        {name}
+                      </span>
+                    )) : <span className="text-[12px] text-[#5a5a70]">未绑定</span>}
+                  </div>
                 </td>
                 <td className="px-3 py-2.5 text-center text-[#e4e4e9]">{kb.docs}</td>
                 <td className="px-3 py-2.5 text-center text-[#e4e4e9]">{kb.chunks}</td>
@@ -705,22 +719,11 @@ function KBListContent({ onGoDocs }: { docCount: number; onGoDocs: () => void })
               <Button size="sm" className="bg-red-500 text-white hover:bg-red-600"
                 onClick={() => {
                   if (showDeleteConfirm === null) return
-                  api.deleteKbSpace(showDeleteConfirm).then(r => {
+                  api.deleteKb(showDeleteConfirm).then(r => {
                     if (r.success) {
                       setShowDeleteConfirm(null)
                       // 重新加载列表
-                      api.listKbSpaces().then(res => {
-                        if (res.success) {
-                          const items: KBItem[] = (res.data || []).map(sp => ({
-                            id: sp.id, name: sp.name,
-                            key: sp.name.toLowerCase().replace(/[^a-z0-9\u4e00-\u9fa5]/g, '_').replace(/\s+/g, '_'),
-                            desc: sp.description || '', docs: sp.doc_count, chunks: sp.chunk_count,
-                            status: sp.enabled ? '启用' as const : '禁用' as const,
-                            created: sp.created_at ? sp.created_at.split('T')[0] : '',
-                          }))
-                          setMockKBs(items)
-                        }
-                      })
+                      loadKBs()
                     }
                   })
                 }}>确认删除</Button>
@@ -748,16 +751,6 @@ function KBListContent({ onGoDocs }: { docCount: number; onGoDocs: () => void })
                 />
               </div>
               <div>
-                <label className="text-xs text-[#9a9aa4] block mb-1.5">唯一标识（英文 key）*</label>
-                <Input
-                  className="bg-[#16161e] border-[#252530] text-[13px] font-mono"
-                  placeholder="自动生成，多 Agent 系统调用时使用"
-                  value={newKBKey}
-                  onChange={e => setNewKBKey(e.target.value)}
-                />
-                <div className="text-[11px] text-[#5a5a70] mt-1">不可修改，Agent 通过此 key 调用知识库</div>
-              </div>
-              <div>
                 <label className="text-xs text-[#9a9aa4] block mb-1.5">描述</label>
                 <textarea
                   className="w-full h-16 bg-[#16161e] border border-[#252530] rounded-lg p-2.5 text-[13px] text-[#e4e4e9] placeholder-[#5a5a70] resize-none focus:outline-none focus:border-indigo-500/50"
@@ -766,62 +759,19 @@ function KBListContent({ onGoDocs }: { docCount: number; onGoDocs: () => void })
                   onChange={e => setNewKBDesc(e.target.value)}
                 />
               </div>
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <label className="text-xs text-[#9a9aa4] block mb-1.5">默认分块大小</label>
-                  <Input
-                    type="number"
-                    className="bg-[#16161e] border-[#252530] text-[13px]"
-                    value={newKBChunkSize}
-                    onChange={e => setNewKBChunkSize(parseInt(e.target.value) || 512)}
-                  />
-                </div>
-                <div>
-                  <label className="text-xs text-[#9a9aa4] block mb-1.5">重叠长度</label>
-                  <Input
-                    type="number"
-                    className="bg-[#16161e] border-[#252530] text-[13px]"
-                    value={newKBOverlap}
-                    onChange={e => setNewKBOverlap(parseInt(e.target.value) || 50)}
-                  />
-                </div>
-              </div>
-              <div>
-                <label className="text-xs text-[#9a9aa4] block mb-1.5">Embedding 模型</label>
-                <select
-                  className="w-full bg-[#16161e] border border-[#252530] rounded-lg px-3 py-2 text-[13px] text-[#e4e4e9] focus:outline-none"
-                  value={newKBModel}
-                  onChange={e => setNewKBModel(e.target.value)}
-                >
-                  <option>text-embedding-ada-002</option>
-                  <option>text-embedding-3-small</option>
-                  <option>text-embedding-3-large</option>
-                </select>
-              </div>
             </div>
             <div className="flex justify-end gap-2 mt-6">
               <Button size="sm" variant="outline" onClick={() => setShowCreateModal(false)}>取消</Button>
               <Button size="sm" className="bg-gradient-to-br from-[#5b7cfa] to-[#7a5bfa] text-white"
                 onClick={() => {
                   if (!newKBName.trim()) return
-                  api.createKbSpace({ name: newKBName.trim(), description: newKBDesc.trim() }).then(r => {
+                  api.createKb({ name: newKBName.trim(), description: newKBDesc.trim() }).then(r => {
                     if (r.success) {
                       setShowCreateModal(false)
                       setNewKBName('')
                       setNewKBDesc('')
                       // 重新加载列表
-                      api.listKbSpaces().then(res => {
-                        if (res.success) {
-                          const items: KBItem[] = (res.data || []).map(sp => ({
-                            id: sp.id, name: sp.name,
-                            key: sp.name.toLowerCase().replace(/[^a-z0-9\u4e00-\u9fa5]/g, '_').replace(/\s+/g, '_'),
-                            desc: sp.description || '', docs: sp.doc_count, chunks: sp.chunk_count,
-                            status: sp.enabled ? '启用' as const : '禁用' as const,
-                            created: sp.created_at ? sp.created_at.split('T')[0] : '',
-                          }))
-                          setMockKBs(items)
-                        }
-                      })
+                      loadKBs()
                     }
                   })
                 }}>创建</Button>
@@ -851,9 +801,13 @@ interface DocRow {
 }
 
 function DocsContent({
-  fileRef, onUpload, onGoList, docs: realDocs, uploadMeta, setUploadMeta
+  fileRef, onUpload, onGoList, docs: realDocs, uploadMeta, setUploadMeta,
+  kbs, selectedKb, onKbChange, onDelete
 }: {
   docs: KBDocument[]
+  kbs: KnowledgeBaseInfo[]
+  selectedKb: number | ''
+  onKbChange: (kb: number | '') => void
   fileRef: React.RefObject<HTMLInputElement | null>
   uploadMeta: KnowledgeUploadMeta
   setUploadMeta: React.Dispatch<React.SetStateAction<KnowledgeUploadMeta>>
@@ -873,7 +827,7 @@ function DocsContent({
   const [pageSize] = useState(10)
   const [showDeleteConfirm, setShowDeleteConfirm] = useState<number | null>(null)
   const [showPreview, setShowPreview] = useState<DocRow | null>(null)
-  const [uploadFiles] = useState<string[]>([])
+  const [selectedFileName, setSelectedFileName] = useState('')
   const [newTextTitle, setNewTextTitle] = useState('')
   const [newTextContent, setNewTextContent] = useState('')
 
@@ -937,6 +891,17 @@ function DocsContent({
             <ChevronRight className="w-3 h-3 mr-1 rotate-180" />
             返回知识库列表
           </Button>
+          <select
+            value={selectedKb}
+            onChange={e => onKbChange(e.target.value ? Number(e.target.value) : '')}
+            className="bg-[#1a1a24] border border-[#252530] rounded px-2 py-1.5 text-[12px] text-[#e4e4e9] focus:outline-none"
+            title="选择知识库：文档将归入所选知识库，绑定该知识库的智能体专属检索"
+          >
+            <option value="">全部知识库文档</option>
+            {kbs.map(kb => (
+              <option key={kb.id} value={kb.id}>{kb.name}</option>
+            ))}
+          </select>
           <Button size="sm" className="bg-gradient-to-br from-[#5b7cfa] to-[#7a5bfa] text-white" onClick={() => setShowUploadModal(true)}>
             <Upload className="w-3.5 h-3.5 mr-1.5" />
             上传文档
@@ -1167,9 +1132,9 @@ function DocsContent({
               <input
                 type="file"
                 ref={fileRef}
-                accept=".md,.sql,.txt,.pdf"
+                accept=".md,.sql,.txt,.pdf,.docx"
                 className="hidden"
-                onChange={onUpload}
+                onChange={e => setSelectedFileName(e.target.files?.[0]?.name || '')}
               />
               <Button
                 size="sm"
@@ -1244,23 +1209,26 @@ function DocsContent({
               </div>
             </div>
             {/* 文件列表 */}
-            {uploadFiles.length > 0 && (
+            {selectedFileName && (
               <div className="space-y-1 mb-4">
                 <div className="text-xs text-[#5a5a70] mb-1">文件列表：</div>
-                {uploadFiles.map((f, i) => (
-                  <div key={i} className="text-[13px] text-[#9a9aa4] bg-[#16161e] rounded px-3 py-1.5 flex items-center justify-between">
-                    <span>[{f}]</span>
-                    <span className="text-[11px] text-[#5a5a70]">待上传</span>
-                  </div>
-                ))}
+                <div className="text-[13px] text-[#9a9aa4] bg-[#16161e] rounded px-3 py-1.5 flex items-center justify-between">
+                  <span>{selectedFileName}</span>
+                  <span className="text-[11px] text-[#5a5a70]">待上传</span>
+                </div>
               </div>
             )}
             <div className="flex justify-end gap-2">
-              <Button size="sm" variant="outline" onClick={() => setShowUploadModal(false)}>取消</Button>
+              <Button size="sm" variant="outline" onClick={() => { setShowUploadModal(false); setSelectedFileName('') }}>取消</Button>
               <Button
                 size="sm"
                 className="bg-gradient-to-br from-[#5b7cfa] to-[#7a5bfa] text-white"
-                onClick={() => fileRef.current?.click()}
+                onClick={() => {
+                  const f = fileRef.current?.files?.[0]
+                  if (!f) { alert('请先选择文件'); return }
+                  onUpload()
+                  setSelectedFileName('')
+                }}
               >确认上传</Button>
             </div>
           </div>
@@ -1339,7 +1307,12 @@ function DocsContent({
             </div>
             <div className="flex justify-end gap-2 mt-6">
               <Button size="sm" variant="outline" onClick={() => setShowDeleteConfirm(null)}>取消</Button>
-              <Button size="sm" className="bg-red-500 text-white hover:bg-red-600">确认删除</Button>
+              <Button size="sm" className="bg-red-500 text-white hover:bg-red-600"
+                onClick={() => {
+                  if (showDeleteConfirm === null) return
+                  onDelete(showDeleteConfirm)
+                  setShowDeleteConfirm(null)
+                }}>确认删除</Button>
             </div>
           </div>
         </div>
@@ -1770,11 +1743,11 @@ function SearchContent({
   const [searchTime, setSearchTime] = useState(0)
   const [showPreview, setShowPreview] = useState<SearchResultRow | null>(null)
 
-  // 加载真实知识库空间（检索按 space 过滤，与 Agent RAG 同一接口）
+  // 检索测试与 Agent 授权使用同一批独立知识库
   useEffect(() => {
-    api.listKbSpaces().then(r => {
+    api.listKbs().then(r => {
       if (r.success) {
-        const opts = (r.data || []).map(sp => ({ id: sp.id, name: sp.name }))
+        const opts = (r.data || []).map(kb => ({ id: kb.id, name: kb.name }))
         setKbOptions(opts)
         if (opts.length > 0) setSelectedKB(prev => prev ?? opts[0].id)
       }
@@ -1789,7 +1762,7 @@ function SearchContent({
     api.searchKnowledge({
       query: searchQ.trim(),
       top_k: Math.max(topK * 2, 10),
-      space_id: selectedKB ?? undefined,
+      kb_id: selectedKB ?? undefined,
       kb_types: knowledgeType ? [knowledgeType] : undefined,
       business_domain: businessDomain,
       target_db: targetDb,

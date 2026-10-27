@@ -1,0 +1,258 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>贾维斯工作台 · HUD Design</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    :root {
+      --bg: #05070a;
+      --panel: rgba(12, 18, 25, .88);
+      --panel-2: rgba(8, 13, 18, .78);
+      --line: rgba(88, 178, 255, .18);
+      --line-strong: rgba(125, 211, 252, .5);
+      --cyan: #22d3ee;
+      --blue: #38bdf8;
+      --green: #34d399;
+      --amber: #fbbf24;
+      --red: #fb7185;
+      --text: #d9e7f4;
+      --muted: #73849a;
+    }
+    body {
+      min-height: 100vh;
+      background:
+        linear-gradient(115deg, rgba(8,47,73,.24), transparent 32%),
+        linear-gradient(315deg, rgba(76,29,149,.16), transparent 30%),
+        var(--bg);
+      color: var(--text);
+      font-family: "SF Pro Text", Inter, "PingFang SC", "Microsoft YaHei", sans-serif;
+      overflow: hidden;
+    }
+    body::before {
+      content: "";
+      position: fixed;
+      inset: 0;
+      background:
+        linear-gradient(rgba(255,255,255,.028) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(255,255,255,.018) 1px, transparent 1px);
+      background-size: 48px 48px, 64px 64px;
+      pointer-events: none;
+    }
+    body::after {
+      content: "";
+      position: fixed;
+      inset: 0;
+      background: linear-gradient(transparent 55%, rgba(34,211,238,.05) 50%, transparent 51%);
+      background-size: 100% 220px;
+      opacity: .55;
+      pointer-events: none;
+    }
+    .app { display: grid; grid-template-columns: 250px minmax(0,1fr) 310px; gap: 14px; height: 100vh; padding: 14px; }
+    .rail, .panel {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      box-shadow: 0 0 32px rgba(34,211,238,.06), inset 0 0 42px rgba(3,12,20,.55);
+      backdrop-filter: blur(12px);
+    }
+    .rail { padding: 14px; display: flex; flex-direction: column; gap: 14px; overflow: hidden; }
+    .brand { display: flex; align-items: center; gap: 10px; padding-bottom: 12px; border-bottom: 1px solid var(--line); }
+    .brand-core {
+      width: 38px; height: 38px; display: grid; place-items: center; border-radius: 9px;
+      border: 1px solid var(--line-strong); background: radial-gradient(circle, rgba(34,211,238,.22), transparent 70%);
+      color: var(--cyan); font-weight: 700; letter-spacing: 1px;
+    }
+    .brand-title { font-family: "SF Mono", ui-monospace, monospace; font-size: 17px; letter-spacing: 4px; color: #f2fbff; }
+    .brand-sub { font-size: 10px; color: var(--muted); letter-spacing: 2px; }
+    .section-label {
+      display: flex; justify-content: space-between; align-items: center;
+      font-size: 10px; color: var(--muted); letter-spacing: 2px; margin-bottom: 7px;
+    }
+    .mission {
+      padding: 11px; border: 1px solid rgba(52,211,153,.24); background: rgba(6,21,18,.66); border-radius: 4px;
+    }
+    .mission-name { font-size: 13px; color: #ecfdf5; margin-bottom: 7px; }
+    .bar { height: 3px; background: rgba(255,255,255,.08); overflow: hidden; border-radius: 99px; }
+    .bar i { display: block; height: 100%; background: linear-gradient(90deg, var(--green), var(--cyan)); }
+    .mission-meta { display: flex; justify-content: space-between; margin-top: 6px; font-size: 10px; color: var(--muted); }
+    .fleet { display: flex; flex-direction: column; gap: 6px; }
+    .agent {
+      display: grid; grid-template-columns: 22px 1fr auto; align-items: center; gap: 8px;
+      padding: 7px 8px; border: 1px solid transparent; border-radius: 3px;
+    }
+    .agent.active, .agent:hover { background: rgba(34,211,238,.06); border-color: var(--line); }
+    .dot { width: 6px; height: 6px; border-radius: 50%; box-shadow: 0 0 10px currentColor; }
+    .green { color: var(--green); background: var(--green); }
+    .amber { color: var(--amber); background: var(--amber); }
+    .blue { color: var(--blue); background: var(--blue); }
+    .agent-name { font-size: 12px; color: #cfe4f4; }
+    .agent-role { font-size: 9px; color: var(--muted); }
+    .agent-state { font-family: ui-monospace, monospace; font-size: 9px; color: var(--muted); }
+    .center { display: grid; grid-template-rows: auto 1fr auto; gap: 12px; min-width: 0; }
+    .topbar {
+      height: 48px; display: flex; align-items: center; justify-content: space-between; padding: 0 16px;
+      background: linear-gradient(90deg, rgba(12,20,28,.9), rgba(8,11,16,.72));
+      border: 1px solid var(--line); clip-path: polygon(0 0, calc(100% - 18px) 0, 100% 100%, 0 100%);
+    }
+    .status { display: flex; align-items: center; gap: 8px; font-family: ui-monospace, monospace; font-size: 11px; color: var(--cyan); letter-spacing: 2px; }
+    .pulse { width: 7px; height: 7px; border-radius: 50%; background: var(--cyan); box-shadow: 0 0 12px var(--cyan); }
+    .top-metrics { display: flex; gap: 18px; font-size: 11px; color: var(--muted); }
+    .top-metrics b { color: var(--text); font-family: ui-monospace, monospace; }
+    .stage { display: grid; grid-template-columns: 1fr 320px; gap: 12px; min-height: 0; }
+    .console { padding: 18px; display: flex; flex-direction: column; min-width: 0; clip-path: polygon(0 0, 100% 0, 100% calc(100% - 18px), calc(100% - 18px) 100%, 0 100%); }
+    .console-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 14px; }
+    .console-title { font-size: 13px; letter-spacing: 3px; color: #edf9ff; font-family: ui-monospace, monospace; }
+    .tags { display: flex; gap: 6px; }
+    .tag { font-size: 9px; padding: 3px 7px; border: 1px solid var(--line); color: var(--muted); }
+    .stream { flex: 1; overflow: hidden; display: flex; flex-direction: column; gap: 12px; padding-right: 6px; }
+    .msg { display: flex; gap: 10px; max-width: 86%; }
+    .msg.user { align-self: flex-end; flex-direction: row-reverse; }
+    .avatar { width: 28px; height: 28px; flex: 0 0 auto; display: grid; place-items: center; border: 1px solid var(--line-strong); color: var(--cyan); font-size: 9px; font-family: ui-monospace, monospace; }
+    .bubble { padding: 10px 11px; border: 1px solid rgba(148,163,184,.13); background: rgba(13,20,27,.76); font-size: 12px; line-height: 1.6; color: #c7d5e4; }
+    .msg.ai .bubble { border-color: rgba(34,211,238,.24); background: linear-gradient(135deg, rgba(8,31,40,.92), rgba(10,16,22,.82)); box-shadow: 0 0 22px rgba(34,211,238,.06); }
+    .msg.user .bubble { border-color: rgba(167,139,250,.22); background: rgba(18,14,35,.72); }
+    .inline-actions { display: flex; gap: 6px; margin-top: 9px; flex-wrap: wrap; }
+    .mini { font-size: 10px; padding: 4px 7px; border: 1px solid rgba(34,211,238,.26); color: #a5f3fc; background: rgba(8,47,73,.24); }
+    .composer { margin-top: 14px; display: flex; align-items: center; gap: 8px; padding: 9px 10px; border: 1px solid var(--line); background: rgba(4,8,12,.9); }
+    .composer input { flex: 1; border: 0; outline: 0; background: transparent; color: var(--text); font-size: 12px; }
+    .composer button { width: 70px; height: 30px; border: 0; color: #04131a; background: linear-gradient(90deg, var(--cyan), var(--blue)); font-weight: 700; font-size: 12px; clip-path: polygon(8px 0, 100% 0, 100% calc(100% - 8px), calc(100% - 8px) 100%, 0 100%, 0 8px); }
+    .intel { display: flex; flex-direction: column; gap: 12px; min-height: 0; }
+    .intel .panel { padding: 12px; }
+    .metric-row { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+    .metric { padding: 8px; border: 1px solid var(--line); background: rgba(4,9,14,.72); }
+    .metric-value { font-family: ui-monospace, monospace; font-size: 18px; color: #e6f9ff; margin-top: 3px; }
+    .kv { display: flex; justify-content: space-between; font-size: 11px; padding: 6px 0; border-bottom: 1px solid rgba(148,163,184,.08); }
+    .kv:last-child { border: 0; }
+    .right-rail { display: flex; flex-direction: column; gap: 12px; overflow: hidden; }
+    .radar {
+      aspect-ratio: 1; position: relative; display: grid; place-items: center;
+      border: 1px solid var(--line); background: radial-gradient(circle, rgba(34,211,238,.09), transparent 58%);
+    }
+    .radar::before, .radar::after { content: ""; position: absolute; border: 1px solid rgba(34,211,238,.12); border-radius: 50%; }
+    .radar::before { inset: 12%; } .radar::after { inset: 28%; }
+    .core { width: 54px; height: 54px; border-radius: 50%; border: 1px solid var(--cyan); display: grid; place-items: center; color: #e8feff; font-size: 10px; letter-spacing: 2px; box-shadow: 0 0 36px rgba(34,211,238,.35); background: radial-gradient(circle, rgba(34,211,238,.2), transparent); }
+    .blip { position: absolute; width: 6px; height: 6px; border-radius: 50%; background: var(--green); box-shadow: 0 0 10px var(--green); }
+    .artifact { display: grid; grid-template-columns: 24px 1fr; gap: 8px; padding: 7px 0; border-bottom: 1px solid rgba(148,163,184,.08); }
+    .artifact:last-child { border: 0; }
+    .artifact-name { font-size: 12px; color: #cde6f7; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .artifact-meta { font-size: 9px; color: var(--muted); }
+    .file { width: 24px; height: 24px; border: 1px solid rgba(167,139,250,.28); color: #c4b5fd; display: grid; place-items: center; font-size: 9px; background: rgba(30,20,60,.4); }
+    @media (max-width: 1100px) {
+      body { overflow: auto; }
+      .app { grid-template-columns: 1fr; height: auto; }
+      .stage { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <main class="app">
+    <aside class="rail">
+      <div class="brand">
+        <div class="brand-core">J</div>
+        <div>
+          <div class="brand-title">JARVIS</div>
+          <div class="brand-sub">COMMAND DECK</div>
+        </div>
+      </div>
+      <div>
+        <div class="section-label"><span>ACTIVE MISSION</span><span>01</span></div>
+        <div class="mission">
+          <div class="mission-name">数据库国产化迁移</div>
+          <div class="bar"><i style="width: 72%"></i></div>
+          <div class="mission-meta"><span>7 / 10 nodes</span><span>ETA 24m</span></div>
+        </div>
+      </div>
+      <div>
+        <div class="section-label"><span>AGENT FLEET</span><span>05</span></div>
+        <div class="fleet">
+          <div class="agent active"><span class="dot amber"></span><div><div class="agent-name">boot</div><div class="agent-role">调度核心</div></div><span class="agent-state">RUN</span></div>
+          <div class="agent"><span class="dot green"></span><div><div class="agent-name">hall-center</div><div class="agent-role">大厅中心</div></div><span class="agent-state">READY</span></div>
+          <div class="agent"><span class="dot green"></span><div><div class="agent-name">order-center</div><div class="agent-role">订单中心</div></div><span class="agent-state">READY</span></div>
+          <div class="agent"><span class="dot blue"></span><div><div class="agent-name">rule-center</div><div class="agent-role">规则复核</div></div><span class="agent-state">SCAN</span></div>
+          <div class="agent"><span class="dot green"></span><div><div class="agent-name">cust-center</div><div class="agent-role">客户中心</div></div><span class="agent-state">READY</span></div>
+        </div>
+      </div>
+      <div>
+        <div class="section-label"><span>KNOWLEDGE ISOLATION</span><span>SEC</span></div>
+        <div class="agent"><span class="dot green"></span><div><div class="agent-name">boot知识库</div><div class="agent-role">授权 boot</div></div></div>
+        <div class="agent"><span class="dot blue"></span><div><div class="agent-name">rule-center知识库</div><div class="agent-role">授权 rule-center</div></div></div>
+      </div>
+    </aside>
+
+    <section class="center">
+      <header class="topbar">
+        <div class="status"><span class="pulse"></span>SYSTEM ONLINE</div>
+        <div class="top-metrics"><span>执行中 <b>3</b></span><span>待复核 <b>1</b></span><span>产物 <b>28</b></span><span>模型 <b>GLM-5.3</b></span></div>
+      </header>
+      <div class="stage">
+        <section class="panel console">
+          <div class="console-head">
+            <div class="console-title">JARVIS CONSOLE</div>
+            <div class="tags"><span class="tag">国产库迁移</span><span class="tag">知识隔离</span><span class="tag">直接分派</span></div>
+          </div>
+          <div class="stream">
+            <div class="msg ai">
+              <div class="avatar">JVS</div>
+              <div class="bubble">已完成 Oracle 订单模块扫描。识别 42 张表、3 个存储过程与 17 条外键约束，其中 3 处需要达梦语法转换。</div>
+            </div>
+            <div class="msg user">
+              <div class="avatar">OP</div>
+              <div class="bubble">指定 rule-center 复核转换规则，同时生成兼容性报告。</div>
+            </div>
+            <div class="msg ai">
+              <div class="avatar">JVS</div>
+              <div class="bubble">任务已直接分派给 rule-center。当前只访问 rule-center知识库，预计 4 分钟后返回差异清单。
+                <div class="inline-actions"><span class="mini">查看执行计划</span><span class="mini">绑定产物</span><span class="mini">暂停节点</span></div>
+              </div>
+            </div>
+            <div class="msg ai">
+              <div class="avatar">JVS</div>
+              <div class="bubble">检测到 <b>PROC_UPDATE_ORDER_STATUS</b> 使用了 Oracle 序列语法，建议改写为达梦兼容序列调用。</div>
+            </div>
+          </div>
+          <div class="composer">
+            <input value="继续处理剩余 2 个存储过程，产物写入任务空间" readonly>
+            <button>执行</button>
+          </div>
+        </section>
+        <aside class="intel">
+          <section class="panel">
+            <div class="section-label"><span>EXECUTION LOAD</span><span>72%</span></div>
+            <div class="metric-row">
+              <div class="metric"><span class="section-label">RUN</span><div class="metric-value">3</div></div>
+              <div class="metric"><span class="section-label">QUEUE</span><div class="metric-value">2</div></div>
+              <div class="metric"><span class="section-label">RISK</span><div class="metric-value">1</div></div>
+            </div>
+          </section>
+          <section class="panel">
+            <div class="section-label"><span>JARVIS CORE</span><span>SYNC</span></div>
+            <div class="radar"><div class="core">CORE</div><span class="blip" style="left:22%;top:36%"></span><span class="blip" style="left:68%;top:58%"></span><span class="blip" style="left:50%;top:20%"></span></div>
+          </section>
+        </aside>
+      </div>
+    </section>
+
+    <aside class="right-rail">
+      <section class="panel">
+        <div class="section-label"><span>SYSTEM STATUS</span><span>LIVE</span></div>
+        <div class="kv"><span>模型服务</span><span>GLM-5.3</span></div>
+        <div class="kv"><span>响应延迟</span><span>0.8s</span></div>
+        <div class="kv"><span>知识库</span><span>5 isolated</span></div>
+        <div class="kv"><span>安全网关</span><span>PASS</span></div>
+      </section>
+      <section class="panel">
+        <div class="section-label"><span>RECENT ARTIFACTS</span><span>28</span></div>
+        <div class="artifact"><div class="file">DDL</div><div><div class="artifact-name">达梦兼容性报告.md</div><div class="artifact-meta">rule-center · 2m</div></div></div>
+        <div class="artifact"><div class="file">SQL</div><div><div class="artifact-name">存储过程改写清单.sql</div><div class="artifact-meta">order-center · 8m</div></div></div>
+        <div class="artifact"><div class="file">MAP</div><div><div class="artifact-name">表对象映射方案.md</div><div class="artifact-meta">boot · 14m</div></div></div>
+      </section>
+      <section class="panel">
+        <div class="section-label"><span>NEXT ACTIONS</span><span>AI</span></div>
+        <div class="artifact"><div class="file">GO</div><div><div class="artifact-name">执行剩余 2 个存储过程</div><div class="artifact-meta">指定 order-center</div></div></div>
+        <div class="artifact"><div class="file">CHK</div><div><div class="artifact-name">复核外键约束转换</div><div class="artifact-meta">指定 rule-center</div></div></div>
+      </section>
+    </aside>
+  </main>
+</body>
+</html>

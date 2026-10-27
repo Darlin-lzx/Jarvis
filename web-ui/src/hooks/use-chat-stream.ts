@@ -92,7 +92,7 @@ export function useChatStream() {
   const [assistantText, setAssistantText] = useState('')
   const [steps, setSteps] = useState<ChatStep[]>([])
   const [timeline, setTimeline] = useState<TimelineItem[]>([])
-  /** 本次运行状态机推进事件（迁移任务的阶段流转），流结束后取用 */
+  /** 本次运行状态机推进事件（跨工程迭代任务的阶段流转），流结束后取用 */
   const [migrateState, setMigrateState] = useState<MigrateEvent | null>(null)
   const abortRef = useRef<AbortController | null>(null)
   const activeConvRef = useRef<number | null>(null)
@@ -100,7 +100,7 @@ export function useChatStream() {
   const timelineRef = useRef<TimelineItem[]>([])
   /** 本次运行解析出的结构化 UI 指令（<UI_RENDER> 首个合法 JSON），流结束后取用 */
   const uiRenderRef = useRef<Record<string, unknown> | null>(null)
-  /** 本次运行状态机推进事件（供发送方流结束后刷新迁移面板/状态） */
+  /** 本次运行状态机推进事件（供发送方流结束后刷新迭代面板/状态） */
   const migrateRef = useRef<MigrateEvent | null>(null)
   /** 正文 token 高频到达时先合并渲染，避免长回复按 token 重复解析 Markdown 卡住页面 */
   const assistantTextRef = useRef('')
@@ -213,7 +213,7 @@ export function useChatStream() {
                 console.log('[use-chat-stream] uiRenderRef set:', uiRenderRef.current)
               }
             } else if (ev.type === 'migrate') {
-              // 状态机推进事件：迁移任务阶段流转（后端硬编码控制）
+              // 状态机推进事件：跨工程迭代任务阶段流转（后端硬编码控制）
               const me = ev.content as MigrateEvent
               migrateRef.current = me
               setMigrateState(me)

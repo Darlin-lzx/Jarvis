@@ -1,13 +1,12 @@
 import { useEffect, useRef, useState } from 'react'
 import { ArrowLeft, MessageSquare, Package, RefreshCw, RotateCw, Copy, Download, MoreHorizontal, Pencil, Trash2, Eraser, Check, X } from 'lucide-react'
 import { api } from '@/lib/api'
-import type { TaskDetail, TraceEvent, Space, MigrateTaskDetail } from '@/lib/types'
+import type { TaskDetail, Space, MigrateTaskDetail } from '@/lib/types'
 import { TaskStatusBadge } from '@/lib/task-status'
 import { agents } from '@/components/chat/agent-tabs'
 import type { TaskFilter } from '@/components/layout/sidebar'
 import { cn } from '@/lib/utils'
 import { TaskBreadcrumb } from './task-breadcrumb'
-import { TaskTracePanel } from './task-trace-panel'
 import { ArtifactPanel } from '@/components/chat/delivery-panel'
 import { StateBoard, StageDrawer } from '@/components/migrate/state-board'
 import { DeleteTaskDialog } from './delete-task-dialog'
@@ -36,15 +35,13 @@ export function TaskDetailPage({ taskId, onBack, onSelectConv, onNewConv, onBack
   onCopyTask?: (ctx: { space?: Space; agentId?: string; name?: string; description?: string; kbIds?: number[] }) => void
 }) {
   const [detail, setDetail] = useState<TaskDetail | null>(null)
-  const [tab, setTab] = useState<'会话' | '链路日志'>('会话')
-  const [traces, setTraces] = useState<TraceEvent[]>([])
   const [moreOpen, setMoreOpen] = useState(false)
   const [descEditOpen, setDescEditOpen] = useState(false)
   const [descText, setDescText] = useState('')
   const [showArtifacts, setShowArtifacts] = useState(true)
   const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false)
   const [deletingTask, setDeletingTask] = useState(false)
-  /** 关联的迁移任务详情（用于状态机看板展示） */
+  /** 关联的跨工程迭代任务详情（用于状态机看板展示） */
   const [migrateDetail, setMigrateDetail] = useState<MigrateTaskDetail | null>(null)
   /** 阶段详情抽屉：当前打开的展示节点下标 */
   const [drawerStage, setDrawerStage] = useState<number | null>(null)
@@ -53,7 +50,7 @@ export function TaskDetailPage({ taskId, onBack, onSelectConv, onNewConv, onBack
 
   const load = () => {
     api.getTask(taskId).then(r => { if (r.success) setDetail(r.data ?? null) })
-    // 同时加载关联的迁移任务详情（用于状态机看板）
+    // 同时加载关联的跨工程迭代任务详情（用于状态机看板）
     api.getMigrateTaskByTaskId(taskId).then(r => {
       if (r.success && r.data) setMigrateDetail(r.data as MigrateTaskDetail)
       else setMigrateDetail(null)
@@ -79,18 +76,6 @@ export function TaskDetailPage({ taskId, onBack, onSelectConv, onNewConv, onBack
     return () => document.removeEventListener('mousedown', handler)
   }, [])
 
-  const loadTraces = async () => {
-    if (!detail?.sessions?.length) { setTraces([]); return }
-    const arr: TraceEvent[] = []
-    for (const s of detail.sessions) {
-      const r = await api.getTrace(s.id)
-      if (r.success) arr.push(...(r.data || []).map(e => ({ ...e, conv_id: s.id, conv_title: s.title })))
-    }
-    setTraces(arr.sort((a, b) => ((a as any).conv_id ?? 0) - ((b as any).conv_id ?? 0)))
-  }
-  // 常驻加载（供链路面板使用）：任务轮询返回新 detail 时同步刷新 trace
-  useEffect(() => { void loadTraces() }, [detail])
-
   /* ===== 头部卡片操作 ===== */
 
   // 重新执行：重置为待执行，重新发起流水线（运行中禁用）
@@ -107,7 +92,7 @@ export function TaskDetailPage({ taskId, onBack, onSelectConv, onNewConv, onBack
     setRetryingStage(stage)
     try {
       const r = await api.retryMigrateTaskStage(liveMigrateDetail.task_id, stage)
-      if (!r.success || !r.data?.conv_id) throw new Error(r.error || '该迁移任务没有关联会话，无法重新执行')
+      if (!r.success || !r.data?.conv_id) throw new Error(r.error || '该跨工程迭代任务没有关联会话，无法重新执行')
       await api.runMigrationStage(r.data.conv_id)
       await load()
     } catch (e) {
@@ -218,7 +203,7 @@ export function TaskDetailPage({ taskId, onBack, onSelectConv, onNewConv, onBack
 
   return (
     <div className="flex-1 flex min-h-0 overflow-hidden">
-      {/* 左侧：任务详情（面包屑/头部卡片/链路面板/会话） */}
+        {/* 左侧：任务详情（面包屑/头部卡片/会话） */}
       <div className="flex-1 min-w-0 overflow-auto">
         <div className="max-w-3xl mx-auto p-6">
         {/* 面包屑：任务 > 空间 / 任务名（前段可点击回退；最后一级任务名不可点） */}
@@ -340,27 +325,12 @@ export function TaskDetailPage({ taskId, onBack, onSelectConv, onNewConv, onBack
           </div>
         )}
 
-        {/* 状态机看板（有迁移任务时展示状态机，否则展示原始链路面板） */}
+        {/* 状态机看板（仅有关联跨工程迭代任务时展示） */}
         {liveMigrateDetail ? (
           <StateBoard detail={liveMigrateDetail} onOpenStage={setDrawerStage} onRetryStage={doRetryStage} retryingStage={retryingStage} />
-        ) : (
-          <TaskTracePanel
-            traces={traces}
-            status={detail.status}
-            updatedAt={detail.updated_at}
-            traceId={migrateDetail?.trace_id}
-            onSelectConv={onSelectConv}
-          />
-        )}
+        ) : null}
 
         <div className="flex items-center gap-2 mt-5 mb-3">
-          {(['会话', '链路日志'] as const).map(t => (
-            <button key={t} onClick={() => setTab(t)}
-              className={cn('px-3.5 h-8 rounded-lg text-[12px]',
-                tab === t ? 'bg-[#5b7cfa] text-white' : 'bg-[#16161e] text-[#8b8b9e] hover:text-[#cdd3e0] border border-[#252530]')}>
-              {t}
-            </button>
-          ))}
           <button onClick={load} className="ml-auto flex items-center gap-1 text-[11px] text-[#5a5a70] hover:text-[#9a9aa4] transition-colors">
             <RefreshCw className="w-3 h-3" />刷新
           </button>
@@ -374,8 +344,7 @@ export function TaskDetailPage({ taskId, onBack, onSelectConv, onNewConv, onBack
           </button>
         </div>
 
-        {tab === '会话' && (
-          <div className="space-y-2">
+        <div className="space-y-2">
             {(detail.sessions || []).map(s => (
               <div key={s.id} className="group relative rounded-xl bg-[#16161e] border border-[#252530] hover:border-indigo-500/30 transition-all">
                 <button onClick={() => onSelectConv(s.id)}
@@ -396,22 +365,8 @@ export function TaskDetailPage({ taskId, onBack, onSelectConv, onNewConv, onBack
             ))}
             {!detail.sessions?.length && <div className="text-center text-[12px] text-[#5a5a70] py-10">暂无会话</div>}
           </div>
-        )}
-
-        {tab === '链路日志' && (
-          <div className="space-y-1.5">
-            {traces.map((e, i) => (
-              <div key={i} className="px-3 py-2 rounded-lg bg-[#0f0f14] border border-[#252530] text-[12px]">
-                <span className="text-[#5b7cfa] mr-2">[{e.node}]</span>
-                <span className="text-[#9a9aa4] mr-2">{(e as any).conv_title || ''}</span>
-                <span className="text-[#cdd3e0]">{typeof e.content === 'string' ? e.content.slice(0, 80) : JSON.stringify(e.content).slice(0, 80)}</span>
-              </div>
-            ))}
-            {traces.length === 0 && <div className="text-center text-[12px] text-[#5a5a70] py-10">暂无日志</div>}
-          </div>
-        )}
         </div>
-      </div>
+        </div>
 
       <DeleteTaskDialog
         open={deleteConfirmOpen}

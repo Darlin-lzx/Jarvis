@@ -2,8 +2,8 @@ import os
 import tempfile
 import pytest
 
-from db_loc_agent.db import Database
-from db_loc_agent.project import ProjectError, ProjectService
+from jarvis_agent.db import Database
+from jarvis_agent.project import ProjectError, ProjectService
 
 
 @pytest.fixture()
@@ -54,25 +54,22 @@ def test_task_delete_cascades_conversations(proj):
     sp = proj.create_space("S", "")
     task = proj.create_task(space_id=sp["id"], name="T")
     with proj.db.session() as s:
-        from db_loc_agent.db import Conversation
+        from jarvis_agent.db import Conversation
         s.add(Conversation(title="c1", space_id=sp["id"], task_id=task["id"]))
         s.commit()
     proj.delete_task(task["id"])
     with proj.db.session() as s:
-        from db_loc_agent.db import Conversation
+        from jarvis_agent.db import Conversation
         c = s.query(Conversation).first()
         assert c is None, "删除任务应级联删除其下会话"
 
 
 def test_task_delete_cascades_migrate_state(proj):
-    """删除业务任务必须同步删除其迁移状态机，避免新任务接入旧状态。"""
+    """删除业务任务必须同步删除其跨工程迭代任务与状态事件，避免新任务接入旧状态。"""
     import json
 
-    from db_loc_agent.db import (
-        Conversation,
-        DbMigrateAsset,
-        DbMigrateTask,
-        MigrateStateEvent,
+    from jarvis_agent.db import (
+        Conversation, JarvisStateEvent, JarvisTask,
     )
 
     sp = proj.create_space("S", "")
@@ -81,12 +78,12 @@ def test_task_delete_cascades_migrate_state(proj):
         conv = Conversation(title="c1", space_id=sp["id"], task_id=task["id"])
         s.add(conv)
         s.flush()
-        migrate = DbMigrateTask(
-            conv_id=task["id"], space_id=sp["id"], status="ASSESSMENT_RUNNING")
+        migrate = JarvisTask(
+            conv_id=conv.id, space_id=sp["id"], project_task_id=task["id"],
+            status="ORDER_SPLIT")
         s.add(migrate)
         s.flush()
-        s.add(DbMigrateAsset(task_id=migrate.id, asset_name="users"))
-        s.add(MigrateStateEvent(
+        s.add(JarvisStateEvent(
             task_id=migrate.id, conv_id=conv.id, event_type="NODE_SUCCESS"))
         conv.task_state = json.dumps({"migrate_task_id": migrate.id})
         s.commit()
@@ -95,8 +92,6 @@ def test_task_delete_cascades_migrate_state(proj):
     proj.delete_task(task["id"])
 
     with proj.db.session() as s:
-        assert s.get(DbMigrateTask, migrate_id) is None
-        assert s.query(DbMigrateAsset).filter(
-            DbMigrateAsset.task_id == migrate_id).count() == 0
-        assert s.query(MigrateStateEvent).filter(
-            MigrateStateEvent.task_id == migrate_id).count() == 0
+        assert s.get(JarvisTask, migrate_id) is None
+        assert s.query(JarvisStateEvent).filter(
+            JarvisStateEvent.task_id == migrate_id).count() == 0

@@ -14,7 +14,7 @@
 
 **Files:**
 - Modify: `tests/test_api.py`
-- Modify: `db_loc_agent/app.py`
+- Modify: `jarvis_agent/app.py`
 
 - [x] Add an integration test that uploads a three-sheet Excel workbook, starts a migration collection without explicit source or target, and expects `source_db_type=excel`, `target_db_type=mysql`, and `object_count=3`.
 - [x] Run the test and verify it fails because source and target remain empty.
@@ -25,7 +25,7 @@
 
 **Files:**
 - Modify: `tests/test_api.py`
-- Modify: `db_loc_agent/app.py`
+- Modify: `jarvis_agent/app.py`
 
 - [x] Add a regression test where `DbMigrateTask.conv_id` stores a project-task id while the linked conversation stores `step_status=done`; `/api/tasks/{project_task_id}/migrate-task` must return the done state.
 - [x] Run the test and verify it fails because the response omits execution state.

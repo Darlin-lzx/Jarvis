@@ -1,8 +1,8 @@
 /** @type {import('tailwindcss').Config} */
 export default {
   content: [
-    "/Users/l1nzx/Data/05_program/pythonProject/BDMP/db_loc_agent/web-ui/index.html",
-    "/Users/l1nzx/Data/05_program/pythonProject/BDMP/db_loc_agent/web-ui/src/**/*.{js,ts,jsx,tsx}",
+    "./index.html",
+    "./src/**/*.{js,ts,jsx,tsx}",
   ],
   theme: {
     extend: {

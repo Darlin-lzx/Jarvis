@@ -13,7 +13,7 @@
 ### Task 1: Backend Artifact Gate
 
 **Files:**
-- Modify: `db_loc_agent/graph.py`
+- Modify: `jarvis_agent/graph.py`
 - Test: `tests/test_graph.py`
 
 - [x] Write failing tests for: conversational replies do not write artifacts; core sub-agent replies write only the configured business document and SQL; commander orchestration writes no index.
@@ -23,8 +23,8 @@
 ### Task 2: Chat Event Contract
 
 **Files:**
-- Modify: `db_loc_agent/graph.py`
-- Modify: `db_loc_agent/app.py`
+- Modify: `jarvis_agent/graph.py`
+- Modify: `jarvis_agent/app.py`
 - Test: `tests/test_graph.py`
 
 - [x] Write a failing stream test proving sub-agent chat events omit the full report and include artifact records.
@@ -47,7 +47,7 @@
 ### Task 4: Direct Artifact Agent Streaming
 
 **Files:**
-- Modify: `db_loc_agent/app.py`
+- Modify: `jarvis_agent/app.py`
 - Test: `tests/test_api.py`
 
 - [x] Write a failing stream test proving direct consultation of an artifact-producing agent does not stream the full report.

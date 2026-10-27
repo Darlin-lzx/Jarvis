@@ -1,4 +1,4 @@
-from db_loc_agent.config import AppConfig, load_config
+from jarvis_agent.config import AppConfig, load_config
 
 
 def test_default_config():

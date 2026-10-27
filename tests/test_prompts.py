@@ -1,8 +1,8 @@
 import pytest
 from sqlalchemy import select
 
-from db_loc_agent.db import Database, Prompt
-from db_loc_agent.prompts import PromptService
+from jarvis_agent.db import Database, Prompt
+from jarvis_agent.prompts import PromptService
 
 
 def _svc(tmp_path):
@@ -29,7 +29,7 @@ def test_update_missing_raises(tmp_path):
 
 def test_system_role_bind_and_delete_protection(tmp_path):
     """系统角色提示词：绑定校验（存在/type/enabled）、bound_agent_count、删除保护与解绑后删除"""
-    from db_loc_agent.agents import AgentService
+    from jarvis_agent.agents import AgentService
     svc = _svc(tmp_path)
     asvc = AgentService(svc.db)
     # 创建系统角色提示词

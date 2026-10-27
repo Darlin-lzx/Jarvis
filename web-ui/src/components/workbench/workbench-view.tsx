@@ -1,3 +1,4 @@
+import { useState } from 'react'
 import { KBPanel } from './kb-panel'
 import { KGPanel } from './kg-panel'
 import { AgentsPanel } from './agents-panel'
@@ -5,27 +6,46 @@ import { SkillsPanel } from './skills-panel'
 import { PromptsPanel } from './prompts-panel'
 import { DatasourcesPanel } from './datasources-panel'
 import { MCPPanel } from './mcp-panel'
-import { OpsPanel } from './ops-panel'
-import { GovPanel } from './gov-panel'
-import { SecurityPanel } from './security-panel'
 import { ArtifactsPanel } from './artifacts-panel'
 import { VectorPanel } from './vector-panel'
 import { ConversationsPanel } from './conversations-panel'
-import { WorkspacePanel } from './workspace-panel'
-import { ModelsPanel } from './models-panel'
 import { TemplatePanel } from './template-panel'
 import { MigratePanel } from './migrate-panel'
+import { WorkflowPanel } from './workflow-panel'
+import { AnalysisPanel } from './analysis-panel'
+import { SqlPanel } from './sql-panel'
+import { UsersPanel } from './users-panel'
+import { JarvisWorkbench } from './jarvis-workbench'
 
 interface WorkbenchViewProps {
   activeTab: string
   onTabChange?: (tab: string) => void
   onNew?: () => void
+  jarvisConvId: number | null
+  ensureJarvisConversation: () => Promise<number>
+  /** 当前登录用户显示名 */
+  authUser?: string
 }
 
-export function WorkbenchView({ activeTab, onTabChange, onNew }: WorkbenchViewProps) {
+export function WorkbenchView({
+  activeTab,
+  onTabChange,
+  jarvisConvId,
+  ensureJarvisConversation,
+  authUser,
+}: WorkbenchViewProps) {
+  const [workflowTag, setWorkflowTag] = useState('')
+
   const renderPanel = () => {
     switch (activeTab) {
-      case 'workspace': return <WorkspacePanel onTabChange={onTabChange} onNew={onNew} />
+      case 'workspace':
+        return (
+          <JarvisWorkbench
+            onTabChange={onTabChange}
+            jarvisConvId={jarvisConvId}
+            ensureJarvisConversation={ensureJarvisConversation}
+          />
+        )
       case 'kb': return <KBPanel />
       case 'kg': return <KGPanel />
       case 'artifacts': return <ArtifactsPanel />
@@ -36,18 +56,20 @@ export function WorkbenchView({ activeTab, onTabChange, onNew }: WorkbenchViewPr
       case 'templates': return <TemplatePanel />
       case 'dbs': return <DatasourcesPanel />
       case 'mcp': return <MCPPanel />
-      case 'ops': return <OpsPanel />
-      case 'gov': return <GovPanel />
-      case 'security': return <SecurityPanel />
       case 'vector': return <VectorPanel />
-      case 'models': return <ModelsPanel />
       case 'migrate': return <MigratePanel />
+      case 'workflows': return <WorkflowPanel initialTag={workflowTag} />
+      case 'analysis': return (
+        <AnalysisPanel onQueryWorkflow={tag => { setWorkflowTag(tag); onTabChange?.('workflows') }} />
+      )
+      case 'sql': return <SqlPanel />
+      case 'users': return <UsersPanel currentUser={authUser ?? ''} />
       default: return null
     }
   }
 
   return (
-    <div className="flex-1 overflow-y-auto p-6">
+    <div className={activeTab === 'workspace' ? 'flex-1 min-h-0 overflow-hidden' : 'flex-1 overflow-y-auto p-6'}>
       {renderPanel()}
     </div>
   )

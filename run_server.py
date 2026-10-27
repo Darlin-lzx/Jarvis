@@ -1,6 +1,6 @@
 """启动后端服务"""
 import uvicorn
-from db_loc_agent.app import create_app
+from jarvis_agent.app import create_app
 
 app = create_app()
 

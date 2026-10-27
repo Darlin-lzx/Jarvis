@@ -48,4 +48,95 @@
   .prose code {
     color: #a5b4fc;
   }
+
+  /* ---- AI 回复 markdown 全局渲染 ---- */
+  .prose table {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 12px 0;
+    font-size: 13px;
+    border: 1px solid #2a2a38;
+    border-radius: 8px;
+    overflow: hidden;
+  }
+  .prose thead {
+    background: #1a1a26;
+  }
+  .prose th {
+    padding: 8px 12px;
+    text-align: left;
+    font-weight: 600;
+    color: #c0c8d8;
+    border-bottom: 1px solid #2f2f40;
+    white-space: nowrap;
+  }
+  .prose td {
+    padding: 7px 12px;
+    color: #b8bfcf;
+    border-bottom: 1px solid #22222e;
+    line-height: 1.6;
+  }
+  .prose tbody tr:last-child td {
+    border-bottom: none;
+  }
+  .prose tbody tr:hover {
+    background: rgba(99, 102, 241, 0.04);
+  }
+  .prose ul, .prose ol {
+    padding-left: 20px;
+    margin: 8px 0;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+  .prose li {
+    color: #c8cdd8;
+    line-height: 1.7;
+  }
+  .prose li::marker {
+    color: #5a5a78;
+  }
+  .prose h1, .prose h2, .prose h3, .prose h4 {
+    color: #e4e8f0;
+    font-weight: 600;
+    margin: 16px 0 8px;
+    line-height: 1.4;
+  }
+  .prose h1 { font-size: 18px; border-bottom: 1px solid #252530; padding-bottom: 6px; }
+  .prose h2 { font-size: 16px; }
+  .prose h3 { font-size: 14.5px; }
+  .prose h4 { font-size: 14px; }
+  .prose blockquote {
+    border-left: 3px solid #4f5ce8;
+    background: rgba(79, 92, 232, 0.06);
+    padding: 10px 14px;
+    margin: 10px 0;
+    border-radius: 0 8px 8px 0;
+    color: #a8b0c2;
+  }
+  .prose blockquote p {
+    margin: 0;
+  }
+  .prose strong, .prose b {
+    color: #e0e4ee;
+    font-weight: 600;
+  }
+  .prose a {
+    color: #7b8cfa;
+    text-decoration: none;
+    border-bottom: 1px solid rgba(123, 140, 250, 0.3);
+    transition: border-color 0.15s;
+  }
+  .prose a:hover {
+    border-bottom-color: #7b8cfa;
+  }
+  .prose hr {
+    border: none;
+    border-top: 1px solid #252530;
+    margin: 14px 0;
+  }
+  .prose p {
+    margin: 6px 0;
+    line-height: 1.75;
+  }
 }

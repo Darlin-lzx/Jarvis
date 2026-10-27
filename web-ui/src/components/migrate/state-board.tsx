@@ -11,7 +11,7 @@ import {
 import { boardStagesFromFlow, type MigrateBoardStage } from './flow-stages'
 import {
   CheckCircle2, XCircle, Circle, Workflow,
-  X, Eye, Clock, Braces, FileText, RotateCw, FileSpreadsheet, Play,
+  X, Eye, Clock, Braces, FileText, RotateCw, Play,
 } from 'lucide-react'
 
 /* ================= 状态机看板（任务详情头部主入口） ================= */
@@ -39,9 +39,11 @@ export function stageIdxOf(status: string, stages: MigrateBoardStage[] = DEFAULT
 /** ERROR 状态无法直接映射，依据已采集参数推断「最近推进到的阶段」 */
 export function effectiveIdx(t: MigrateTaskDetail, stages: MigrateBoardStage[] = DEFAULT_BOARD_STAGES): number {
   if (t.status === 'ERROR') {
-    if (t.source_ds_id && t.source_db_type && t.target_db_type
-      && (t.db_business_level || t.db_capacity || t.stop_window)) return stageIdxOf('ASSESSMENT_RUNNING', stages)
-    return stageIdxOf('DATA_COLLECTION', stages)
+    if ((t.business_scene || t.frontend_task)
+      && (t.order_source || t.split_rule)
+      && (t.accept_system || t.workflow_scene)) return stageIdxOf('RULE_CHECK', stages)
+    if (t.business_scene || t.frontend_task) return stageIdxOf('ORDER_SPLIT', stages)
+    return stageIdxOf('PAGE_SHOW', stages)
   }
   return stageIdxOf(t.status, stages)
 }
@@ -172,7 +174,7 @@ export function StateBoard({ detail, onOpenStage, onAdvance, advancing, onRetryS
         </div>
       ) : (
         <div className="mb-2 text-[11px] text-green-400 bg-green-500/10 border border-green-500/20 rounded-lg px-3 py-1.5">
-          ✅ 任务空闲，你可以继续推进迁移流程。
+          ✅ 任务空闲，你可以继续推进跨工程迭代流程。
         </div>
       )}
 
@@ -209,7 +211,7 @@ export function StateBoard({ detail, onOpenStage, onAdvance, advancing, onRetryS
       {/* 空状态 / 异常状态提示 */}
       {detail.status === 'INIT' && (
         <div className="mt-2 text-[11px] text-[#8b8b9e] bg-[#16161e52] rounded-lg px-3 py-2">
-          任务尚未启动：请先选择数据源，发起迁移任务。第一步「数据采集」节点上方高亮即当前可操作阶段。
+          任务尚未启动：请先补充业务场景与前端任务，发起跨工程迭代。第一步「页面展示」节点上方高亮即当前可操作阶段。
         </div>
       )}
       {errored && (
@@ -219,7 +221,7 @@ export function StateBoard({ detail, onOpenStage, onAdvance, advancing, onRetryS
       )}
       {detail.status === 'FINISHED' && (
         <div className="mt-2 text-[11px] text-green-400 bg-green-500/10 border border-green-500/20 rounded-lg px-3 py-2">
-          迁移评估已完成：结构化资产与报告已生成，可导出资产清单 Excel。
+          任务已完成：跨工程改动包与各阶段报告已生成，可在产物面板中查看。
         </div>
       )}
 
@@ -264,14 +266,6 @@ function ParamRow({ label, value }: { label: string; value: string }) {
   )
 }
 
-function StatBlock({ label, value, cls }: { label: string; value: number; cls: string }) {
-  return (
-    <div className="rounded-lg bg-[#0f0f14] border border-[#1e1e28] px-2 py-1.5">
-      <div className={cn('text-[16px] font-semibold leading-none mb-0.5', cls)}>{value}</div>
-      <div className="text-[9px] text-[#5a5a70]">{label}</div>
-    </div>
-  )
-}
 
 export function StageDrawer({ detail, stageIdx, onClose }: {
   detail: MigrateTaskDetail; stageIdx: number; onClose: () => void
@@ -282,17 +276,8 @@ export function StageDrawer({ detail, stageIdx, onClose }: {
   const errored = detail.status === 'ERROR' && effIdx === stageIdx
   const done = !errored && stageIdx < effIdx
   const current = !errored && stageIdx === effIdx
-  const assets = detail.assets || []
-  const stats = detail.assets_stats || { total: 0, high: 0, medium: 0, low: 0 }
-
   if (!stage) return null
 
-  const doExport = () => {
-    const a = document.createElement('a')
-    a.href = api.exportMigrateExcel(detail.task_id)
-    a.download = `migrate_assets_${detail.task_id}.xlsx`
-    a.click()
-  }
 
   return createPortal(
     <div className="fixed inset-0 z-[85] bg-black/40" onClick={onClose}>
@@ -344,13 +329,16 @@ export function StageDrawer({ detail, stageIdx, onClose }: {
               <span className="text-[12px] font-medium text-[#9a9aa4]">阶段入参（本次任务已采集参数）</span>
             </div>
             <div className="rounded-lg bg-[#12121a] border border-[#252530] divide-y divide-[#1e1e28] text-[11.5px]">
-              <ParamRow label="源数据源" value={detail.source_ds_name || detail.source_ds_id || '未采集'} />
-              <ParamRow label="源库类型" value={detail.source_db_type || '未采集'} />
-              <ParamRow label="目标国产库" value={detail.target_db_type || '未采集'} />
-              <ParamRow label="业务等级" value={detail.db_business_level || '未采集'} />
-              <ParamRow label="库容量" value={detail.db_capacity || '未采集'} />
-              <ParamRow label="停机窗口" value={detail.stop_window || '未采集'} />
-              <ParamRow label="扫描对象数" value={String(detail.object_count || 0)} />
+              <ParamRow label="前端任务" value={detail.frontend_task || '未采集'} />
+              <ParamRow label="业务场景" value={detail.business_scene || '未采集'} />
+              <ParamRow label="订单来源" value={detail.order_source || '未采集'} />
+              <ParamRow label="拆单规则" value={detail.split_rule || '未采集'} />
+              <ParamRow label="受理系统" value={detail.accept_system || '未采集'} />
+              <ParamRow label="工作流场景" value={detail.workflow_scene || '未采集'} />
+              <ParamRow label="规则配置" value={detail.rule_config || '未采集'} />
+              <ParamRow label="配置分支" value={detail.config_branch || '未采集'} />
+              <ParamRow label="客户范围" value={detail.customer_scope || '未采集'} />
+              <ParamRow label="数据范围" value={detail.data_range || '未采集'} />
             </div>
           </div>
 
@@ -358,45 +346,17 @@ export function StageDrawer({ detail, stageIdx, onClose }: {
           <div>
             <div className="flex items-center gap-1.5 mb-2">
               <FileText className="w-3.5 h-3.5 text-[#5a5a70]" />
-              <span className="text-[12px] font-medium text-[#9a9aa4]">阶段产出物：结构化资产清单</span>
-              <div className="ml-auto flex items-center gap-1.5">
-                <Button size="sm" variant="ghost" className="h-6 text-[10px]" onClick={() => window.open(`#/workspace/migrate`)} title="在迁移面板中预览">
+              <span className="text-[12px] font-medium text-[#9a9aa4]">阶段产出物</span>
+              <div className="ml-auto">
+                <Button size="sm" variant="ghost" className="h-6 text-[10px]" onClick={() => window.open(`#/workspace/migrate`)} title="在迭代面板中预览">
                   <Eye className="w-3 h-3 mr-1" />预览
-                </Button>
-                <Button size="sm" className="h-6 text-[10px] bg-indigo-600 hover:bg-indigo-500 text-white" onClick={doExport} disabled={stats.total === 0}>
-                  <FileSpreadsheet className="w-3 h-3 mr-1" />导出
                 </Button>
               </div>
             </div>
-            {stats.total === 0 ? (
-              <div className="text-[11px] text-[#5a5a70] bg-[#12121a] border border-[#252530] rounded-lg px-3 py-3 text-center">
-                该阶段尚未产出对象资产。扫描对象后由规则引擎自动生成。
-              </div>
-            ) : (
-              <div className="rounded-lg bg-[#12121a] border border-[#252530] p-3">
-                <div className="grid grid-cols-4 gap-2 text-center mb-2">
-                  <StatBlock label="总量" value={stats.total} cls="text-[#e4e4e9]" />
-                  <StatBlock label="高危" value={stats.high} cls="text-red-400" />
-                  <StatBlock label="中危" value={stats.medium} cls="text-yellow-400" />
-                  <StatBlock label="低危" value={stats.low} cls="text-green-400" />
-                </div>
-                <div className="space-y-1 max-h-40 overflow-y-auto">
-                  {assets.slice(0, 15).map(a => (
-                    <div key={a.id} className="flex items-center gap-2 text-[11px]">
-                      <span className="text-[9px] text-[#8b8b9e] w-14 flex-shrink-0">{a.asset_type}</span>
-                      <span className="font-mono text-[#cdd3e0] flex-1 truncate">{a.asset_name}</span>
-                      <span className={cn('px-1.5 py-0.5 rounded border text-[9px] font-medium flex-shrink-0',
-                        a.risk_level === '高' ? 'text-red-400 border-red-500/30 bg-red-500/10'
-                          : a.risk_level === '中' ? 'text-yellow-400 border-yellow-500/30 bg-yellow-500/10'
-                            : 'text-green-400 border-green-500/30 bg-green-500/10')}>{a.risk_level}</span>
-                    </div>
-                  ))}
-                  {assets.length > 15 && (
-                    <div className="text-[10px] text-[#5a5a70] text-center pt-1">…共 {assets.length} 项，详见迁移面板资产清单</div>
-                  )}
-                </div>
-              </div>
-            )}
+            <div className="text-[11px] text-[#5a5a70] bg-[#12121a] border border-[#252530] rounded-lg px-3 py-3 text-center">
+              该阶段完成后由对应业务域 Agent 生成代码改动清单报告（页面展示/下单拆单/订单受理/规则配置/客户数据），
+              产物自动入库当前空间与子系统知识库，可在产物面板中查看。
+            </div>
           </div>
 
           {/* 阶段执行日志 */}
@@ -407,19 +367,19 @@ export function StageDrawer({ detail, stageIdx, onClose }: {
             </div>
             <div className="text-[11px] font-mono bg-[#12121a] border border-[#252530] rounded-lg p-3 space-y-1 leading-relaxed">
               {detail.status === 'INIT' && (
-                <div className="text-[#5a5a70]">[INFO] 等待用户选择数据源，任务未开始（数据采集阶段）</div>
+                <div className="text-[#5a5a70]">[INFO] 等待用户补充业务场景与前端任务，任务未开始（页面展示阶段）</div>
               )}
-              {stageIdx > stageIdxOf('DATA_COLLECTION', stages) && detail.source_ds_name && (
-                <div className="text-[#8b8b9e]">[OK] 数据采集 · 已选定源数据源：{detail.source_ds_name}</div>
+              {stageIdx > stageIdxOf('PAGE_SHOW', stages) && detail.business_scene && (
+                <div className="text-[#8b8b9e]">[OK] 页面展示 · 已确认业务场景：{detail.business_scene}</div>
               )}
-              {stageIdx > stageIdxOf('DATA_COLLECTION', stages) && detail.target_db_type && (
-                <div className="text-[#8b8b9e]">[OK] 数据采集 · 参数齐备：目标 {detail.target_db_type} / 容量 {detail.db_capacity || '—'}</div>
+              {stageIdx > stageIdxOf('PAGE_SHOW', stages) && detail.frontend_task && (
+                <div className="text-[#8b8b9e]">[OK] 页面展示 · 前端任务已明确：{detail.frontend_task}</div>
               )}
-              {stageIdx > stageIdxOf('DATA_COLLECTION', stages) && detail.object_count ? (
-                <div className="text-[#8b8b9e]">[OK] 数据采集 · 对象扫描完成：共 {detail.object_count} 个对象，规则命中 {stats.total} 项资产</div>
-              ) : null}
+              {stageIdx > stageIdxOf('ORDER_SPLIT', stages) && detail.order_source && (
+                <div className="text-[#8b8b9e]">[OK] 下单拆单 · 订单来源：{detail.order_source} / 拆单规则：{detail.split_rule || '—'}</div>
+              )}
               {errored && (
-                <div className="text-red-400">[ERROR] {detail.error_msg || '节点执行失败，数据库连接超时'}</div>
+                <div className="text-red-400">[ERROR] {detail.error_msg || '节点执行失败'}</div>
               )}
               {current && !errored && (
                 <div className="text-indigo-300">[RUN] 当前阶段正在执行…</div>
@@ -428,7 +388,7 @@ export function StageDrawer({ detail, stageIdx, onClose }: {
                 <div className="text-green-400">[OK] 阶段完成，已进入下一阶段</div>
               )}
               {detail.status === 'FINISHED' && done && (
-                <div className="text-green-400">[OK] 全部阶段完成，报告已生成</div>
+                <div className="text-green-400">[OK] 全部阶段完成，跨工程改动包与报告已生成</div>
               )}
             </div>
           </div>

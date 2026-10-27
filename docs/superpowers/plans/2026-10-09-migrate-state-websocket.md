@@ -12,8 +12,8 @@
 
 ## File Map
 
-- Create `db_loc_agent/state_stream.py`: connection registry, task snapshot builder, safe cross-thread dispatch.
-- Modify `db_loc_agent/app.py`: instantiate broadcaster, add `/ws/migrate/{task_id}`, broadcast from LangGraph updates and REST advancement.
+- Create `jarvis_agent/state_stream.py`: connection registry, task snapshot builder, safe cross-thread dispatch.
+- Modify `jarvis_agent/app.py`: instantiate broadcaster, add `/ws/migrate/{task_id}`, broadcast from LangGraph updates and REST advancement.
 - Create `tests/test_state_stream.py`: broadcaster and WebSocket API tests.
 - Modify `tests/test_api.py`: REST advancement broadcast integration test.
 - Modify `web-ui/src/lib/types.ts`: WebSocket snapshot type.
@@ -28,7 +28,7 @@ The worktree already contains many unrelated uncommitted changes. During impleme
 ### Task 1: Backend Broadcaster
 
 **Files:**
-- Create: `db_loc_agent/state_stream.py`
+- Create: `jarvis_agent/state_stream.py`
 - Test: `tests/test_state_stream.py`
 
 - [ ] **Step 1: Write failing broadcaster tests**
@@ -36,7 +36,7 @@ The worktree already contains many unrelated uncommitted changes. During impleme
 ```python
 import asyncio
 
-from db_loc_agent.state_stream import MigrateStateBroadcaster
+from jarvis_agent.state_stream import MigrateStateBroadcaster
 
 
 class FakeWebSocket:
@@ -88,7 +88,7 @@ def test_broadcaster_removes_failed_connection_and_keeps_healthy_connection():
 
 Run: `.venv/bin/pytest tests/test_state_stream.py -q`
 
-Expected: import failure for `db_loc_agent.state_stream`.
+Expected: import failure for `jarvis_agent.state_stream`.
 
 - [ ] **Step 3: Implement broadcaster**
 
@@ -157,8 +157,8 @@ Expected: 2 passed.
 ### Task 2: Snapshot API and WebSocket Route
 
 **Files:**
-- Modify: `db_loc_agent/state_stream.py`
-- Modify: `db_loc_agent/app.py`
+- Modify: `jarvis_agent/state_stream.py`
+- Modify: `jarvis_agent/app.py`
 - Test: `tests/test_state_stream.py`
 
 - [ ] **Step 1: Add failing WebSocket route tests**
@@ -226,7 +226,7 @@ In `app.py`, import:
 
 ```python
 from fastapi import FastAPI, File, Form, HTTPException, Query, UploadFile, WebSocket, WebSocketDisconnect
-from db_loc_agent.state_stream import MigrateStateBroadcaster, migrate_state_snapshot
+from jarvis_agent.state_stream import MigrateStateBroadcaster, migrate_state_snapshot
 ```
 
 Inside `create_app`, after services are constructed:
@@ -279,7 +279,7 @@ Expected: 4 passed.
 ### Task 3: Broadcast LangGraph and REST State Changes
 
 **Files:**
-- Modify: `db_loc_agent/app.py`
+- Modify: `jarvis_agent/app.py`
 - Test: `tests/test_state_stream.py`
 - Test: `tests/test_api.py`
 
@@ -290,7 +290,7 @@ Append:
 ```python
 def test_chat_stream_broadcasts_langgraph_task_state(tmp_path, monkeypatch):
     from langchain_core.messages import AIMessage
-    import db_loc_agent.app as app_module
+    import jarvis_agent.app as app_module
 
     class StateGraph:
         def stream(self, initial, stream_mode=None):
@@ -639,7 +639,7 @@ Run:
 
 ```bash
 git diff --check
-git diff -- db_loc_agent/state_stream.py db_loc_agent/app.py tests/test_state_stream.py web-ui/src/hooks/use-migrate-state-socket.ts web-ui/src/components/project/task-detail-page.tsx web-ui/src/components/chat/chat-view.tsx web-ui/vite.config.ts web-ui/src/lib/types.ts
+git diff -- jarvis_agent/state_stream.py jarvis_agent/app.py tests/test_state_stream.py web-ui/src/hooks/use-migrate-state-socket.ts web-ui/src/components/project/task-detail-page.tsx web-ui/src/components/chat/chat-view.tsx web-ui/vite.config.ts web-ui/src/lib/types.ts
 ```
 
 Expected: no whitespace errors and no unrelated edits in the listed implementation files.

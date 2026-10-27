@@ -1,10 +1,12 @@
 import ReactMarkdown from 'react-markdown'
+import remarkGfm from 'remark-gfm'
 import { mentionTextRenderer } from './md-highlight'
 import { Copy, Check, Bot, Clock, Search, ChevronDown, ChevronRight, Download, Loader2 } from 'lucide-react'
 import { useState } from 'react'
 import type { ChatStep } from '@/hooks/use-chat-stream'
 import { UiForm } from './ui-form'
 import { agentDisplayName } from './agent-tabs'
+import { parseFileLocation } from '@/lib/file-location'
 
 /* 提取代码块纯文本 */
 function extractCodeText(node: unknown): string {
@@ -26,18 +28,18 @@ const USER_KEY_LABELS: Record<string, string> = {
   source_db: '源数据库',
   target_db: '目标数据库',
   datasource: '数据源',
-  task_confirm: '迁移任务确认',
+  task_confirm: '跨工程迭代任务确认',
 }
 
 /** 用户消息里常见的提交值（来自 UI 表单对象的 value 字段）翻译为中文显示。
- *  例如 task_confirm：confirm → 迁移任务确认：确认，避免气泡里出现 "confirm" 这种机器码。 */
+ *  例如 task_confirm：confirm → 跨工程迭代任务确认：确认，避免气泡里出现 "confirm" 这种机器码。 */
 const USER_VALUE_LABELS: Record<string, string> = {
   confirm: '确认', yes: '是', no: '否',
   cancel: '取消', modify: '修改', edit: '修改', back: '返回',
   redo: '重新选择', reselect: '重新选择',
 }
 
-/** 把用户消息里的 "task_confirm：confirm" 等机器键值对翻译为 "迁移任务确认：确认"。
+/** 把用户消息里的 "task_confirm：confirm" 等机器键值对翻译为 "跨工程迭代任务确认：确认"。
  *  支持多行（每行一个 key：value），仅翻译已知 key 与已知 value，未命中原样保留。 */
 function prettifyUserEcho(content: string): string {
   return (content || '').replace(/^([A-Za-z][A-Za-z0-9_]*)\s*[:：]\s*(.+)$/gm, (m, k: string, v: string) => {
@@ -76,9 +78,11 @@ interface MessageProps {
   uiData?: Record<string, unknown>
   /** UI 表单提交回调：把表单值回传给会话（未提供时表单仅本地展示） */
   onUiAction?: (values: Record<string, unknown>) => void
+  /** 点击正文中的 file/path:line 引用时，把文件位置交给右侧工作区打开 */
+  onOpenWorkspaceFile?: (location: { path: string; line?: number }) => void
 }
 
-export function Message({ role, content, agentId, agentName, dispatcherName, isSubAgent, error, agents, steps, isStreaming, loadingText, uiData, onUiAction }: MessageProps) {
+export function Message({ role, content, agentId, agentName, dispatcherName, isSubAgent, error, agents, steps, isStreaming, loadingText, uiData, onUiAction, onOpenWorkspaceFile }: MessageProps) {
   const [copied, setCopied] = useState(false)
   const [codeCopied, setCodeCopied] = useState(false)
   const [expandedThinking, setExpandedThinking] = useState(true)
@@ -226,8 +230,28 @@ export function Message({ role, content, agentId, agentName, dispatcherName, isS
       <div className="ml-8">
         <div className="prose prose-sm max-w-none text-[14px] text-[#e4e4e9]">
           <ReactMarkdown
+            remarkPlugins={[remarkGfm]}
             components={{
               text: mentionTextRenderer,
+              code(props: any) {
+                const { node, className, children, ...rest } = props
+                const text = extractCodeText(children)
+                const isBlock = Boolean(className) || text.includes('\n')
+                const location = isBlock ? null : parseFileLocation(text)
+                if (!location) {
+                  return <code {...rest} className={className}>{children}</code>
+                }
+                return (
+                  <button
+                    type="button"
+                    className="rounded-md border border-cyan-500/20 bg-[#1a1a24] px-1.5 py-0.5 font-mono text-[12.5px] text-cyan-300 transition-colors hover:border-sky-400/40 hover:bg-sky-500/10 hover:text-sky-200"
+                    title={location.line ? `${location.path}:${location.line}` : location.path}
+                    onClick={() => onOpenWorkspaceFile?.(location)}
+                  >
+                    {text}
+                  </button>
+                )
+              },
               pre(props: any) {
                 const { node, children, ...rest } = props
                 const lang = (props?.className || (node?.properties?.className as string | undefined) || '') || ''

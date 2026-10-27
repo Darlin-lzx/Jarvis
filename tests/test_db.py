@@ -1,6 +1,6 @@
 from sqlalchemy import select
 
-from db_loc_agent.db import ArtifactRecord, Conversation, Database, Prompt
+from jarvis_agent.db import ArtifactRecord, Conversation, Database, Prompt
 
 
 def test_create_db_tables_and_crud(tmp_path):

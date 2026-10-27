@@ -2,13 +2,28 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import type { PointerEvent as ReactPointerEvent } from 'react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
+import {
+  Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle,
+} from '@/components/ui/dialog'
 import { cn } from '@/lib/utils'
 import { api } from '@/lib/api'
-import type { WorkflowGraph, WorkflowNode, WorkflowTemplateResponse, WorkflowTemplateVersion } from '@/lib/types'
+import type {
+  WorkflowEdge, WorkflowGraph, WorkflowNode, WorkflowParseResponse,
+  WorkflowTemplateResponse, WorkflowTemplateVersion,
+} from '@/lib/types'
 import { buildWorkflowRoutesForGraph } from './workflow-edge-routing'
 import {
-  AlertTriangle, CircleAlert, Database, Maximize2, Search, Workflow,
-  ZoomIn, ZoomOut,
+  addGotoItem, addTaskElement, deleteGotoItem, deleteJoinElement, deleteTaskElement,
+  moveTaskElement, parseXmlDocument, serializeXmlDocument, setTaskLabel, setTaskLinks,
+  setTaskService, taskTypeOptions,
+} from './workflow-xml-editor'
+import type { XmlDocument } from './workflow-xml-editor'
+import { WorkflowNodeEditor } from './workflow-node-editor'
+import type { WorkflowNodeDraft } from './workflow-node-editor'
+import { WorkflowExportDialog } from './workflow-export-dialog'
+import {
+  AlertTriangle, CircleAlert, Cloud, Database, FileCode, FileDown, HardDrive, Link2, Maximize2,
+  Network, Pencil, Plus, RotateCcw, Search, Workflow, ZoomIn, ZoomOut, Check, Copy,
 } from 'lucide-react'
 
 const DEFAULT_TAG = 'com.ai.order.workflow.shedule.vm.GsmYdkjNewWFSchedule'
@@ -32,6 +47,10 @@ const NODE_STYLES: Record<string, { fill: string; stroke: string; text: string }
 
 function compactNode(type: string) {
   return ['csf_start', 'csf_finish', 'fork', 'and'].includes(type)
+}
+
+function defaultGeometryFor(tasktype: string) {
+  return compactNode(tasktype) ? { width: 30, height: 30 } : { width: 120, height: 60 }
 }
 
 function decisionNode(type: string) {
@@ -132,6 +151,164 @@ function VersionBadge({ version }: { version: WorkflowTemplateVersion }) {
   )
 }
 
+function formatWorkflowXml(raw: string) {
+  const compact = raw.replace(/>\s+</g, '><').trim()
+  if (!compact) return null
+  const parts = compact.split(/(<[^>]*>)/g).filter(part => part.length > 0)
+  const lines: string[] = []
+  let depth = 0
+  let lastLineHasText = false
+  for (const part of parts) {
+    if (part.startsWith('<?') || part.startsWith('<!')) {
+      lines.push('  '.repeat(depth) + part)
+      lastLineHasText = false
+      continue
+    }
+    if (part.startsWith('</')) {
+      depth = Math.max(0, depth - 1)
+      if (lastLineHasText) lines[lines.length - 1] += part
+      else lines.push('  '.repeat(depth) + part)
+      lastLineHasText = false
+      continue
+    }
+    if (part.startsWith('<')) {
+      lines.push('  '.repeat(depth) + part)
+      if (!part.endsWith('/>')) depth += 1
+      lastLineHasText = false
+      continue
+    }
+    const value = part.trim()
+    if (value) {
+      if (lines.length > 0) lines[lines.length - 1] += value
+      else lines.push(value)
+      lastLineHasText = true
+    }
+  }
+  return lines.length > 0 ? lines.join('\n') : null
+}
+
+function XmlView({ content, modified }: { content: string | null; modified?: boolean }) {
+  const [formatted, setFormatted] = useState(true)
+  const [copied, setCopied] = useState(false)
+  const text = content ?? ''
+  const formattedText = useMemo(() => formatWorkflowXml(text), [text])
+  const displayText = formatted && formattedText ? formattedText : text
+
+  async function copyXml() {
+    try {
+      await navigator.clipboard.writeText(displayText)
+      setCopied(true)
+      setTimeout(() => setCopied(false), 1500)
+    } catch {
+      setCopied(false)
+    }
+  }
+
+  if (!text.trim()) {
+    return (
+      <div className="px-4 py-10 text-center text-[12px] text-[#8b8b9e]">该版本无内容</div>
+    )
+  }
+
+  return (
+    <div className="flex flex-col">
+      <div className="flex items-center gap-2 border-b border-[#252530] px-3 py-1.5">
+        {modified && (
+          <span className="shrink-0 rounded border border-amber-500/40 bg-amber-500/10 px-1.5 py-0.5 text-[10px] text-amber-300">
+            已修改
+          </span>
+        )}
+        <div className="flex items-center overflow-hidden rounded-md border border-[#252530]" data-xml-format-toggle>
+          <button
+            className={cn(
+              'h-6 px-2 text-[11px] disabled:cursor-not-allowed disabled:opacity-40',
+              formatted && formattedText ? 'bg-white/10 text-[#e4e4e9]' : 'text-[#8b8b9e] hover:bg-white/5 hover:text-[#cdd3e0]',
+            )}
+            disabled={!formattedText}
+            onClick={() => setFormatted(true)}
+          >
+            格式化
+          </button>
+          <button
+            className={cn(
+              'h-6 px-2 text-[11px]',
+              !formatted || !formattedText ? 'bg-white/10 text-[#e4e4e9]' : 'text-[#8b8b9e] hover:bg-white/5 hover:text-[#cdd3e0]',
+            )}
+            onClick={() => setFormatted(false)}
+          >
+            原始
+          </button>
+        </div>
+        <span className="text-[10px] text-[#5a5a70]">{displayText.length} 字符</span>
+        <button
+          className="ml-auto flex h-6 items-center gap-1 rounded-md border border-[#252530] px-2 text-[11px] text-[#8b8b9e] hover:bg-white/5 hover:text-[#cdd3e0]"
+          onClick={() => void copyXml()}
+        >
+          {copied ? <Check className="h-3 w-3" /> : <Copy className="h-3 w-3" />}
+          {copied ? '已复制' : '复制'}
+        </button>
+      </div>
+      <pre data-xml-content className="max-h-[min(78vh,800px)] overflow-auto bg-[#0b0b10] p-3 font-mono text-[11px] leading-5 whitespace-pre select-text text-[#cdd3e0]">
+        {displayText}
+      </pre>
+    </div>
+  )
+}
+
+function AddNodeDialog({ open, onOpenChange, onConfirm }: {
+  open: boolean
+  onOpenChange: (open: boolean) => void
+  onConfirm: (tasktype: string, label: string) => void
+}) {
+  const [tasktype, setTasktype] = useState('csf_service')
+  const [label, setLabel] = useState('')
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="max-w-sm gap-3">
+        <DialogHeader>
+          <DialogTitle className="text-[15px]">添加节点</DialogTitle>
+        </DialogHeader>
+        <div className="space-y-2 text-[11px] text-[#8b8b9e]">
+          <label className="block space-y-1">
+            <span>节点类型</span>
+            <select
+              className="h-8 w-full rounded-md border border-[#252530] bg-[#0f0f14] px-2 text-[12px] text-[#cdd3e0]"
+              value={tasktype}
+              onChange={event => setTasktype(event.target.value)}
+            >
+              {taskTypeOptions().map(type => <option key={type} value={type}>{type}</option>)}
+            </select>
+          </label>
+          <label className="block space-y-1">
+            <span>label</span>
+            <Input
+              className="h-8 bg-[#0f0f14] text-[12px]"
+              placeholder="节点名称"
+              value={label}
+              onChange={event => setLabel(event.target.value)}
+            />
+          </label>
+        </div>
+        <DialogFooter>
+          <Button size="sm" variant="outline" className="h-8" onClick={() => onOpenChange(false)}>取消</Button>
+          <Button
+            size="sm"
+            className="h-8"
+            disabled={!label.trim()}
+            onClick={() => {
+              onConfirm(tasktype, label.trim())
+              onOpenChange(false)
+            }}
+          >
+            添加
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
 function NodeDetails({ node, graph }: { node: WorkflowNode; graph: WorkflowGraph }) {
   const outgoing = graph.edges.filter(edge => edge.source === node.id)
   const nodeMap = new Map(graph.nodes.map(item => [item.id, item]))
@@ -180,15 +357,37 @@ function NodeDetails({ node, graph }: { node: WorkflowNode; graph: WorkflowGraph
   )
 }
 
-export function WorkflowPanel() {
+export function WorkflowPanel({ initialTag }: { initialTag?: string } = {}) {
   const [tag, setTag] = useState(DEFAULT_TAG)
+  const [dbSource, setDbSource] = useState<'remote' | 'local'>(() =>
+    localStorage.getItem('workflow_db_source') === 'local' ? 'local' : 'remote')
   const [response, setResponse] = useState<WorkflowTemplateResponse | null>(null)
   const [selectedVersionId, setSelectedVersionId] = useState<number | null>(null)
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null)
   const [searchText, setSearchText] = useState('')
+  const [viewMode, setViewMode] = useState<'graph' | 'xml'>('graph')
   const [zoom, setZoom] = useState(1)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
+  const [editMode, setEditMode] = useState(false)
+  const [connectMode, setConnectMode] = useState(false)
+  const [connectSource, setConnectSource] = useState<string | null>(null)
+  const [editedXml, setEditedXml] = useState<string | null>(null)
+  const [editedGraph, setEditedGraph] = useState<WorkflowGraph | null>(null)
+  const [editError, setEditError] = useState('')
+  const [parsing, setParsing] = useState(false)
+  const [exportOpen, setExportOpen] = useState(false)
+  const [addNodeOpen, setAddNodeOpen] = useState(false)
+  const [dragPreview, setDragPreview] = useState<{ id: string; x: number; y: number } | null>(null)
+  const xmlDocRef = useRef<XmlDocument | null>(null)
+  const nodeDragRef = useRef({
+    pointerId: -1,
+    nodeId: '',
+    startX: 0,
+    startY: 0,
+    originX: 0,
+    originY: 0,
+  })
   const canvasScrollRef = useRef<HTMLDivElement | null>(null)
   const canvasDragRef = useRef({
     pointerId: -1,
@@ -199,7 +398,7 @@ export function WorkflowPanel() {
   })
   const [isDraggingCanvas, setIsDraggingCanvas] = useState(false)
 
-  const query = async (nextTag = tag) => {
+  const query = async (nextTag = tag, nextSource = dbSource) => {
     const trimmed = nextTag.trim()
     if (!trimmed) {
       setError('请输入 template_tag')
@@ -208,7 +407,7 @@ export function WorkflowPanel() {
     setLoading(true)
     setError('')
     const result: { success?: boolean; data?: WorkflowTemplateResponse; error?: string } =
-      await api.getWorkflowTemplate(trimmed).catch(exception => ({
+      await api.getWorkflowTemplate(trimmed, nextSource).catch(exception => ({
       success: false,
       error: String(exception),
       }))
@@ -216,6 +415,9 @@ export function WorkflowPanel() {
       setResponse(result.data)
       setSelectedVersionId(result.data.selected_version_id)
       setSelectedNodeId(null)
+      resetEdits()
+      setEditMode(false)
+      setConnectMode(false)
     } else {
       setResponse(null)
       setSelectedVersionId(null)
@@ -224,18 +426,213 @@ export function WorkflowPanel() {
     setLoading(false)
   }
 
+  // 外部跳转（如订单组件的 workflow_code 点击）：自动填入模板编码并查询
+  // 注意：不能用「与当前 tag 相同则跳过」守卫——DEFAULT_TAG 恰好可能是被点击的编码
+  useEffect(() => {
+    const trimmed = initialTag?.trim()
+    if (!trimmed) return
+    setTag(trimmed)
+    void query(trimmed)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [initialTag])
+
   const selectedVersion = useMemo(
     () => response?.versions.find(version => version.template_version_id === selectedVersionId)
-      ?? response?.versions.find(version => version.workflow) ?? null,
+      ?? response?.versions[0] ?? null,
     [response, selectedVersionId],
   )
-  const graph = selectedVersion?.workflow ?? null
+
+  /** 页面级数据库开关：记住选择；已查询过时切换后自动按新库重查 */
+  function switchDbSource(next: 'remote' | 'local') {
+    if (next === dbSource) return
+    setDbSource(next)
+    localStorage.setItem('workflow_db_source', next)
+    resetEdits()
+    setEditMode(false)
+    if (response) void query(tag, next)
+  }
+  const graph = editedGraph ?? selectedVersion?.workflow ?? null
+  const effectiveXml = editedXml ?? selectedVersion?.content ?? null
+  const hasEdits = editedXml !== null
+  const editable = editMode && graph !== null
   const selectedNode = graph?.nodes.find(node => node.id === selectedNodeId) ?? null
   const normalizedSearch = searchText.trim().toLowerCase()
   const matchedNode = (node: WorkflowNode) => !normalizedSearch
     || node.label.toLowerCase().includes(normalizedSearch)
     || node.id.toLowerCase().includes(normalizedSearch)
     || node.type.toLowerCase().includes(normalizedSearch)
+
+  const exportDefaults = useMemo(() => ({
+    templateTag: response?.template_tag ?? '',
+    orderNum: String((response?.versions ?? []).reduce(
+      (max, version) => Math.max(max, version.order_num ?? 0), 0,
+    ) + 1),
+    createStaffId: String(selectedVersion?.create_staff_id ?? ''),
+  }), [response, selectedVersion])
+
+  function resetEdits() {
+    xmlDocRef.current = null
+    setEditedXml(null)
+    setEditedGraph(null)
+    setEditError('')
+    setConnectSource(null)
+    setDragPreview(null)
+  }
+
+  /** 在 token 树上执行编辑并序列化；结构性编辑回传后端重新解析刷新图形。 */
+  async function applyEdit(mutate: (doc: XmlDocument) => void, reparse = true) {
+    const base = selectedVersion?.content ?? ''
+    if (!xmlDocRef.current) {
+      try {
+        xmlDocRef.current = parseXmlDocument(base)
+      } catch (exception) {
+        setEditError(`XML 解析失败: ${exception instanceof Error ? exception.message : String(exception)}`)
+        return
+      }
+    }
+    try {
+      mutate(xmlDocRef.current)
+    } catch (exception) {
+      setEditError(exception instanceof Error ? exception.message : String(exception))
+      return
+    }
+    const nextXml = serializeXmlDocument(xmlDocRef.current)
+    setEditedXml(nextXml)
+    if (!reparse) return
+    setParsing(true)
+    const result: { success?: boolean; data?: WorkflowParseResponse; error?: string } =
+      await api.parseWorkflowTemplate(nextXml)
+        .catch(exception => ({ success: false, error: String(exception) }))
+    setParsing(false)
+    if (result.success && result.data) {
+      if (result.data.workflow) {
+        setEditedGraph(result.data.workflow)
+        setEditError('')
+      } else {
+        setEditError(result.data.parse_error || 'XML 解析失败')
+      }
+    } else {
+      setEditError(result.error || '工作流模板解析失败')
+    }
+  }
+
+  function toggleEditMode() {
+    setEditMode(value => !value)
+    setConnectMode(false)
+    setConnectSource(null)
+    setViewMode('graph')
+  }
+
+  function handleNodeClick(node: WorkflowNode) {
+    if (editable && connectMode) {
+      if (!connectSource) {
+        setConnectSource(node.id)
+        return
+      }
+      if (node.id === connectSource) {
+        setConnectSource(null)
+        return
+      }
+      const source = connectSource
+      setConnectSource(null)
+      void applyEdit(doc => { addGotoItem(doc, source, node.id) })
+      return
+    }
+    setSelectedNodeId(node.id)
+  }
+
+  function handleEdgeClick(edge: WorkflowEdge) {
+    if (!editable || !graph) return
+    const sourceLabel = graph.nodes.find(item => item.id === edge.source)?.label || edge.source
+    const targetLabel = graph.nodes.find(item => item.id === edge.target)?.label || edge.target
+    if (!window.confirm(`删除连线 ${sourceLabel} → ${targetLabel}？`)) return
+    void applyEdit(doc => {
+      if (edge.source_kind === 'join') deleteJoinElement(doc, edge.source, edge.target)
+      else deleteGotoItem(doc, edge.source, edge.target)
+    })
+  }
+
+  function handleNodeDragStart(event: ReactPointerEvent<SVGGElement>, node: WorkflowNode) {
+    if (!editable || event.button !== 0) return
+    event.stopPropagation()
+    nodeDragRef.current = {
+      pointerId: event.pointerId ?? -1,
+      nodeId: node.id,
+      startX: event.clientX,
+      startY: event.clientY,
+      originX: node.x,
+      originY: node.y,
+    }
+    event.currentTarget.setPointerCapture?.(event.pointerId)
+    setDragPreview({ id: node.id, x: node.x, y: node.y })
+  }
+
+  function handleNodeDragMove(event: ReactPointerEvent<SVGGElement>) {
+    const drag = nodeDragRef.current
+    if (drag.pointerId === -1 || drag.pointerId !== event.pointerId) return
+    setDragPreview({
+      id: drag.nodeId,
+      x: drag.originX + (event.clientX - drag.startX) / zoom,
+      y: drag.originY + (event.clientY - drag.startY) / zoom,
+    })
+  }
+
+  function handleNodeDragEnd(event: ReactPointerEvent<SVGGElement>) {
+    const drag = nodeDragRef.current
+    nodeDragRef.current = { ...nodeDragRef.current, pointerId: -1, nodeId: '' }
+    if (drag.pointerId === -1) return
+    event.currentTarget.releasePointerCapture?.(drag.pointerId)
+    const preview = dragPreview
+    setDragPreview(null)
+    const node = graph?.nodes.find(item => item.id === drag.nodeId)
+    if (!preview || !node || !editable) return
+    const base = editedGraph ?? selectedVersion?.workflow
+    if (base) {
+      // 拖拽只改坐标：本地更新图形，不触发后端解析
+      setEditedGraph({
+        ...base,
+        nodes: base.nodes.map(item => item.id === node.id
+          ? { ...item, x: Math.round(preview.x), y: Math.round(preview.y) }
+          : item),
+      })
+    }
+    void applyEdit(doc => {
+      moveTaskElement(doc, node.id, preview.x, preview.y, node.width, node.height)
+    }, false)
+  }
+
+  function handleAddNode(tasktype: string, label: string) {
+    if (!graph) return
+    const bounds = workflowGraphBounds(graph)
+    const geometry = defaultGeometryFor(tasktype)
+    void applyEdit(doc => {
+      addTaskElement(doc, {
+        id: String(Date.now()),
+        label,
+        tasktype,
+        x: bounds.minX + bounds.width / 2 - geometry.width / 2,
+        y: bounds.minY + bounds.height / 2 - geometry.height / 2,
+        width: geometry.width,
+        height: geometry.height,
+      })
+    })
+  }
+
+  function handleDeleteNode(nodeId: string) {
+    if (!graph) return
+    const label = graph.nodes.find(item => item.id === nodeId)?.label || nodeId
+    if (!window.confirm(`删除节点 ${label} 及其所有连线？`)) return
+    setSelectedNodeId(null)
+    void applyEdit(doc => { deleteTaskElement(doc, nodeId) })
+  }
+
+  function handleSaveNode(nodeId: string, draft: WorkflowNodeDraft) {
+    void applyEdit(doc => {
+      setTaskLabel(doc, nodeId, draft.label)
+      setTaskService(doc, nodeId, draft.service)
+      setTaskLinks(doc, nodeId, draft.links)
+    })
+  }
 
   useEffect(() => {
     if (!graph) return
@@ -344,6 +741,28 @@ export function WorkflowPanel() {
           {graph?.label && <span className="max-w-[420px] truncate text-[12px] text-[#8b8b9e]">{graph.label}</span>}
         </div>
         <div className="flex flex-wrap items-center gap-2">
+          <div className="flex items-center overflow-hidden rounded-md border border-[#252530]" data-db-source="workflow-panel">
+            <button
+              className={cn(
+                'flex h-8 items-center gap-1 px-2.5 text-[11px]',
+                dbSource === 'remote' ? 'bg-indigo-500/20 text-indigo-300' : 'text-[#8b8b9e] hover:bg-white/5 hover:text-[#cdd3e0]',
+              )}
+              title="读远端工作流配置库"
+              onClick={() => switchDbSource('remote')}
+            >
+              <Cloud className="h-3.5 w-3.5" />远端库
+            </button>
+            <button
+              className={cn(
+                'flex h-8 items-center gap-1 px-2.5 text-[11px]',
+                dbSource === 'local' ? 'bg-indigo-500/20 text-indigo-300' : 'text-[#8b8b9e] hover:bg-white/5 hover:text-[#cdd3e0]',
+              )}
+              title="直读 Jarvis 本地库（jarvis 库，无需注册数据源）"
+              onClick={() => switchDbSource('local')}
+            >
+              <HardDrive className="h-3.5 w-3.5" />本地库
+            </button>
+          </div>
           <Input
             className="h-8 w-[360px] max-w-full bg-[#16161e] text-[12px]"
             value={tag}
@@ -379,10 +798,11 @@ export function WorkflowPanel() {
             <Database className="h-3.5 w-3.5 text-indigo-400" />
             <select
               className="h-7 min-w-[320px] rounded-md border border-[#252530] bg-[#0f0f14] px-2 text-[12px] text-[#cdd3e0]"
-              value={selectedVersionId ?? undefined}
+              value={selectedVersionId ?? selectedVersion?.template_version_id ?? undefined}
               onChange={event => {
                 setSelectedVersionId(Number(event.target.value))
                 setSelectedNodeId(null)
+                resetEdits()
               }}
             >
               {response.versions.map(version => (
@@ -392,7 +812,97 @@ export function WorkflowPanel() {
               ))}
             </select>
             {selectedVersion && <VersionBadge version={selectedVersion} />}
+            {hasEdits && (
+              <span className="shrink-0 rounded border border-amber-500/40 bg-amber-500/10 px-1.5 py-0.5 text-[10px] text-amber-300">
+                已修改
+              </span>
+            )}
+            {graph && (
+              <div className="flex items-center gap-1.5">
+                <button
+                  data-edit-toggle="workflow-panel"
+                  className={cn(
+                    'flex h-7 items-center gap-1 rounded-md border px-2 text-[11px]',
+                    editMode
+                      ? 'border-indigo-500/50 bg-indigo-500/15 text-indigo-300'
+                      : 'border-[#252530] text-[#8b8b9e] hover:bg-white/5 hover:text-[#cdd3e0]',
+                  )}
+                  title={editMode ? '退出编辑' : '进入编辑（拖拽移动节点、增删节点与连线、修改属性）'}
+                  onClick={toggleEditMode}
+                >
+                  <Pencil className="h-3.5 w-3.5" />编辑
+                </button>
+                {editMode && (
+                  <>
+                    <button
+                      data-connect-toggle="workflow-panel"
+                      className={cn(
+                        'flex h-7 items-center gap-1 rounded-md border px-2 text-[11px]',
+                        connectMode
+                          ? 'border-amber-500/50 bg-amber-500/15 text-amber-300'
+                          : 'border-[#252530] text-[#8b8b9e] hover:bg-white/5 hover:text-[#cdd3e0]',
+                      )}
+                      title="连续点击两个节点创建连线"
+                      onClick={() => {
+                        setConnectMode(value => !value)
+                        setConnectSource(null)
+                      }}
+                    >
+                      <Link2 className="h-3.5 w-3.5" />连线
+                    </button>
+                    <button
+                      data-add-node="workflow-panel"
+                      className="flex h-7 items-center gap-1 rounded-md border border-[#252530] px-2 text-[11px] text-[#8b8b9e] hover:bg-white/5 hover:text-[#cdd3e0]"
+                      onClick={() => setAddNodeOpen(true)}
+                    >
+                      <Plus className="h-3.5 w-3.5" />添加节点
+                    </button>
+                    {hasEdits && (
+                      <button
+                        data-reset-edits="workflow-panel"
+                        className="flex h-7 items-center gap-1 rounded-md border border-[#252530] px-2 text-[11px] text-[#8b8b9e] hover:bg-white/5 hover:text-[#cdd3e0]"
+                        title="放弃修改，恢复该版本原始 XML"
+                        onClick={resetEdits}
+                      >
+                        <RotateCcw className="h-3.5 w-3.5" />重置
+                      </button>
+                    )}
+                  </>
+                )}
+              </div>
+            )}
+            <button
+              data-export-sql="workflow-panel"
+              className="flex h-7 items-center gap-1 rounded-md border border-[#252530] px-2 text-[11px] text-[#8b8b9e] hover:bg-white/5 hover:text-[#cdd3e0] disabled:opacity-40"
+              title="导出为 vm_template_version INSERT 语句（XML 按 4000 字符分块）"
+              disabled={!effectiveXml}
+              onClick={() => setExportOpen(true)}
+            >
+              <FileDown className="h-3.5 w-3.5" />导出 SQL
+            </button>
             <div className="ml-auto flex items-center gap-2">
+              <div className="flex items-center overflow-hidden rounded-md border border-[#252530]" data-view-mode="workflow-panel">
+                <button
+                  className={cn(
+                    'flex h-7 items-center gap-1 px-2 text-[11px]',
+                    viewMode === 'graph' ? 'bg-white/10 text-[#e4e4e9]' : 'text-[#8b8b9e] hover:bg-white/5 hover:text-[#cdd3e0]',
+                  )}
+                  title="图形视图"
+                  onClick={() => setViewMode('graph')}
+                >
+                  <Network className="h-3.5 w-3.5" />图形
+                </button>
+                <button
+                  className={cn(
+                    'flex h-7 items-center gap-1 px-2 text-[11px]',
+                    viewMode === 'xml' ? 'bg-white/10 text-[#e4e4e9]' : 'text-[#8b8b9e] hover:bg-white/5 hover:text-[#cdd3e0]',
+                  )}
+                  title="XML 视图"
+                  onClick={() => setViewMode('xml')}
+                >
+                  <FileCode className="h-3.5 w-3.5" />XML
+                </button>
+              </div>
               <Input
                 className="h-7 w-44 bg-[#0f0f14] text-[11px]"
                 value={searchText}
@@ -416,7 +926,23 @@ export function WorkflowPanel() {
             </div>
           </div>
 
-          {selectedVersion?.parse_error ? (
+          {editError && (
+            <div className="flex items-start gap-2 border-b border-amber-500/20 bg-amber-500/10 px-4 py-2 text-[12px] text-amber-200">
+              <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+              <span>
+                {editError}
+                {hasEdits && '（当前图形未同步，可通过「重置」恢复原文）'}
+              </span>
+            </div>
+          )}
+          {parsing && (
+            <div className="border-b border-[#252530] px-4 py-1.5 text-[11px] text-[#8b8b9e]">
+              正在重新解析…
+            </div>
+          )}
+          {viewMode === 'xml' ? (
+            <XmlView content={effectiveXml} modified={hasEdits} />
+          ) : selectedVersion?.parse_error && !graph ? (
             <div className="flex items-start gap-2 px-4 py-8 text-[12px] text-red-200">
               <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
               <span>{selectedVersion.parse_error}</span>
@@ -460,22 +986,38 @@ export function WorkflowPanel() {
                       const isActive = selectedNodeId === edge.source || selectedNodeId === edge.target
                       const isDimmed = Boolean(selectedNodeId) && !isActive
                       return (
-                        <path
-                          key={edge.id}
-                          d={path}
-                          fill="none"
-                          stroke={isActive ? '#818cf8' : '#4b5563'}
-                          strokeWidth={isActive ? 2.4 : 1.25}
-                          opacity={isDimmed ? 0.18 : 0.92}
-                          markerEnd={`url(#${isActive ? 'workflow-arrow-active' : 'workflow-arrow'})`}
-                        >
-                          <title>{`${edge.source} → ${edge.target}`}</title>
-                        </path>
+                        <g key={edge.id}>
+                          {editable && (
+                            <path
+                              d={path}
+                              fill="none"
+                              stroke="transparent"
+                              strokeWidth={10}
+                              className="cursor-pointer"
+                              onClick={() => handleEdgeClick(edge)}
+                            >
+                              <title>{`删除连线 ${edge.source} → ${edge.target}`}</title>
+                            </path>
+                          )}
+                          <path
+                            d={path}
+                            fill="none"
+                            stroke={isActive ? '#818cf8' : '#4b5563'}
+                            strokeWidth={isActive ? 2.4 : 1.25}
+                            opacity={isDimmed ? 0.18 : 0.92}
+                            pointerEvents={editable ? 'none' : undefined}
+                            markerEnd={`url(#${isActive ? 'workflow-arrow-active' : 'workflow-arrow'})`}
+                          >
+                            <title>{`${edge.source} → ${edge.target}`}</title>
+                          </path>
+                        </g>
                       )
                     })}
                     {graph.nodes.map(node => {
                       const style = NODE_STYLES[node.type] ?? NODE_STYLES.csf_service
+                      const position = dragPreview && dragPreview.id === node.id ? dragPreview : node
                       const isSelected = node.id === selectedNodeId
+                      const isConnectSource = connectMode && connectSource === node.id
                       const isMatched = matchedNode(node)
                       const lines = nodeLines(node)
                       const shape = nodeShape(node.type)
@@ -488,13 +1030,22 @@ export function WorkflowPanel() {
                       return (
                         <g
                           key={node.id}
-                          transform={`translate(${node.x}, ${node.y})`}
+                          data-node-id={node.id}
+                          transform={`translate(${position.x}, ${position.y})`}
                           opacity={Math.min(
                             normalizedSearch && !isMatched ? 0.3 : 1,
                             nodeOpacity(node.type, isSelected),
                           )}
-                          className="cursor-pointer"
-                          onClick={() => setSelectedNodeId(node.id)}
+                          className={cn(
+                            'cursor-pointer',
+                            editable && connectMode && 'cursor-crosshair',
+                            editable && !connectMode && 'cursor-move',
+                          )}
+                          onPointerDown={event => handleNodeDragStart(event, node)}
+                          onPointerMove={handleNodeDragMove}
+                          onPointerUp={handleNodeDragEnd}
+                          onPointerCancel={handleNodeDragEnd}
+                          onClick={() => handleNodeClick(node)}
                         >
                           {shape === 'compact' ? (
                             <circle cx={node.width / 2} cy={node.height / 2} r={node.width / 2} fill={style.fill} stroke={isSelected ? '#ffffff' : style.stroke} strokeWidth={nodeBorderWidth(node.type, isSelected)} />
@@ -527,6 +1078,13 @@ export function WorkflowPanel() {
                               <rect x="-2" y="-2" width={node.width + 4} height={node.height + 4} rx="5" fill="none" stroke="#fbbf24" strokeWidth="1.5" />
                             )
                           )}
+                          {isConnectSource && (
+                            shape === 'decision' ? (
+                              <polygon points={diamondPoints} fill="none" stroke="#f59e0b" strokeWidth="2.5" transform="translate(4, 4) scale(0.94)" />
+                            ) : (
+                              <rect x="-4" y="-4" width={node.width + 8} height={node.height + 8} rx="7" fill="none" stroke="#f59e0b" strokeWidth="2.5" />
+                            )
+                          )}
                         </g>
                       )
                     })}
@@ -534,7 +1092,19 @@ export function WorkflowPanel() {
                 </svg>
               </div>
               <aside className="min-h-0 border-t border-[#252530] p-3 xl:border-l xl:border-t-0">
-                {selectedNode ? <NodeDetails node={selectedNode} graph={graph} /> : (
+                {selectedNode ? (
+                  editable ? (
+                    <WorkflowNodeEditor
+                      key={`${selectedNode.id}-${selectedNode.label}-${selectedNode.links.length}`}
+                      node={selectedNode}
+                      graph={graph}
+                      onSave={draft => handleSaveNode(selectedNode.id, draft)}
+                      onDeleteNode={() => handleDeleteNode(selectedNode.id)}
+                    />
+                  ) : (
+                    <NodeDetails node={selectedNode} graph={graph} />
+                  )
+                ) : (
                   <div className="space-y-3">
                     <div className="grid grid-cols-3 gap-2 text-center">
                       <div><div className="text-[15px] font-semibold text-[#e4e4e9]">{graph.nodes.length}</div><div className="text-[10px] text-[#8b8b9e]">节点</div></div>
@@ -558,6 +1128,21 @@ export function WorkflowPanel() {
           ) : null}
         </div>
       )}
+
+      <WorkflowExportDialog
+        key={exportOpen ? 'open' : 'closed'}
+        open={exportOpen}
+        onOpenChange={setExportOpen}
+        xml={effectiveXml ?? ''}
+        defaults={exportDefaults}
+        table={response?.version_table}
+      />
+      <AddNodeDialog
+        key={addNodeOpen ? 'open' : 'closed'}
+        open={addNodeOpen}
+        onOpenChange={setAddNodeOpen}
+        onConfirm={handleAddNode}
+      />
     </div>
   )
 }

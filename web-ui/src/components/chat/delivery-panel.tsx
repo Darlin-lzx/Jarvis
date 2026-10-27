@@ -11,7 +11,7 @@ import {
   AlertCircle, Download, Pencil, Trash2, MoreHorizontal,
   FileCode, Pin, BookOpen, ArrowUpRight, Copy, Check, FilePlus,
   PanelRightClose, PanelRightOpen,
-  ClipboardCheck, CheckCircle2, ListChecks, ShieldCheck,
+  ClipboardCheck, CheckCircle2, ListChecks, Settings2, ShieldCheck,
   History, GitCompareArrows,
 } from 'lucide-react'
 
@@ -102,16 +102,16 @@ const filters = [
 
 type FilterKey = (typeof filters)[number]['key']
 
-/* ---- 产物迁移阶段（由生成 Agent 的 stage 决定，DB 配置化；对应状态机阶段） ---- */
+/* ---- 产物阶段（由生成 Agent 的 stage 决定，DB 配置化；对应状态机阶段） ---- */
 const STAGE_META: Record<string, { Icon: any; color: string; bg: string }> = {
-  '数据采集': { Icon: ListChecks, color: 'text-sky-400', bg: 'bg-sky-500/10' },
-  '迁移评估': { Icon: ClipboardCheck, color: 'text-indigo-400', bg: 'bg-indigo-500/10' },
-  '迁移方案': { Icon: FileText, color: 'text-purple-400', bg: 'bg-purple-500/10' },
-  '代码改造': { Icon: FileCode, color: 'text-cyan-400', bg: 'bg-cyan-500/10' },
-  '迁移验证': { Icon: CheckCircle2, color: 'text-teal-400', bg: 'bg-teal-500/10' },
+  '页面展示': { Icon: ClipboardCheck, color: 'text-indigo-400', bg: 'bg-indigo-500/10' },
+  '下单拆单': { Icon: ListChecks, color: 'text-sky-400', bg: 'bg-sky-500/10' },
+  '订单受理': { Icon: FileText, color: 'text-purple-400', bg: 'bg-purple-500/10' },
+  '规则配置': { Icon: Settings2, color: 'text-cyan-400', bg: 'bg-cyan-500/10' },
+  '客户数据': { Icon: CheckCircle2, color: 'text-teal-400', bg: 'bg-teal-500/10' },
   '完成': { Icon: ShieldCheck, color: 'text-green-400', bg: 'bg-green-500/10' },
 }
-const STAGE_ORDER = ['数据采集', '迁移评估', '迁移方案', '代码改造', '迁移验证', '完成', '其他']
+const STAGE_ORDER = ['页面展示', '下单拆单', '订单受理', '规则配置', '客户数据', '完成', '其他']
 
 /* 文件类型图标 */
 function fileMeta(name: string) {
@@ -358,7 +358,7 @@ function inlineMd(text: string): React.ReactNode[] {
   return nodes
 }
 
-export function ArtifactPanel({ convId, taskId, taskName, onClose, space = '浙江移动国产化', subSystem = '营业系统', activeAgent, onReference, quickMode = false, previewRequest, onPreviewRequestHandled }: ArtifactPanelProps) {
+export function ArtifactPanel({ convId, taskId, taskName, onClose, space = '浙江移动跨工程', subSystem = '营业系统', activeAgent, onReference, quickMode = false, previewRequest, onPreviewRequestHandled }: ArtifactPanelProps) {
   const [searchQ, setSearchQ] = useState('')
   const [activeFilter, setActiveFilter] = useState<FilterKey>('全部')
   const [autoImportMap, setAutoImportMap] = useState<Record<number, boolean>>({})

@@ -298,10 +298,25 @@ export function buildWorkflowEdgeRoutes(graph: RoutingGraph) {
     const ty = downward ? target.y : target.y + target.height
     const obstacles = graph.nodes.filter(node =>
       node.id !== source.id && node.id !== target.id)
-    const sourceBus = sourceGroupSize.get(edge.source)! > 1
+
+    // 上下对齐的边永远走直线：总线/绕行只会制造多余拐弯
+    // （X 不对齐的边走中点 Z 形：与主轴衔接最自然；想完全对齐请拖拽节点或调坐标）
+    if (Math.abs(sx - tx) < 0.5) {
+      routes.set(edge.id, formatPath([
+        { x: sx, y: sy },
+        { x: sx, y: ty },
+      ]))
+      continue
+    }
+
+    // 两端都是单出/单入的"简单边"不走总线：一对一直连时中点 Z 形最干净，
+    // 总线的 Y 由同组其他边决定，会把简单边拽出无意义的拐弯
+    const isSimpleEdge = (sourceGroupSize.get(edge.source) ?? 0) === 1
+      && (targetGroupSize.get(edge.target) ?? 0) === 1
+    const sourceBus = !isSimpleEdge && (sourceGroupSize.get(edge.source)! > 1)
       ? sourceBusChannels.get(edge.id)
       : undefined
-    const targetBus = targetGroupSize.get(edge.target)! > 1
+    const targetBus = !isSimpleEdge && (targetGroupSize.get(edge.target)! > 1)
       ? targetBusChannels.get(edge.id)
       : undefined
     const sourceChannel = sourceBus

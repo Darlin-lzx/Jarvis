@@ -24,9 +24,9 @@ import type { ConversationDetail, Space, ChatReference, AttachmentItem } from '@
 
 /* ---- 欢迎卡片示例 ---- */
 const examplePrompts = [
-  '帮我把 Oracle 的 DDL 转换成达梦数据库语法',
+  '帮我把营业系统的页面展示与布点方案梳理出来',
   '分析这条 SQL 慢查询，给出优化方案',
-  '做数据库迁移评估，评估业务改造工作量',
+  '做跨工程迭代评估，评估业务改造工作量',
 ]
 
 /* ---- 任务链路步骤类型 ---- */
@@ -90,6 +90,7 @@ interface WelcomePageProps {
 export function WelcomePage({ onConvCreated, activeAgent, setActiveAgent, quickMode = false, onModeChange, onConvertToProject, agentList }: WelcomePageProps) {
   // 使用后端智能体列表，如果未提供则降级为内置列表
   const agents = agentList && agentList.length > 0 ? agentList : builtinAgents
+  const activeAgentInfo = agents.find(a => a.id === activeAgent) as Agent | undefined
   const [showModeDrp, setShowModeDrp] = useState(false)
   const [convertOpen, setConvertOpen] = useState(false)
   const [spacesForConvert, setSpacesForConvert] = useState<Space[]>([])
@@ -131,7 +132,7 @@ export function WelcomePage({ onConvCreated, activeAgent, setActiveAgent, quickM
   const [mcpEnabled, setMcpEnabled] = useState(true)
 
   // ===== 对话头部栏状态 =====
-  const [space, setSpace] = useState('浙江移动国产化')
+  const [space, setSpace] = useState('浙江移动跨工程')
   const [convName, setConvName] = useState('未命名会话')
   const [editingConvName, setEditingConvName] = useState(false)
   const [showSpaceDrp, setShowSpaceDrp] = useState(false)
@@ -342,7 +343,7 @@ export function WelcomePage({ onConvCreated, activeAgent, setActiveAgent, quickM
         content: reply,
         taskChain: [
           { label: '主 Agent：拆解任务，调度 CodeAgent', status: 'done' },
-          { label: 'CodeAgent：执行 DDL 转换，调用 RAG 检索知识库', status: 'done', detail: '浙江移动国产化' },
+          { label: '页面展示Agent：梳理前端布点，调用 RAG 检索知识库', status: 'done', detail: '跨工程迭代开发' },
           { label: '输出结果', status: 'done' },
         ],
       }])
@@ -668,9 +669,9 @@ export function WelcomePage({ onConvCreated, activeAgent, setActiveAgent, quickM
 
   // 根据当前空间动态推荐示例
   const examples = space === '开通系统'
-    ? ['帮我把开通系统库的 Oracle DDL 转换成达梦数据库语法', '评估开通系统迁到达梦的改造工作量', '分析这条 SQL 慢查询，给出优化方案']
+    ? ['帮我把营业系统的页面展示与布点方案梳理出来', '梳理下单拆单规则并输出代码改动清单', '梳理订单受理与工作流交互']
     : space === '账务系统'
-      ? ['帮我把账务系统库的 Oracle DDL 转换成达梦数据库语法', '分析这条 SQL 慢查询，给出优化方案', '做数据库迁移评估，评估业务改造工作量']
+      ? ['梳理客户数据范围与取数逻辑', '梳理业务规则与配置分支', '做跨工程迭代评估，评估业务改造工作量']
       : examplePrompts
 
   return (
@@ -682,7 +683,9 @@ export function WelcomePage({ onConvCreated, activeAgent, setActiveAgent, quickM
           <div className="flex items-center gap-3 min-w-0">
             <div className="flex items-center gap-2 pr-4 border-r border-[#252530] shrink-0 relative">
               <Bot className="w-4 h-4 text-indigo-400" />
-              <h1 className="text-[14px] font-semibold text-[#e4e4e9] whitespace-nowrap">数据库国产化智能体</h1>
+              <span className="text-[14px] font-semibold text-[#e4e4e9] whitespace-nowrap">
+                {activeAgentInfo ? (activeAgentInfo.alias || activeAgentInfo.name) : '智能体'}
+              </span>
               <span className={cn(
                 'text-[10px] px-1.5 py-0.5 rounded-md whitespace-nowrap',
                 quickMode ? 'text-amber-400 bg-amber-500/10 border border-amber-500/20' : 'text-indigo-400 bg-indigo-500/10 border border-indigo-500/20'
@@ -966,11 +969,6 @@ export function WelcomePage({ onConvCreated, activeAgent, setActiveAgent, quickM
               configStep === 'select' ? (
                 /* ======== 欢迎态（截图1） ======== */
                 <div className="flex flex-col items-center px-8 pt-12 pb-4">
-                  {/* 标题徽章 */}
-                  <div className="inline-flex items-center gap-2 px-4 py-1.5 rounded-full bg-indigo-500/10 border border-indigo-500/20 text-indigo-400 text-[13px] mb-4">
-                    <Sparkles className="w-4 h-4" />
-                    数据库国产化智能体
-                  </div>
                   <p className="text-[13px] text-[#6a6a7a] mb-1">你可以选择下方技能，或者直接输入你的需求</p>
 
                   {/* 空状态提示：模式说明（快速问答 / 项目会话）+ 上传小提示 */}
@@ -984,10 +982,10 @@ export function WelcomePage({ onConvCreated, activeAgent, setActiveAgent, quickM
                       <button
                         className="flex items-center gap-1.5 text-[11px] text-[#5a5a70] hover:text-[#9a9aa4] transition-colors"
                         onClick={openFilePicker}
-                        title="上传 SQL / DDL 文件"
+                        title="上传代码 / 工程文件"
                       >
                         <Upload className="w-3 h-3" />
-                        小提示：上传 SQL 脚本、DDL 文件进行迁移评估（快速问答下仅限文件分析）
+                        小提示：上传代码 / 工程结构文件进行跨工程分析（快速问答下仅限文件分析）
                       </button>
                     </div>
                   ) : (
@@ -1000,10 +998,10 @@ export function WelcomePage({ onConvCreated, activeAgent, setActiveAgent, quickM
                     <button
                       className="flex items-center gap-1.5 text-[11px] text-[#5a5a70] hover:text-[#9a9aa4] transition-colors"
                       onClick={openFilePicker}
-                      title="上传 SQL / DDL 文件"
+                      title="上传代码 / 工程文件"
                     >
                       <Upload className="w-3 h-3" />
-                      小提示：上传 SQL 脚本、DDL 文件，智能体可以直接做迁移评估
+                      小提示：上传代码 / 工程结构文件，智能体可以直接做页面展示与改动梳理
                     </button>
                   </div>
                   )}
@@ -1279,7 +1277,7 @@ export function WelcomePage({ onConvCreated, activeAgent, setActiveAgent, quickM
                     </h3>
                     <Textarea
                       className="w-full min-h-[100px] bg-[#16161e] border border-[#252530] rounded-xl text-[13px] text-[#cdd3e0] placeholder:text-[#4a4a5a] p-4 resize-none focus:outline-none focus:border-indigo-500/40 transition-colors"
-                      placeholder="描述你的任务需求，例如：评估营业务系统从Oracle迁移到达梦的改造工作量，并生成迁移评估报告。"
+                      placeholder="描述你的任务需求，例如：梳理营业系统前端页面展示与布点方案，并生成跨工程改动报告。"
                       value={taskDescription}
                       onChange={e => setTaskDescription(e.target.value)}
                     />
@@ -1370,7 +1368,7 @@ export function WelcomePage({ onConvCreated, activeAgent, setActiveAgent, quickM
                             <div className="flex flex-wrap gap-2">
                               <button
                                 className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[11px] border bg-[#1a1a24] border-[#2a2a35] text-[#9a9aa4] hover:text-indigo-400 hover:border-indigo-500/40 transition-colors"
-                                onClick={() => quickFill('请帮我分析下面这段 JDBC 代码的国产化改造，并输出改造建议：\n\n[请在此粘贴你的 JDBC / MyBatis 代码]')}
+                                onClick={() => quickFill('请帮我分析下面这段 JDBC 代码的跨工程改造，并输出改造建议：\n\n[请在此粘贴你的 JDBC / MyBatis 代码]')}
                               >
                                 <ClipboardPaste className="w-3 h-3" />
                                 粘贴 JDBC 代码
@@ -1378,14 +1376,14 @@ export function WelcomePage({ onConvCreated, activeAgent, setActiveAgent, quickM
                               <button
                                 className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[11px] border bg-[#1a1a24] border-[#2a2a35] text-[#9a9aa4] hover:text-indigo-400 hover:border-indigo-500/40 transition-colors"
                                 onClick={() => openFilePicker()}
-                                title="上传 SQL 脚本 / DDL 文件"
+                                title="上传代码 / 工程文件"
                               >
                                 <FileUp className="w-3 h-3" />
                                 上传 SQL 脚本文件
                               </button>
                               <button
                                 className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[11px] border bg-[#1a1a24] border-[#2a2a35] text-[#9a9aa4] hover:text-indigo-400 hover:border-indigo-500/40 transition-colors"
-                                onClick={() => quickFill('参考改造示例：请把 Spring Boot + MyBatis 访问 Oracle 的代码改造为访问达梦数据库，输出驱动、连接串与 SQL 方言适配建议。\n\n[代码示例可粘贴在此]')}
+                                onClick={() => quickFill('参考示例：请梳理本系统跨工程页面展示与下单拆单的代码改动点，输出改动清单与涉及文件。\n\n[代码/工程资料可粘贴在此]')}
                               >
                                 <Eye className="w-3 h-3" />
                                 查看改造示例
@@ -1481,7 +1479,7 @@ export function WelcomePage({ onConvCreated, activeAgent, setActiveAgent, quickM
                       ) : (
                         <div className="flex items-center gap-2 px-4 py-3 text-[12px] text-[#8b8b9e] bg-[#16161e] border border-[#252530] rounded-2xl rounded-tl-sm">
                           <Loader2 className="w-3.5 h-3.5 text-indigo-400 animate-spin shrink-0" />
-                          正在调度子 Agent 分析 SQL，生成迁移评估报告…
+                          正在调度子 Agent 分析 SQL，生成页面展示报告…
                         </div>
                       )}
                     </div>

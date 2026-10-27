@@ -2,11 +2,12 @@
 from __future__ import annotations
 
 import re
+import json
 from typing import Any
 from datetime import datetime
 import xml.etree.ElementTree as ET
 
-from sqlalchemy import Engine, text
+from sqlalchemy import Connection, text
 
 
 CONTENT_COLUMNS = ("content", *(f"content{i}" for i in range(1, 16)))
@@ -49,6 +50,18 @@ def _parse_uiinfo(node: ET.Element, node_id: str, label: str,
     x, y, width, height = _default_geometry(node.attrib.get("tasktype", ""))
     if not raw:
         return x, y, width, height
+    if raw.startswith("{"):
+        try:
+            data = json.loads(raw)
+            return (
+                float(data["x"]),
+                float(data["y"]),
+                float(data.get("width", width)),
+                float(data.get("height", height)),
+            )
+        except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
+            warnings.append(f"{label or node_id} uiinfo JSON 坐标格式无效: {raw}")
+            return x, y, width, height
     try:
         values = [float(item.strip()) for item in raw.split(",")]
         if len(values) != 4:
@@ -173,20 +186,31 @@ def parse_workflow_xml(xml_text: str) -> dict[str, Any]:
     }
 
 
-def select_workflow_template_versions(engine: Engine, template_tag: str) -> list[dict[str, Any]]:
+DEFAULT_VERSION_TABLE = "aif_comframe.vm_template_version"
+_TABLE_NAME_RE = re.compile(r"^[A-Za-z0-9_]+(\.[A-Za-z0-9_]+)?$")
+
+
+def _validated_table_name(table_name: str) -> str:
+    name = (table_name or "").strip() or DEFAULT_VERSION_TABLE
+    if not _TABLE_NAME_RE.match(name):
+        raise ValueError(f"工作流版本表名不合法: {table_name}")
+    return name
+
+
+def select_workflow_template_versions(connection: Connection, template_tag: str,
+                                      table_name: str = DEFAULT_VERSION_TABLE) -> list[dict[str, Any]]:
     """Read all stored chunks for each version of one template tag."""
-    sql = text("""
+    sql = text(f"""
         SELECT template_version_id, order_num, template_tag, create_staff_id,
                create_date, modify_desc, valid_date, expire_date,
                content, content1, content2, content3, content4, content5,
                content6, content7, content8, content9, content10,
                content11, content12, content13, content14, content15
-        FROM aif_comframe.vm_template_version
+        FROM {_validated_table_name(table_name)}
         WHERE template_tag = :template_tag
         ORDER BY valid_date DESC, template_version_id DESC
     """)
-    with engine.connect() as conn:
-        return [dict(row._mapping) for row in conn.execute(sql, {"template_tag": template_tag})]
+    return [dict(row._mapping) for row in connection.execute(sql, {"template_tag": template_tag})]
 
 
 def _time_value(value: Any) -> str | None:
@@ -206,9 +230,10 @@ def _as_datetime(value: Any) -> datetime:
         return datetime.min
 
 
-def build_workflow_template_response(engine: Engine, template_tag: str) -> dict[str, Any]:
+def build_workflow_template_response(connection: Connection, template_tag: str,
+                                     table_name: str = DEFAULT_VERSION_TABLE) -> dict[str, Any]:
     """Parse every matching version and select a usable default."""
-    rows = select_workflow_template_versions(engine, template_tag)
+    rows = select_workflow_template_versions(connection, template_tag, table_name)
     versions: list[dict[str, Any]] = []
     now = datetime.now()
 
@@ -233,6 +258,7 @@ def build_workflow_template_response(engine: Engine, template_tag: str) -> dict[
             "valid_date": valid_date,
             "expire_date": expire_date,
             "is_expired": expire_date is not None and _as_datetime(expire_date) < now,
+            "content": content,
             "workflow": graph,
             "parse_error": parse_error,
         })
@@ -250,6 +276,7 @@ def build_workflow_template_response(engine: Engine, template_tag: str) -> dict[
     )
     return {
         "template_tag": template_tag,
+        "version_table": _validated_table_name(table_name),
         "selected_version_id": selected.get("template_version_id") if selected else None,
         "versions": versions,
     }

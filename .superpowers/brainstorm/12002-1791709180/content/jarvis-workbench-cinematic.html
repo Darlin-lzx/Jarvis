@@ -1,0 +1,414 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>JARVIS · Command Workbench</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    :root {
+      --cyan: #23d8ef;
+      --cyan-dim: rgba(35,216,239,.24);
+      --red: #ff3b52;
+      --text: #d7feff;
+      --muted: #65b9c6;
+      --dark: rgba(0, 8, 10, .72);
+      --line: rgba(35,216,239,.38);
+    }
+    html, body { min-height: 100vh; }
+    body {
+      font-family: Inter, "SF Pro Display", "PingFang SC", "Microsoft YaHei", sans-serif;
+      color: var(--text);
+      background: #010506;
+      overflow: hidden;
+    }
+    .bg {
+      position: fixed;
+      inset: 0;
+      background: url("jarvis-reference-bg.png") center 18% / cover no-repeat;
+      filter: brightness(.42) contrast(1.08) saturate(1.15);
+      z-index: -3;
+    }
+    .shade {
+      position: fixed;
+      inset: 0;
+      background:
+        radial-gradient(circle at 50% 48%, rgba(0,0,0,0) 7%, rgba(1,6,8,.78) 58%),
+        linear-gradient(to top, #010506 9%, rgba(1,6,8,.28) 45%, rgba(1,6,8,.8) 100%);
+      z-index: -2;
+    }
+    .scan {
+      position: fixed;
+      inset: 0;
+      background: repeating-linear-gradient(to bottom, rgba(35,216,239,.035) 0 1px, transparent 1px 5px);
+      mix-blend-mode: screen;
+      z-index: 4;
+      pointer-events: none;
+    }
+    .screen {
+      position: relative;
+      height: 100vh;
+      display: grid;
+      grid-template-columns: 310px minmax(0, 1fr) 300px;
+      gap: 18px;
+      padding: 24px;
+    }
+    .col { display: flex; flex-direction: column; gap: 16px; min-height: 0; }
+    .panel {
+      position: relative;
+      padding: 15px 16px;
+      background: var(--dark);
+      border: 1px solid var(--line);
+      box-shadow: 0 0 28px rgba(35,216,239,.06), inset 0 0 28px rgba(0,0,0,.55);
+      backdrop-filter: blur(8px);
+    }
+    .panel::before,
+    .panel::after {
+      content: "";
+      position: absolute;
+      width: 12px; height: 12px;
+      border: 1px solid var(--cyan);
+      opacity: .8;
+    }
+    .panel::before { left: -1px; top: -1px; border-right: 0; border-bottom: 0; }
+    .panel::after { right: -1px; bottom: -1px; border-left: 0; border-top: 0; }
+    .label {
+      display: flex; align-items: center; justify-content: space-between;
+      font-family: ui-monospace, monospace;
+      font-size: 9px; letter-spacing: 3px; color: var(--muted);
+      margin-bottom: 12px;
+    }
+    .label::before { content: ""; width: 18px; height: 1px; background: var(--cyan); box-shadow: 0 0 8px var(--cyan); }
+    .top {
+      position: absolute;
+      left: 50%; top: 19px;
+      transform: translateX(-50%);
+      width: min(760px, 52vw);
+      text-align: center;
+      z-index: 3;
+      pointer-events: none;
+    }
+    .day {
+      font-size: clamp(30px, 4.6vw, 58px);
+      color: #ff4d5e;
+      text-shadow: 0 0 24px rgba(255,59,82,.5);
+      letter-spacing: 2px;
+      line-height: 1;
+    }
+    .welcome {
+      margin-top: 8px;
+      font-family: ui-monospace, monospace;
+      font-size: 11px; letter-spacing: 5px; color: #8ff5ff;
+    }
+    .clock {
+      margin-top: 4px;
+      font-family: ui-monospace, monospace;
+      font-size: 15px; letter-spacing: 3px; color: var(--cyan);
+    }
+    .main {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      min-width: 0;
+      min-height: 0;
+    }
+    .reactor-zone {
+      position: relative;
+      width: min(430px, 34vw);
+      aspect-ratio: 1;
+      display: grid;
+      place-items: center;
+      margin-top: 8vh;
+    }
+    .ring {
+      position: absolute;
+      border: 1px solid rgba(35,216,239,.45);
+      border-radius: 50%;
+    }
+    .ring.r1 { inset: 0; box-shadow: 0 0 42px rgba(35,216,239,.16), inset 0 0 34px rgba(35,216,239,.12); }
+    .ring.r2 { inset: 11%; border-style: dashed; opacity: .55; animation: spin 46s linear infinite; }
+    .ring.r3 { inset: 24%; border-color: rgba(255,59,82,.42); opacity: .7; }
+    .ring.r4 { inset: 36%; border-width: 2px; animation: spin 18s linear reverse infinite; }
+    .core {
+      width: 34%;
+      aspect-ratio: 1;
+      border-radius: 50%;
+      border: 2px solid rgba(222,255,255,.72);
+      display: grid;
+      place-items: center;
+      background:
+        radial-gradient(circle, rgba(255,255,255,.95), rgba(142,244,255,.54) 34%, rgba(35,216,239,.16) 68%, transparent);
+      box-shadow: 0 0 62px rgba(35,216,239,.72);
+      animation: breathe 4.4s ease-in-out infinite;
+    }
+    .core span {
+      font-family: ui-monospace, monospace;
+      font-size: 10px;
+      color: #012;
+      font-weight: 800;
+      letter-spacing: 2px;
+    }
+    .orbit {
+      position: absolute;
+      width: 8px; height: 8px;
+      border-radius: 50%;
+      background: var(--cyan);
+      box-shadow: 0 0 14px var(--cyan);
+      top: 10%;
+      left: 50%;
+      transform-origin: 50% calc(40vw * .215);
+      animation: spin 12s linear infinite;
+    }
+    .command {
+      position: absolute;
+      left: 50%;
+      bottom: 0;
+      transform: translateX(-50%);
+      width: min(680px, 52vw);
+    }
+    .console {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 10px 10px 10px 15px;
+      background: rgba(0, 11, 13, .82);
+      border: 1px solid var(--cyan);
+      box-shadow: 0 0 28px rgba(35,216,239,.18);
+      clip-path: polygon(14px 0, 100% 0, 100% calc(100% - 14px), calc(100% - 14px) 100%, 0 100%, 0 14px);
+    }
+    .console input {
+      flex: 1;
+      border: 0; outline: 0; background: transparent;
+      color: #dfffff;
+      font-size: 13px;
+      letter-spacing: 1px;
+    }
+    .console button {
+      width: 76px; height: 34px;
+      border: 0; color: #001417;
+      background: var(--cyan);
+      font-weight: 800; letter-spacing: 2px;
+      clip-path: polygon(10px 0, 100% 0, 100% calc(100% - 10px), calc(100% - 10px) 100%, 0 100%, 0 10px);
+    }
+    .suggestion {
+      display: flex;
+      justify-content: center;
+      gap: 8px;
+      margin-top: 10px;
+    }
+    .suggestion span {
+      padding: 5px 10px;
+      border: 1px solid rgba(35,216,239,.32);
+      color: var(--cyan);
+      background: rgba(0, 15, 18, .7);
+      font-size: 10px; letter-spacing: 1px;
+    }
+    .gauge {
+      width: 108px; height: 108px;
+      margin: 4px auto 10px;
+      border-radius: 50%;
+      border: 2px solid rgba(35,216,239,.5);
+      display: grid; place-items: center;
+      background: radial-gradient(circle, rgba(35,216,239,.13), transparent 66%);
+      box-shadow: inset 0 0 18px rgba(35,216,239,.16);
+    }
+    .gauge b { font-family: ui-monospace, monospace; font-size: 22px; color: #cfffff; }
+    .row {
+      display: flex; justify-content: space-between; gap: 8px;
+      padding: 7px 0;
+      border-bottom: 1px solid rgba(35,216,239,.12);
+      font-size: 11px;
+    }
+    .row:last-child { border-bottom: 0; }
+    .row span:first-child { color: var(--muted); }
+    .row span:last-child { font-family: ui-monospace, monospace; color: #dfffff; }
+    .link-grid {
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 8px;
+    }
+    .hud-btn {
+      height: 42px;
+      display: flex; align-items: center; justify-content: center; gap: 7px;
+      border: 1px solid rgba(35,216,239,.26);
+      background: rgba(0, 14, 17, .62);
+      color: #b8f7ff;
+      font-size: 11px; letter-spacing: 2px;
+    }
+    .hud-btn:hover { border-color: var(--cyan); box-shadow: 0 0 18px rgba(35,216,239,.18); }
+    .fleet {
+      display: flex; flex-direction: column; gap: 8px;
+    }
+    .agent {
+      display: grid;
+      grid-template-columns: 26px 1fr auto;
+      align-items: center;
+      gap: 9px;
+      padding: 8px;
+      border: 1px solid rgba(35,216,239,.14);
+      background: rgba(0, 10, 12, .58);
+    }
+    .agent.on { border-color: var(--line); background: rgba(0, 24, 28, .74); }
+    .glyph {
+      width: 24px; height: 24px;
+      display: grid; place-items: center;
+      border: 1px solid var(--cyan-dim);
+      color: var(--cyan);
+      font-size: 9px;
+      font-family: ui-monospace, monospace;
+    }
+    .name { font-size: 12px; color: #d9ffff; }
+    .role { font-size: 9px; color: var(--muted); margin-top: 2px; }
+    .state {
+      font-family: ui-monospace, monospace;
+      font-size: 8px; color: var(--cyan);
+      letter-spacing: 1px;
+    }
+    .note {
+      min-height: 136px;
+      border: 1px solid rgba(255,59,82,.35);
+      background: rgba(9, 0, 3, .44);
+      padding: 10px;
+      font-size: 11px;
+      line-height: 1.7;
+      color: #ffd8dc;
+    }
+    .big-time {
+      font-family: ui-monospace, monospace;
+      font-size: 48px;
+      color: #ff4757;
+      line-height: 1;
+      text-shadow: 0 0 32px rgba(255,59,82,.35);
+      margin-bottom: 10px;
+    }
+    .big-time small { font-size: 18px; color: var(--cyan); }
+    .trace {
+      height: 4px;
+      background: linear-gradient(90deg, transparent, var(--cyan), transparent);
+      opacity: .5;
+      margin: 3px 0 12px;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    @keyframes breathe { 50% { box-shadow: 0 0 92px rgba(35,216,239,.9); } }
+    @media (max-width: 1100px) {
+      body { overflow: auto; }
+      .screen { grid-template-columns: 1fr; height: auto; }
+      .main { min-height: 72vh; }
+    }
+  </style>
+</head>
+<body>
+  <div class="bg"></div>
+  <div class="shade"></div>
+  <div class="scan"></div>
+
+  <div class="top">
+    <div class="day">Tuesday</div>
+    <div class="welcome">WELCOME BACK, COMMANDER</div>
+    <div class="clock">JARVIS ONLINE · OCT 11</div>
+  </div>
+
+  <main class="screen">
+    <section class="col">
+      <div class="panel">
+        <div class="label"><span>POWER CORE</span><span>98%</span></div>
+        <div class="gauge"><b>98%</b></div>
+        <div class="row"><span>Full Capacity</span><span>20 G</span></div>
+        <div class="row"><span>Free Capacity</span><span>17 G</span></div>
+        <div class="row"><span>Runtime</span><span>00d 08h 24m</span></div>
+      </div>
+
+      <div class="panel">
+        <div class="label"><span>SYSTEM DIAGNOSTICS</span><span>SAFE</span></div>
+        <div class="row"><span>Model Core</span><span>GLM-5.3</span></div>
+        <div class="row"><span>Neural Load</span><span>42%</span></div>
+        <div class="row"><span>Security Grid</span><span>ACTIVE</span></div>
+        <div class="row"><span>Response Time</span><span>0.72s</span></div>
+      </div>
+
+      <div class="panel">
+        <div class="label"><span>QUICK ACCESS</span><span>06</span></div>
+        <div class="link-grid">
+          <div class="hud-btn">CONSOLE</div>
+          <div class="hud-btn">AGENTS</div>
+          <div class="hud-btn">KNOWLEDGE</div>
+          <div class="hud-btn">ARTIFACTS</div>
+          <div class="hud-btn">WORKSPACE</div>
+          <div class="hud-btn">SYSTEM</div>
+        </div>
+      </div>
+    </section>
+
+    <section class="col main">
+      <div class="reactor-zone">
+        <div class="ring r1"></div>
+        <div class="ring r2"></div>
+        <div class="ring r3"></div>
+        <div class="ring r4"></div>
+        <div class="orbit"></div>
+        <div class="core"><span>JARVIS</span></div>
+      </div>
+
+      <div class="command">
+        <div class="console">
+          <input value="贾维斯，汇报当前系统状态并准备任务编队" readonly>
+          <button>EXECUTE</button>
+        </div>
+        <div class="suggestion">
+          <span>指定智能体</span>
+          <span>创建任务</span>
+          <span>检索知识库</span>
+          <span>系统巡检</span>
+        </div>
+      </div>
+    </section>
+
+    <aside class="col">
+      <div class="panel">
+        <div class="big-time">6:03<small> PM</small></div>
+        <div class="trace"></div>
+        <div class="row"><span>CPU</span><span>18%</span></div>
+        <div class="row"><span>Memory</span><span>12.1 / 19.5 G</span></div>
+        <div class="row"><span>Network</span><span>STABLE</span></div>
+      </div>
+
+      <div class="panel">
+        <div class="label"><span>AGENT FLEET</span><span>05</span></div>
+        <div class="fleet">
+          <div class="agent on">
+            <div class="glyph">BT</div>
+            <div><div class="name">boot</div><div class="role">核心调度</div></div>
+            <div class="state">ONLINE</div>
+          </div>
+          <div class="agent">
+            <div class="glyph">HL</div>
+            <div><div class="name">hall-center</div><div class="role">业务中枢</div></div>
+            <div class="state">READY</div>
+          </div>
+          <div class="agent">
+            <div class="glyph">OD</div>
+            <div><div class="name">order-center</div><div class="role">流程执行</div></div>
+            <div class="state">READY</div>
+          </div>
+          <div class="agent">
+            <div class="glyph">RL</div>
+            <div><div class="name">rule-center</div><div class="role">规则校验</div></div>
+            <div class="state">SCAN</div>
+          </div>
+          <div class="agent">
+            <div class="glyph">CU</div>
+            <div><div class="name">cust-center</div><div class="role">客户处理</div></div>
+            <div class="state">READY</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="label"><span>NOTES</span><span>AI</span></div>
+        <div class="note">智能体编队已就绪。可按需求直接指定执行者，知识库访问权限保持隔离。</div>
+      </div>
+    </aside>
+  </main>
+</body>
+</html>

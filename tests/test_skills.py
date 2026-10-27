@@ -2,8 +2,8 @@ import os
 
 import pytest
 
-from db_loc_agent.db import Database
-from db_loc_agent.skills import SkillService
+from jarvis_agent.db import Database
+from jarvis_agent.skills import SkillService
 
 
 def _svc(tmp_path):

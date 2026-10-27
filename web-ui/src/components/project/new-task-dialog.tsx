@@ -127,7 +127,7 @@ export function NewTaskDialog({ open, onClose, context, agents = [], onCreate }:
 
           <div>
             <label className="text-[12px] text-[#9a9aa4] mb-1.5 block">任务名称 <span className="text-red-400">*</span></label>
-            <input value={name} onChange={e => setName(e.target.value)} placeholder="如：营业系统全量 DDL 迁移"
+            <input value={name} onChange={e => setName(e.target.value)} placeholder="如：XX业务跨工程迭代改造"
               className="w-full h-9 rounded-lg bg-[#0f0f14] border border-[#252530] px-3 text-[13px] placeholder:text-[#5a5a70]" />
           </div>
 

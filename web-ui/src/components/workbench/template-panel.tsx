@@ -353,7 +353,7 @@ export function TemplatePanel() {
                 <label className="text-[11px] text-[#8b8b9e] mb-1 block">模板名称 <span className="text-red-400">*</span></label>
                 <Input
                   className={cn('h-8 text-[12px] bg-[#16161e] border placeholder:text-[#4a4a5a]', formErrors.name ? 'border-red-500/50' : 'border-[#252530]')}
-                  placeholder="例如：Oracle 迁移到达梦评估模板"
+                  placeholder="例如：跨工程页面展示改动模板"
                   value={form.name}
                   onChange={e => setForm({ ...form, name: e.target.value })}
                 />
@@ -390,7 +390,7 @@ export function TemplatePanel() {
                 </label>
                 <Input
                   className="h-8 text-[12px] bg-[#16161e] border border-[#252530] placeholder:text-[#4a4a5a]"
-                  placeholder="如 Oracle、达梦、迁移评估（逗号分隔）"
+                  placeholder="如 页面展示、下单拆单、订单受理（逗号分隔）"
                   value={form.tags}
                   onChange={e => setForm({ ...form, tags: e.target.value })}
                 />
@@ -435,7 +435,7 @@ export function TemplatePanel() {
                     <label className="text-[11px] text-[#8b8b9e] mb-1 block">预设技能</label>
                     <Input
                       className="h-8 text-[12px] bg-[#16161e] border border-[#252530] placeholder:text-[#4a4a5a]"
-                      placeholder="如：迁移评估"
+                      placeholder="如：页面展示"
                       value={form.skill}
                       onChange={e => setForm({ ...form, skill: e.target.value })}
                     />
@@ -444,7 +444,7 @@ export function TemplatePanel() {
                   <div>
                     <label className="text-[11px] text-[#8b8b9e] mb-1 block">绑定数据源</label>
                     <div className="flex flex-wrap gap-1.5">
-                      {['Oracle 业务库', '达梦目标库'].map(ds => (
+                      {['前端工程', '订单中心'].map(ds => (
                         <button
                           key={ds}
                           className={cn(
@@ -469,7 +469,7 @@ export function TemplatePanel() {
                   <div>
                     <label className="text-[11px] text-[#8b8b9e] mb-1 block">绑定智能体</label>
                     <div className="flex flex-wrap gap-1.5">
-                      {['迁移评估Agent', 'DDL转换Agent'].map(a => (
+                      {['页面展示Agent', '下单拆单Agent'].map(a => (
                         <button
                           key={a}
                           className={cn(
@@ -494,7 +494,7 @@ export function TemplatePanel() {
                   <div>
                     <label className="text-[11px] text-[#8b8b9e] mb-1 block">绑定知识库</label>
                     <div className="flex flex-wrap gap-1.5">
-                      {['国产化迁移知识库', '历史评估案例'].map(kb => (
+                      {['跨工程迁移知识库', '历史评估案例'].map(kb => (
                         <button
                           key={kb}
                           className={cn(

@@ -4,7 +4,7 @@ import queue
 import threading
 import time
 
-from db_loc_agent.state_stream import MigrateStateBroadcaster
+from jarvis_agent.state_stream import MigrateStateBroadcaster
 
 
 class FakeWebSocket:
@@ -65,46 +65,46 @@ def test_websocket_returns_initial_migrate_state(tmp_path):
         "/api/conversations", json={"title": "状态通道"}
     ).json()["data"]
     task = client.post(
-        "/api/migrate/tasks", json={"conv_id": conversation["id"]}
+        "/api/jarvis/tasks", json={"conv_id": conversation["id"]}
     ).json()["data"]
 
-    with client.websocket_connect(f"/ws/migrate/{task['task_id']}") as websocket:
+    with client.websocket_connect(f"/ws/jarvis/{task['task_id']}") as websocket:
         snapshot = websocket.receive_json()
 
     assert snapshot["event"] == "state"
     assert snapshot["task_id"] == task["task_id"]
-    assert snapshot["status"] == "DATA_COLLECTION"
+    assert snapshot["status"] in ("PAGE_SHOW",)
 
 
 def test_websocket_reports_missing_task(tmp_path):
     client = _client(tmp_path)
-    with client.websocket_connect("/ws/migrate/99999") as websocket:
+    with client.websocket_connect("/ws/jarvis/99999") as websocket:
         snapshot = websocket.receive_json()
 
     assert snapshot["event"] == "not_found"
 
 
 def test_websocket_initial_snapshot_includes_persisted_execution_state(tmp_path):
-    from db_loc_agent.db import Conversation, Database
+    from jarvis_agent.db import Conversation, Database
 
     client = _client(tmp_path)
     conversation = client.post(
         "/api/conversations", json={"title": "等待确认"}
     ).json()["data"]
     task = client.post(
-        "/api/migrate/tasks", json={"conv_id": conversation["id"]}
+        "/api/jarvis/tasks", json={"conv_id": conversation["id"]}
     ).json()["data"]
     with Database(str(tmp_path / "t.db")).session() as session:
         row = session.get(Conversation, conversation["id"])
         row.task_state = json.dumps({
             "migrate_task_id": task["task_id"],
-            "current_step": "DATA_COLLECTION",
+            "current_step": "PAGE_SHOW",
             "step_status": "waiting_confirm",
             "awaiting_confirmation": True,
         }, ensure_ascii=False)
         session.commit()
 
-    with client.websocket_connect(f"/ws/migrate/{task['task_id']}") as websocket:
+    with client.websocket_connect(f"/ws/jarvis/{task['task_id']}") as websocket:
         snapshot = websocket.receive_json()
 
     assert snapshot["step_status"] == "waiting_confirm"
@@ -114,16 +114,16 @@ def test_websocket_initial_snapshot_includes_persisted_execution_state(tmp_path)
 def test_chat_stream_broadcasts_langgraph_task_state(tmp_path, monkeypatch):
     from langchain_core.messages import AIMessage
 
-    import db_loc_agent.app as app_module
-    from db_loc_agent.db import Conversation, Database
+    import jarvis_agent.app as app_module
+    from jarvis_agent.db import Conversation, Database
 
     class StateGraph:
         def stream(self, initial, stream_mode=None):
             yield "custom", {"type": "system", "message": "start"}
-            yield "updates", {"migration_collector": {
+            yield "updates", {"boot_agent": {
                 "task_state": {
                     "migrate_task_id": initial["task_state"]["migrate_task_id"],
-                    "current_step": "DATA_COLLECTION",
+                    "current_step": "PAGE_SHOW",
                     "step_status": "done",
                 },
             }}
@@ -136,13 +136,13 @@ def test_chat_stream_broadcasts_langgraph_task_state(tmp_path, monkeypatch):
         "/api/conversations", json={"title": "实时状态"}
     ).json()["data"]
     task = client.post(
-        "/api/migrate/tasks", json={"conv_id": conversation["id"]}
+        "/api/jarvis/tasks", json={"conv_id": conversation["id"]}
     ).json()["data"]
     with Database(str(tmp_path / "t.db")).session() as session:
         row = session.get(Conversation, conversation["id"])
         row.task_state = json.dumps({
             "migrate_task_id": task["task_id"],
-            "current_step": "DATA_COLLECTION",
+            "current_step": "PAGE_SHOW",
             "step_status": "running",
         }, ensure_ascii=False)
         session.commit()
@@ -150,7 +150,7 @@ def test_chat_stream_broadcasts_langgraph_task_state(tmp_path, monkeypatch):
     frames: queue.Queue[dict] = queue.Queue()
 
     def read_socket():
-        with client.websocket_connect(f"/ws/migrate/{task['task_id']}") as websocket:
+        with client.websocket_connect(f"/ws/jarvis/{task['task_id']}") as websocket:
             frames.put(websocket.receive_json())
             while True:
                 frames.put(websocket.receive_json())
@@ -160,7 +160,7 @@ def test_chat_stream_broadcasts_langgraph_task_state(tmp_path, monkeypatch):
     time.sleep(0.1)
     with client.stream("POST", "/api/chat/stream", json={
             "message": "继续", "conv_id": conversation["id"],
-            "agent_id": "migration_commander"}) as response:
+            "agent_id": "jarvis_commander"}) as response:
         assert response.status_code == 200
         list(response.iter_lines())
     time.sleep(0.1)

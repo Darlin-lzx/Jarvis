@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** 将 `db_loc_agent/web/index.html`（~1300 行原生 HTML/CSS/JS 单文件）重构为 Vite + React + TypeScript + shadcn/ui 现代化前端项目。
+**Goal:** 将 `jarvis_agent/web/index.html`（~1300 行原生 HTML/CSS/JS 单文件）重构为 Vite + React + TypeScript + shadcn/ui 现代化前端项目。
 
 **Architecture:** 新建 `web-ui/` 目录作为独立前端项目。使用 Vite 构建，React 18 + TypeScript，shadcn/ui 组件库（基于 Radix UI + Tailwind CSS）。通过 Vite proxy 代理 `/api` 请求到后端 FastAPI。组件按功能域拆分：Layout、Chat、Workbench（含多个面板）、Settings。
 
@@ -13,7 +13,7 @@
 ## 文件结构
 
 ```
-db_loc_agent/
+jarvis_agent/
 ├── web-ui/                          # 新前端项目
 │   ├── index.html
 │   ├── package.json
@@ -80,12 +80,12 @@ db_loc_agent/
 ## Task 1: 初始化 Vite + React + TypeScript 项目
 
 **Files:**
-- Create: `db_loc_agent/web-ui/` 整个项目目录
+- Create: `jarvis_agent/web-ui/` 整个项目目录
 
 - [ ] **Step 1: 用 Vite 脚手架创建项目**
 
 ```bash
-cd /Users/l1nzx/Data/05_program/pythonProject/BDMP/db_loc_agent
+cd /Users/l1nzx/Data/05_program/pythonProject/BDMP/jarvis_agent
 npm create vite@latest web-ui -- --template react-ts
 cd web-ui
 npm install
@@ -2630,7 +2630,7 @@ git commit -m "feat: assemble App.tsx with full layout and routing"
 ## Task 12: 后端集成 - 构建产物部署
 
 **Files:**
-- Modify: `db_loc_agent/app.py`（可选，添加构建后静态文件指向）
+- Modify: `jarvis_agent/app.py`（可选，添加构建后静态文件指向）
 
 - [ ] **Step 1: 构建生产版本**
 

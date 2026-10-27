@@ -67,7 +67,7 @@ export function WorkspacePanel({ onTabChange, onNew }: { onTabChange?: (tab: str
     { label: '技能数量', value: '—', icon: Wrench, color: 'text-orange-400', tab: 'skills', clickable: true },
     { label: '智能体', value: '—', icon: Bot, color: 'text-indigo-400', tab: 'agents', clickable: true },
     { label: '向量库', value: '…', icon: Puzzle, color: 'text-cyan-400', tab: 'vector', clickable: true },
-    { label: '迁移任务', value: '—', icon: Workflow, color: 'text-emerald-400', tab: 'migrate', clickable: true },
+    { label: '跨工程迭代任务', value: '—', icon: Workflow, color: 'text-emerald-400', tab: 'migrate', clickable: true },
   ])
   const [recentConvs, setRecentConvs] = useState<RecentConv[]>([])
   const [recentArts, setRecentArts] = useState<RecentArtifact[]>([])
@@ -105,7 +105,7 @@ export function WorkspacePanel({ onTabChange, onNew }: { onTabChange?: (tab: str
           case '技能数量': return { ...m, value: skills.length }
           case '智能体': return { ...m, value: agents.length }
           case '向量库': return { ...m, value: vecStatus || '无数据', alert: vecStatus === '索引异常' }
-          case '迁移任务': return { ...m, value: migTasks.length }
+          case '跨工程迭代任务': return { ...m, value: migTasks.length }
           default: return m
         }
       }))

@@ -23,7 +23,7 @@
 ### Task 2: Runtime Routing Helpers
 
 **Files:**
-- Modify: `db_loc_agent/graph.py`
+- Modify: `jarvis_agent/graph.py`
 
 - [x] Define stage/agent mappings, normalize legacy stages, and resolve the configured flow through `migrate_state.get_flow()` with `DEFAULT_FLOW` fallback.
 - [x] Implement `route_agent(state)` and `should_advance(state)` as public runtime methods.
@@ -32,8 +32,8 @@
 ### Task 3: Six Agent Nodes
 
 **Files:**
-- Modify: `db_loc_agent/graph.py`
-- Modify: `db_loc_agent/app.py`
+- Modify: `jarvis_agent/graph.py`
+- Modify: `jarvis_agent/app.py`
 
 - [x] Implement `GraphRuntime.commander` as parse/entry and convergence; generic non-migration agents still execute through the existing executor inside this node.
 - [x] Add wrappers for collector, assessor, planner, code migrator, and verifier. Each wrapper reuses `_call_sub_agent`, preserving Chinese core artifacts and `sub_agent` stream events.

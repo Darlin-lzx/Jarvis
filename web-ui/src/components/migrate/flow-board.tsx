@@ -16,11 +16,11 @@ import {
  * - 保存后后端状态机按此表驱动流转（页面编排即真实生效）。
  */
 const STAGE_AGENT_META: Record<string, { agentId: string; alias: string; role: string }> = {
-  'DATA_COLLECTION': { agentId: 'migration_collector', alias: '小采', role: '数据采集' },
-  'ASSESSMENT_RUNNING': { agentId: 'migration_assessor', alias: '小评', role: '迁移评估' },
-  'SOLUTION_GENERATE': { agentId: 'migration_planner', alias: '小方', role: '迁移方案' },
-  'CODE_MIGRATE': { agentId: 'code_migrator', alias: '小改', role: '代码改造' },
-  'VERIFY_STAGE': { agentId: 'migration_verifier', alias: '小测', role: '迁移验证' },
+  'PAGE_SHOW': { agentId: 'boot_agent', alias: '小前', role: '页面展示' },
+  'ORDER_SPLIT': { agentId: 'customer_order_agent', alias: '小订', role: '下单拆单' },
+  'ORDER_ACCEPT': { agentId: 'family_order_agent', alias: '小受', role: '订单受理' },
+  'RULE_CHECK': { agentId: 'rule_center_agent', alias: '小规', role: '规则配置' },
+  'CUSTOMER_CHECK': { agentId: 'customer_center_agent', alias: '小客', role: '客户数据' },
 }
 
 export function FlowBoard() {
@@ -213,7 +213,7 @@ export function FlowBoard() {
 
       <div className="mt-2 flex items-center gap-1.5 text-[10px] text-[#5a5a70]">
         <ShieldCheck className="w-3 h-3" />
-        编排说明：新增节点仅从标准状态选择；首个节点建议保留「数据采集」（migration_collector，别名小采）。移除进行中的节点会让存量任务停驻该阶段。
+        编排说明：新增节点仅从标准状态选择；首个节点建议保留「页面展示」（boot_agent，别名小前）。移除进行中的节点会让存量任务停驻该阶段。
       </div>
     </div>
   )

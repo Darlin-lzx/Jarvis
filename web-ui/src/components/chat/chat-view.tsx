@@ -2,17 +2,17 @@ import { useState, useEffect, useRef, useCallback } from 'react'
 import { Message } from './message'
 import { Composer } from './composer'
 import { AgentTabs, agents as builtinAgents, type AgentTabStatus } from './agent-tabs'
-import { ArtifactPanel } from './delivery-panel'
+import { WorkspacePanel } from './workspace-panel'
+import type { WorkspaceFileRequest } from './workspace-panel'
 import { ConvertToProjectDialog } from './convert-to-project-dialog'
-import { computeStepTotal, isEstimatedTotal } from './chat-step-panel'
 import { AttachTaskDialog } from '@/components/project/attach-task-dialog'
-import { useChatStream, stripLeadingJson, type ChatStep, type TimelineItem } from '@/hooks/use-chat-stream'
+import { useChatStream, stripLeadingJson, type TimelineItem } from '@/hooks/use-chat-stream'
 import { api } from '@/lib/api'
 import { isFinishedAgentTrace, isVisibleSystemTrace } from '@/lib/trace-filter'
 import type { Agent, ArtifactItem, Message as MsgType, TraceEvent, ConversationDetail, Space, SendExtra, SystemEvent, SubAgentEvent, MigrateEvent, MigrateTask, MigrateTaskDetail } from '@/lib/types'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { cn } from '@/lib/utils'
-import { Sparkles, ChevronRight, ChevronDown, Timer, Square, ChevronsUpDown, Link2, Zap, ArrowLeft, Workflow, Play, FileText, CircleAlert } from 'lucide-react'
+import { Sparkles, ChevronRight, ChevronDown, ChevronsUpDown, Link2, Zap, ArrowLeft, Workflow, Play, FileText, CircleAlert } from 'lucide-react'
 import { StateBoard, currentStageExecutionDone, effectiveIdx, StageDrawer, useMigrateBoardStages } from '@/components/migrate/state-board'
 import { mergeMigrateSnapshot, useMigrateStateSocket } from '@/hooks/use-migrate-state-socket'
 
@@ -29,13 +29,15 @@ interface ChatViewProps {
   onBackToTask?: () => void
   /** 后端智能体列表（用于输入框下拉和标签栏） */
   agentList?: Agent[]
+  /** 从工作台转入会话时自动执行的首条指令 */
+  initialMessage?: string | null
+  onInitialMessageConsumed?: () => void
 }
 
 interface DisplayItem {
-  kind: 'message' | 'step' | 'system' | 'sub_agent'
+  kind: 'message' | 'system' | 'sub_agent'
   role?: 'user' | 'assistant'
   content?: string
-  step?: ChatStep
   ts?: number
   agentId?: string
   agentName?: string
@@ -54,14 +56,14 @@ interface DisplayItem {
 
 const examplePrompts = [
   '分析 Oracle 业务库的慢查询并给出优化建议',
-  '将 MySQL 数据库结构迁移至达梦并生成 DDL',
-  '检查现有 SQL 与国产数据库的兼容性差异',
+  '梳理前端页面展示与布点方案，输出页面展示改动',
+  '梳理下单入口与拆单调度规则，输出代码改动清单',
 ]
 
 const skillGroups = [
   {
-    label: '迁移改造类',
-    skills: ['迁移评估', 'DDL转换', '数据同步', '兼容性检查'],
+    label: '跨工程迭代类',
+    skills: ['页面展示', '下单拆单', '订单受理', '规则配置'],
   },
   {
     label: 'SQL & 分析类',
@@ -106,19 +108,23 @@ function timelineToDisplayItems(timeline: TimelineItem[]): DisplayItem[] {
   })
 }
 
-export function ChatView({ convId, onRefreshArtifacts, activeAgent, setActiveAgent, quickMode = false, onConvertToProject, onBackToTask, agentList }: ChatViewProps) {
+export function ChatView({ convId, onRefreshArtifacts, activeAgent, setActiveAgent, quickMode = false, onConvertToProject, onBackToTask, agentList, initialMessage, onInitialMessageConsumed }: ChatViewProps) {
   // 使用后端智能体列表，如果未提供则降级为内置列表
   const agents = agentList && agentList.length > 0 ? agentList : builtinAgents
+  const selectedWorkspaceAgent = agents.find(item => item.id === activeAgent) as Agent | undefined
   const [items, setItems] = useState<DisplayItem[]>([])
-  const [previewRequest, setPreviewRequest] = useState<ArtifactItem | null>(null)
+  const [workspaceRefreshKey, setWorkspaceRefreshKey] = useState(0)
+  const [workspaceOpenRequest, setWorkspaceOpenRequest] = useState<WorkspaceFileRequest | null>(null)
   const pendingMsgRef = useRef<string | null>(null)
   const activeAgentRef = useRef(activeAgent)
   const { streaming, assistantText, steps, timeline, timelineRef, uiRenderRef, migrateState, send, stop } = useChatStream()
-  /** 迁移状态机进度：当前阶段在可编排流程中的位置 */
+  /** 跨工程迭代状态机进度：当前阶段在可编排流程中的位置 */
   const boardStages = useMigrateBoardStages()
   const scrollRef = useRef<HTMLDivElement>(null)
   const loadedConvRef = useRef<number | null>(null)
-  /** 迁移任务详情（用于状态机看板展示） */
+  const initialCommandRef = useRef<string | null>(null)
+  const dispatchedCommandRef = useRef<string | null>(null)
+  /** 跨工程迭代任务详情（用于状态机看板展示） */
   const [migrateDetail, setMigrateDetail] = useState<MigrateTaskDetail | null>(null)
   const [drawerStage, setDrawerStage] = useState<number | null>(null)
   /** 确定性推进状态机（手动确认闸门）：请求期间禁用按钮 */
@@ -129,10 +135,10 @@ export function ChatView({ convId, onRefreshArtifacts, activeAgent, setActiveAge
   /** 状态机看板折叠：对话页默认只显示一行紧凑进度条，点击展开完整看板 */
   const [boardOpen, setBoardOpen] = useState(false)
 
-  // 加载状态机看板：会话关联业务任务时，通过任务反查迁移任务（任务详情页同一关联链路）
+  // 加载状态机看板：会话关联业务任务时，通过任务反查跨工程迭代任务（任务详情页同一关联链路）
   const refreshMigrateDetail = useCallback(() => {
     if (convId == null) { setMigrateDetail(null); return }
-    // 先按会话绑定的业务任务查迁移任务；查不到时清空（纯对话/未发起迁移）
+    // 先按会话绑定的业务任务查跨工程迭代任务；查不到时清空（纯对话/未发起迁移）
     api.getConversation(convId).then(cr => {
       const taskId = cr.success && cr.data?.task_id ? cr.data.task_id : null
       if (taskId == null) return
@@ -145,6 +151,11 @@ export function ChatView({ convId, onRefreshArtifacts, activeAgent, setActiveAge
   const liveMigrateDetail = mergeMigrateSnapshot(migrateDetail, migrateSocket.snapshot)
 
   useEffect(() => {
+    initialCommandRef.current = initialMessage ?? null
+  }, [initialMessage])
+
+  useEffect(() => {
+    setWorkspaceRefreshKey(value => value + 1)
     void refreshMigrateDetail()
   }, [refreshMigrateDetail])
 
@@ -174,7 +185,7 @@ export function ChatView({ convId, onRefreshArtifacts, activeAgent, setActiveAge
       } else {
         if (r.data.warning) setAdvanceNotice(r.data.warning)
         // 状态机只负责跨过确认闸门；下一阶段专家通过会话流执行，且不再重复确认。
-        await handleSend('开始执行', { skip_state_advance: true }, 'migration_commander')
+        await handleSend('开始迭代', { skip_state_advance: true }, 'jarvis_commander')
       }
     } else {
       setAdvanceNotice(r.error || '状态机推进失败')
@@ -197,7 +208,7 @@ export function ChatView({ convId, onRefreshArtifacts, activeAgent, setActiveAge
         return
       }
       setMigrateDetail(r.data.task as MigrateTaskDetail)
-      await handleSend('开始执行', { skip_state_advance: true }, 'migration_commander')
+      await handleSend('开始迭代', { skip_state_advance: true }, 'jarvis_commander')
     } catch (e) {
       setAdvanceNotice(e instanceof Error ? e.message : String(e))
     } finally {
@@ -229,6 +240,7 @@ export function ChatView({ convId, onRefreshArtifacts, activeAgent, setActiveAge
   }
 
   const [usedAgents, setUsedAgents] = useState<Set<string>>(new Set())
+  const [historyReady, setHistoryReady] = useState(false)
 
   // 欢迎块：快捷指令 / 技能集折叠状态
   const [showQuickCmd, setShowQuickCmd] = useState(true)
@@ -265,6 +277,7 @@ export function ChatView({ convId, onRefreshArtifacts, activeAgent, setActiveAge
       pendingMsgRef.current = null
     }
     setItems([])
+    setHistoryReady(false)
     Promise.all([api.getMessages(convId), api.getTrace(convId)]).then(([mr, tr]) => {
       const msgs = (mr.success ? mr.data : []) as MsgType[]
       const events = (tr.success ? tr.data : []) as TraceEvent[]
@@ -323,10 +336,6 @@ export function ChatView({ convId, onRefreshArtifacts, activeAgent, setActiveAge
             ts: artifacts.length && summaryTs != null ? summaryTs : traceTs,
             rank: artifacts.length ? 2 : undefined,
           })
-          // 与实时流一致：子 Agent 调用同时进入任务链路节点
-          combined.push({ kind: 'step', step: { type: 'agent', content: ev.content }, ts: new Date(ev.created_at || '').getTime() })
-        } else {
-          combined.push({ kind: 'step', step: { type: ev.node, content: ev.content }, ts: new Date(ev.created_at || '').getTime() })
         }
       }
       combined.forEach((item, index) => { item.seq = index })
@@ -342,6 +351,7 @@ export function ChatView({ convId, onRefreshArtifacts, activeAgent, setActiveAge
         pendingMsgRef.current = null
       }
       setItems(combined)
+      setHistoryReady(true)
     }).catch(() => {
       if (pendingMsgRef.current) {
         setItems([{ kind: 'message', role: 'user', content: pendingMsgRef.current }])
@@ -349,8 +359,23 @@ export function ChatView({ convId, onRefreshArtifacts, activeAgent, setActiveAge
       } else {
         setItems([])
       }
+      setHistoryReady(true)
     })
   }, [convId])
+
+  const dispatchInitialCommand = async (message: string) => {
+    if (dispatchedCommandRef.current === message) return
+    dispatchedCommandRef.current = message
+    await handleSend(message)
+    onInitialMessageConsumed?.()
+  }
+
+  // 初次进入由工作台创建的会话时，等待历史加载完成后自动下达指令
+  useEffect(() => {
+    const message = initialCommandRef.current
+    if (convId == null || !message || !historyReady || loadedConvRef.current !== convId) return
+    void dispatchInitialCommand(message)
+  }, [convId, initialMessage, historyReady])
 
   // 自动贴底跟随：依赖需包含 timeline/streaming（流式期间子 Agent 事件与系统事件也会撑高内容）。
   // 用双 rAF 确保 Radix Viewport 内部布局完成后再设置 scrollTop，避免在内容尚未布局时贴底失效。
@@ -367,8 +392,7 @@ export function ChatView({ convId, onRefreshArtifacts, activeAgent, setActiveAge
     setUsedAgents(prev => new Set(prev).add(runAgentId))
     // 用户消息后立即占位一条空回复（带头像）：发送后马上在下方出现新的助手头像 + 转圈，
     // 而不是等首个 Token 返回才出现回复块
-    setItems(prev => [
-      ...prev.filter(i => !(i.kind === 'step')),
+    setItems([
       { kind: 'message', role: 'user', content: text },
       { kind: 'message', role: 'assistant', content: '', agentId: runAgentId, pending: true },
     ])
@@ -423,6 +447,25 @@ export function ChatView({ convId, onRefreshArtifacts, activeAgent, setActiveAge
     if (text) handleSend(text)
   }
 
+  /** 从回复中的 path/path:line 引用打开实际工程文件；消息可来自子 Agent，因此按消息 Agent 优先解析。 */
+  const handleOpenWorkspaceFile = async (messageAgentId: string | undefined, path: string, line?: number) => {
+    const candidates = [
+      messageAgentId,
+      activeAgent,
+      ...agents.map(item => item.id),
+    ].filter((value, index, list): value is string => Boolean(value) && list.indexOf(value) === index)
+    for (const agentId of candidates) {
+      const result = await api.agentWorkspaceFile(agentId, path).catch(() => null)
+      if (result?.success) {
+        setActiveAgent(agentId)
+        setWorkspaceOpenRequest({
+          agentId, path, line, requestId: Date.now(),
+        })
+        return
+      }
+    }
+  }
+
   // 占位的空回复条目：流式期间提到列表末尾（子 Agent / 系统事件在其上方，符合实际时序），
   // 并就地吸收实时文本避免出现两个回复块；非流式期间兜底丢弃可能残留的占位条目
   const liveItems: DisplayItem[] = []
@@ -433,11 +476,6 @@ export function ChatView({ convId, onRefreshArtifacts, activeAgent, setActiveAge
       continue
     }
     liveItems.push(it)
-  }
-  if (streaming && steps.length > 0) {
-    for (const s of steps) {
-      liveItems.push({ kind: 'step', step: s })
-    }
   }
   if (streaming && timeline.length > 0) {
     liveItems.push(...timelineToDisplayItems(timeline))
@@ -450,16 +488,7 @@ export function ChatView({ convId, onRefreshArtifacts, activeAgent, setActiveAge
 
   const showWelcome = convId == null && items.length === 0 && !pendingMsgRef.current
 
-  // ===== 链路聚合：历史 trace 步骤 + 本次实时步骤 =====
-  const allSteps: ChatStep[] = [
-    ...items.filter(i => i.kind === 'step' && i.step).map(i => i.step!),
-    ...(streaming ? steps : []),
-  ]
-  const hasRun = allSteps.length > 0 || streaming
-  const hasAnyError = allSteps.some(s => s.type === 'error')
-  const totalSec = computeStepTotal(allSteps)
-  const statusLabel = hasAnyError ? '执行失败' : streaming ? '执行中' : '已完成'
-  const statusCls = hasAnyError ? 'text-red-400' : streaming ? 'text-blue-400' : 'text-green-400'
+  const hasAnyError = steps.some(s => s.type === 'error')
 
   // 占位回复的加载文案：反映当前实际阶段（来自时间线最后一条事件或步骤），而非干巴巴的"正在生成回复"
   let loadingHint = ''
@@ -610,7 +639,7 @@ export function ChatView({ convId, onRefreshArtifacts, activeAgent, setActiveAge
                   <div
                     className="flex items-center gap-1.5 shrink-0"
                     title={strictOn
-                      ? '流程强校验已开启：只能按数据采集→评估→方案→改造→验证的顺序执行'
+                      ? '流程强校验已开启：只能按页面展示→下单拆单→订单受理→规则配置→客户数据的顺序执行'
                       : '流程强校验已关闭：可直接指派任意阶段专家执行，不强制前序阶段完成'}
                   >
                     <span className="text-[11px] text-[#9a9aa4]">流程强校验</span>
@@ -704,8 +733,6 @@ export function ChatView({ convId, onRefreshArtifacts, activeAgent, setActiveAge
         </div>
       )}
 
-      {/* 多 Agent 执行链路可视化区：已按需求隐藏（覆盖 Showcase 需保留状态机看板与统计条） */}
-
       <div className="flex-1 min-h-0 flex overflow-hidden">
         <div className="flex-1 flex flex-col min-h-0">
           <ScrollArea className="flex-1 min-h-0" ref={scrollRef}>
@@ -714,7 +741,7 @@ export function ChatView({ convId, onRefreshArtifacts, activeAgent, setActiveAge
                 {/* 标题徽章 */}
                 <div className="inline-flex items-center gap-2 px-4 py-1.5 rounded-full bg-indigo-500/10 border border-indigo-500/20 text-indigo-400 text-[13px] mb-4">
                   <Sparkles className="w-4 h-4" />
-                  数据库国产化智能体
+                  跨工程迭代开发多Agent智能编排平台
                 </div>
                 <p className="text-[13px] text-[#6a6a7a] mb-1">你可以选择下方技能，或者直接输入你的需求</p>
 
@@ -770,7 +797,7 @@ export function ChatView({ convId, onRefreshArtifacts, activeAgent, setActiveAge
                               <button
                                 key={skill}
                                 className="flex items-center gap-1.5 px-3.5 py-2 rounded-lg text-[12px] transition-all border bg-[#16161e] border-[#252530] text-[#8b8b9e] hover:text-[#cdd3e0] hover:border-[#3a3a45]"
-                                onClick={() => handleSend(`使用「${skill}」技能帮我处理数据库迁移任务`)}
+                                onClick={() => handleSend(`使用「${skill}」技能帮我处理跨工程迭代任务`)}
                               >
                                 {skill}
                                 <ChevronDown className="w-3 h-3 opacity-40" />
@@ -786,7 +813,7 @@ export function ChatView({ convId, onRefreshArtifacts, activeAgent, setActiveAge
             ) : (
               // 与输入框（max-w-3xl mx-auto）对齐，避免消息拉满全屏宽而输入框窄一截
               <div className="flex flex-col p-6 max-w-3xl mx-auto w-full">
-                {liveItems.filter(i => i.kind !== 'step').map((item, i, arr) => {
+                {liveItems.map((item, i, arr) => {
                   if (item.kind === 'system') {
                     return <Message key={i} role="system" content={item.content || ''} />
                   }
@@ -800,15 +827,13 @@ export function ChatView({ convId, onRefreshArtifacts, activeAgent, setActiveAge
                           </div>
                           <div className="flex flex-wrap gap-1.5">
                             {item.artifacts.map(file => (
-                              <button
+                              <span
                                 key={file.id}
-                                className="inline-flex max-w-full items-center gap-1.5 rounded-md border border-indigo-500/25 bg-[#12121a] px-2 py-1 text-left text-[11px] text-indigo-300 transition-colors hover:border-indigo-400 hover:text-indigo-200"
-                                title="预览产物文件"
-                                onClick={() => setPreviewRequest(file)}
+                                className="inline-flex max-w-full items-center gap-1.5 rounded-md border border-indigo-500/25 bg-[#12121a] px-2 py-1 text-[11px] text-indigo-300"
                               >
                                 <FileText className="w-3 h-3 shrink-0" />
                                 <span className="truncate">{artifactFileName(file)}</span>
-                              </button>
+                              </span>
                             ))}
                           </div>
                         </div>
@@ -824,6 +849,7 @@ export function ChatView({ convId, onRefreshArtifacts, activeAgent, setActiveAge
                         isSubAgent
                         error={item.error}
                         isStreaming={false}
+                        onOpenWorkspaceFile={location => handleOpenWorkspaceFile(item.agentId, location.path, location.line)}
                       />
                     )
                   }
@@ -843,6 +869,7 @@ export function ChatView({ convId, onRefreshArtifacts, activeAgent, setActiveAge
                       loadingText={streaming && isLastAssistant ? loadingHint : undefined}
                       uiData={item.ui}
                       onUiAction={handleUiAction}
+                      onOpenWorkspaceFile={location => handleOpenWorkspaceFile(item.agentId, location.path, location.line)}
                     />
                   )
                 })}
@@ -850,39 +877,18 @@ export function ChatView({ convId, onRefreshArtifacts, activeAgent, setActiveAge
             )}
           </ScrollArea>
 
-          {/* 统计信息条：靠左对齐（贴最左边） */}
-          {hasRun && (
-            <div className="px-4 pt-2 bg-[#0f0f14] shrink-0">
-              <div className="flex items-center gap-3 py-1.5">
-                {streaming && (
-                  <button
-                    className="flex items-center gap-1 text-[11px] px-2 py-1 rounded-md border border-red-500/30 text-red-400 hover:bg-red-500/10 transition-colors"
-                    onClick={stop}
-                  >
-                    <Square className="w-2.5 h-2.5" />
-                    终止任务
-                  </button>
-                )}
-                <span className="flex items-center gap-1 text-[11px] text-[#8b8b9e]">
-                  <Timer className="w-3 h-3 text-[#5a5a70]" />
-                  总耗时：{isEstimatedTotal(allSteps) ? '≈' : ''}{totalSec.toFixed(1)}s
-                </span>
-                <span className={cn('text-[11px]', statusCls)}>状态：{statusLabel}</span>
-              </div>
-            </div>
-          )}
           {/* 输入区：放在聊天列内部，与消息列表（max-w-3xl mx-auto）在同一容器居中。
               原先放在「聊天列 + 产物面板」整体下方居中，导致输入框相对消息区向右偏移半个产物面板宽度 */}
           <div className="w-full bg-[#0f0f14] flex-shrink-0 flex justify-center">
             <Composer onSend={handleSend} onStop={stop} disabled={streaming} activeAgent={activeAgent} convId={convId} spaceId={convInfo?.space_id ?? null} agentList={agentList} currentStage={liveMigrateDetail?.status_label} />
           </div>
         </div>
-        <ArtifactPanel
+        <WorkspacePanel
+          agent={selectedWorkspaceAgent}
           convId={convId}
-          taskName={convInfo?.task_name}
-          quickMode={quickMode}
-          previewRequest={previewRequest}
-          onPreviewRequestHandled={() => setPreviewRequest(null)}
+          refreshKey={workspaceRefreshKey}
+          openFileRequest={workspaceOpenRequest}
+          onOpenFileRequestConsumed={() => setWorkspaceOpenRequest(null)}
         />
       </div>
       {attachOpen && (

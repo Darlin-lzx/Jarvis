@@ -300,6 +300,7 @@ def test_project_agent_exposes_scoped_code_tools(tmp_path):
         state={"agent_id": "boot_agent"}, current_agent_id="boot_agent"))
     assert read["ok"] is True
     assert "OrderController" in read["content"]
+    assert "1: public class OrderController {" in read["content"]
 
     escaped = json.loads(rt._dispatch_tool(
         "code_read", {"path": "../../t.db"},

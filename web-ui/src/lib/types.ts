@@ -70,6 +70,8 @@ export interface Agent {
   name: string
   /** 别名/昵称（展示用；来自数据库 agents.alias，未配置时为空） */
   alias?: string
+  /** 工程目录（该智能体负责的工程代码根目录；来自数据库 agents.project_dir） */
+  project_dir?: string
   /** 产物类型（来自数据库 agents.product_type，按此把该 Agent 生成的产物归类） */
   product_type?: string
   /** 迁移阶段（来自数据库 agents.stage，按此把该 Agent 生成的产物归入状态机阶段分组） */
@@ -84,6 +86,7 @@ export interface Agent {
   enabled: boolean
   builtin?: boolean
   agent_type?: string
+  bound_kbs?: string[]
   // 绑定的系统角色提示词（来自 /api/agents，type=system_role 的 Prompt）
   system_role_prompt_id?: number | null
   system_role_name?: string | null
@@ -141,6 +144,16 @@ export interface Datasource {
   sub_system_id?: number | null
 }
 
+export interface DatasourceTestResult {
+  ok: boolean
+  scheme?: string
+  tables?: string[]
+  views?: string[]
+  object?: string
+  columns?: { name: string; type: string; nullable: boolean; pk: boolean }[]
+  message?: string
+}
+
 export interface KBDocument {
   id: number
   name: string
@@ -149,6 +162,7 @@ export interface KBDocument {
   enabled: boolean
   space_id?: number | null
   sub_system_id?: number | null
+  kb_id?: number | null
   kb_type?: string
   business_domain?: string
   target_db?: string
@@ -161,6 +175,19 @@ export interface KBDocument {
   negative_feedback_count?: number
   review_required?: boolean
   created_at: string
+}
+
+export interface KnowledgeBaseInfo {
+  id: number
+  name: string
+  description?: string
+  owner_agent_id?: string
+  doc_count?: number
+  chunk_count?: number
+  enabled?: boolean
+  bound_agent_ids?: string[]
+  bound_agent_names?: string[]
+  created_at?: string | null
 }
 
 export interface KBTriple {
@@ -339,33 +366,34 @@ export interface ApiResponse<T> {
   message?: string
 }
 
-// ---------- 数据库迁移：状态机 / 规则引擎 / 结构化资产 ----------
-/** 迁移任务状态机阶段（后端硬编码流转，LLM 无权跳转） */
+// ---------- 跨工程迭代：状态机编排 ----------
+/** 跨工程迭代任务状态机阶段（后端硬编码流转，LLM 无权跳转） */
 export type MigrateStatus =
-  | 'DATA_COLLECTION' | 'ASSESSMENT_RUNNING' | 'SOLUTION_GENERATE'
-  | 'CODE_MIGRATE' | 'VERIFY_STAGE' | 'FINISHED' | 'ERROR'
+  | 'PAGE_SHOW' | 'ORDER_SPLIT' | 'ORDER_ACCEPT'
+  | 'RULE_CHECK' | 'CUSTOMER_CHECK' | 'FINISHED' | 'ERROR'
   // 旧值兼容（存量任务映射前可能短暂出现）
-  | 'INIT' | 'DATA_SOURCE_SELECTED' | 'BASIC_INFO_COLLECTED' | 'OBJECT_SCANNING' | 'SQL_TRANSFORM'
+  | 'INIT' | 'DATA_COLLECTION' | 'ASSESSMENT_RUNNING' | 'SOLUTION_GENERATE' | 'CODE_MIGRATE' | 'VERIFY_STAGE'
 
 export const MIGRATE_STATUS_FLOW: MigrateStatus[] = [
-  'DATA_COLLECTION', 'ASSESSMENT_RUNNING', 'SOLUTION_GENERATE',
-  'CODE_MIGRATE', 'VERIFY_STAGE', 'FINISHED',
+  'PAGE_SHOW', 'ORDER_SPLIT', 'ORDER_ACCEPT',
+  'RULE_CHECK', 'CUSTOMER_CHECK', 'FINISHED',
 ]
 
 export const MIGRATE_STATUS_LABEL: Record<MigrateStatus, string> = {
-  DATA_COLLECTION: '数据采集',
-  ASSESSMENT_RUNNING: '迁移评估',
-  SOLUTION_GENERATE: '迁移方案',
-  CODE_MIGRATE: '代码改造',
-  VERIFY_STAGE: '迁移验证',
+  PAGE_SHOW: '页面展示',
+  ORDER_SPLIT: '下单拆单',
+  ORDER_ACCEPT: '订单受理',
+  RULE_CHECK: '规则配置',
+  CUSTOMER_CHECK: '客户数据',
   FINISHED: '已完成',
   ERROR: '异常中断（可续跑）',
   // 旧值兼容
-  INIT: '数据采集',
-  DATA_SOURCE_SELECTED: '数据采集',
-  BASIC_INFO_COLLECTED: '数据采集',
-  OBJECT_SCANNING: '数据采集',
-  SQL_TRANSFORM: '代码改造',
+  INIT: '页面展示',
+  DATA_COLLECTION: '页面展示',
+  ASSESSMENT_RUNNING: '下单拆单',
+  SOLUTION_GENERATE: '订单受理',
+  CODE_MIGRATE: '规则配置',
+  VERIFY_STAGE: '客户数据',
 }
 
 export interface MigrateTask {
@@ -375,13 +403,16 @@ export interface MigrateTask {
   task_name: string
   status: MigrateStatus
   status_label?: string
-  source_ds_id?: string
-  source_ds_name?: string
-  source_db_type?: string
-  target_db_type?: string
-  db_business_level?: string
-  db_capacity?: string
-  stop_window?: string
+  frontend_task?: string
+  business_scene?: string
+  order_source?: string
+  split_rule?: string
+  accept_system?: string
+  workflow_scene?: string
+  rule_config?: string
+  config_branch?: string
+  customer_scope?: string
+  data_range?: string
   object_count?: number
   error_msg?: string
   conv_id?: number | null
@@ -395,44 +426,7 @@ export interface MigrateTask {
   updated_at?: string
 }
 
-export interface MigrateAsset {
-  id: number
-  task_id: number
-  asset_type: string
-  asset_name: string
-  risk_level: string
-  incompatible_detail: string
-  rule_ids: string
-  original_sql: string
-  converted_sql: string
-  suggestion: string
-  source: string
-  status: string
-  owner?: string
-  conv_id?: number | null
-  created_at?: string
-  updated_at?: string
-}
-
-export interface RuleFinding {
-  rule_id: string
-  desc: string
-  risk: string
-  suggest: string
-  snippet?: string
-}
-
-export interface RuleScanResult {
-  object_name: string
-  asset_type: string
-  findings: RuleFinding[]
-  summary: { high: number; medium: number; low: number }
-  hit_rules: string[]
-}
-
 export interface MigrateTaskDetail extends MigrateTask {
-  assets: MigrateAsset[]
-  assets_stats: { total: number; high: number; medium: number; low: number }
   /** 执行锁状态（多会话互斥展示；无锁时 locked=false） */
   exec_lock?: MigrateExecLock
 }
@@ -478,14 +472,6 @@ export interface TraceLogItem {
   message: string
   duration_ms?: number | null
   created_at?: string | null
-}
-
-export interface MigrateRule {
-  rule_id: string
-  desc: string
-  risk: string
-  suggest: string
-  match_pattern?: string
 }
 
 export interface MigrateEvent {
@@ -617,4 +603,409 @@ export interface SendExtra {
   attachment_ids?: number[]
   /** 内部执行标记：阶段确认后自动执行当前智能体，不再解析为下一级确认 */
   skip_state_advance?: boolean
+}
+
+export interface WorkspaceChange {
+  path: string
+  status: string
+  additions: number
+  deletions: number
+}
+
+export interface WorkspaceSummary {
+  available: boolean
+  agent_id: string
+  name: string
+  project_dir: string
+  git: { is_repo: boolean; branch: string; error?: string }
+  changes: WorkspaceChange[]
+  changed_count: number
+}
+
+export interface WorkspaceTreeNode {
+  name: string
+  path: string
+  type: 'directory' | 'file'
+}
+
+export interface WorkspaceTree {
+  path: string
+  items: WorkspaceTreeNode[]
+  truncated: boolean
+}
+
+export interface WorkspaceFile {
+  path: string
+  content: string
+  truncated: boolean
+}
+
+export interface WorkspaceDiff {
+  path: string
+  diff: string
+  truncated: boolean
+}
+
+export interface WorkspaceEvidenceItem {
+  id: number
+  type: 'read' | 'search' | 'kb'
+  path?: string
+  query?: string
+  matched_count?: number
+  created_at?: string | null
+}
+
+export interface WorkspaceEvidence {
+  agent_id: string
+  name: string
+  project_dir: string
+  items: WorkspaceEvidenceItem[]
+  counts: { read: number; search: number; kb: number }
+}
+
+export interface WorkflowVariable {
+  name: string
+  datatype: string
+  defaultvalue: string
+  inouttype: string
+  description: string
+}
+
+export interface WorkflowLink {
+  direction: string
+  left: string
+  right: string
+  default_value: string
+  default_value_type: string
+}
+
+export interface WorkflowService {
+  runtype: string
+  cross_center?: boolean | null
+  centercode: string
+  servicecode: string
+  servicename: string
+}
+
+export interface WorkflowNode {
+  id: string
+  label: string
+  type: string
+  x: number
+  y: number
+  width: number
+  height: number
+  goto: string[]
+  service?: WorkflowService | null
+  links: WorkflowLink[]
+}
+
+export interface WorkflowEdge {
+  id: string
+  source: string
+  target: string
+  source_kind: string
+}
+
+export interface WorkflowGraph {
+  label?: string
+  tasktag?: string
+  tasktype?: string
+  owntype?: string
+  description?: string
+  variables: WorkflowVariable[]
+  nodes: WorkflowNode[]
+  edges: WorkflowEdge[]
+  warnings: string[]
+  width: number
+  height: number
+}
+
+export interface WorkflowTemplateVersion {
+  template_version_id: number
+  order_num?: number | null
+  template_tag: string
+  create_staff_id?: string | number | null
+  create_date?: string | null
+  modify_desc?: string | null
+  valid_date?: string | null
+  expire_date?: string | null
+  is_expired: boolean
+  content: string | null
+  workflow: WorkflowGraph | null
+  parse_error: string | null
+}
+
+export interface WorkflowParseResponse {
+  workflow: WorkflowGraph | null
+  parse_error: string | null
+}
+
+export interface AnalysisSceneInfo {
+  scene_code: string
+  scene_name: string
+  render_mode: string
+}
+
+export interface AnalysisCenterInfo {
+  center_code: string
+  center_name: string
+  icon: string
+  default_city: string
+  scenes: AnalysisSceneInfo[]
+}
+
+export interface AnalysisNodeResult {
+  node_code: string
+  node_name: string
+  table_name: string
+  datasource_name: string
+  color: string
+  parent_node_code: string
+  parent_field: string
+  query_field: string
+  success: boolean
+  columns: string[]
+  rows: string[][]
+  row_count: number
+  error: string
+  sql: string
+}
+
+export interface AnalysisSceneResult {
+  center_code: string
+  scene_code: string
+  business_key: string
+  city: string
+  in_transit: boolean
+  history_month: string
+  nodes: AnalysisNodeResult[]
+}
+
+export interface AnalysisQueryBlock {
+  name: string
+  success: boolean
+  columns: string[]
+  rows: string[][]
+  row_count: number
+  error: string
+  sql: string
+}
+
+export interface AnalysisWorkflowResult {
+  order_id: string
+  scheduler_ids: string[]
+  results: AnalysisQueryBlock[]
+}
+
+export interface AnalysisMessageResult {
+  success: boolean
+  columns: string[]
+  rows: string[][]
+  row_count: number
+  error: string
+  sql: string
+  task_id?: string
+  message_type?: string
+  cust_order_id?: string
+  key_ele_id?: string
+}
+
+/** 客户订单下单报文（hall_cust_dtl，CUST_DTL_INFO_A~P 拼接） */
+export interface CustomerOrderMessageResult {
+  success: boolean
+  columns: string[]
+  rows: string[][]
+  row_count: number
+  error: string
+  sql: string
+  cust_order_id: string
+  table_name: string
+  message: string
+  original_data: unknown | null
+  transformed_data: unknown | null
+}
+
+/** 流程实例受理报文（HALL_ORDER_BUSI_LOG 最近一条，REQ/RESP_MESSAGE 已在 SQL 内拼接） */
+export interface AcceptMessageResult {
+  success: boolean
+  columns: string[]
+  rows: string[][]
+  row_count: number
+  error: string
+  sql: string
+  cust_order_id: string
+  task_flow_ins_id: string
+}
+
+/** 展示场景（客户订单配置库 DEF_SCENE，按 SCENE_ID 查询） */
+export interface DefSceneResult {
+  success: boolean
+  columns: string[]
+  rows: string[][]
+  row_count: number
+  error: string
+  sql: string
+  scene_id: string
+  scene_name?: string
+}
+
+/** 异步流程（ord_async_method_deal_task_order_574，按客户订单号查询）；
+ * 在途表为进程处理表，处理完成即移历史——在途查不到时后端自动回退近几个月历史表，
+ * from_history 标记结果来自历史表，history_fallback 标记为自动回退命中 */
+export interface AsyncFlowResult {
+  success: boolean
+  columns: string[]
+  rows: string[][]
+  row_count: number
+  error: string
+  sql: string
+  order_id: string
+  table_name: string
+  from_history?: boolean
+  history_fallback?: boolean
+  checked_tables?: string[]
+}
+
+/** 产品配置单块结果（product.up_product_item / product.up_item_feature，按产品编号查询） */
+export interface ProductConfigBlock {
+  name: string
+  table_name: string
+  /** 数据源标注（后端返回；缺省由前端按 tab 兜底） */
+  datasource?: string
+  success: boolean
+  columns: string[]
+  rows: string[][]
+  row_count: number
+  error: string
+  sql: string
+}
+
+/** 产品配置（产品库；不区分地市/在途历史，一次返回 配置+特性 两块） */
+export interface ProductConfigResult {
+  product_item_id: string
+  results: ProductConfigBlock[]
+}
+
+/** 用户信息（实例中心，营业库）：ins_user 按计费账号查；cust_type=1 级联个人客户，
+ * family_cust_id 非空级联家庭客户（不满足条件的块后端不返回） */
+export interface InstanceUserResult {
+  bill_id: string
+  results: ProductConfigBlock[]
+}
+
+/** 框架规则定义（busicfg.UP_RULE 按规则ID查询，家庭业务配置库；框架规则点击弹窗展示） */
+export interface UpRuleResult {
+  success: boolean
+  columns: string[]
+  rows: string[][]
+  row_count: number
+  error: string
+  sql: string
+  rule_id: string
+  table_name: string
+}
+
+/** 业务信息（product.up_business 按业务ID查询，产品库；业务关系点击弹窗展示） */
+export interface BusinessInfoResult {
+  success: boolean
+  columns: string[]
+  rows: string[][]
+  row_count: number
+  error: string
+  sql: string
+  business_id: string
+  table_name: string
+}
+
+/** 产品驱动（家庭业务中心；待接入真实 SQL） */
+export interface ProductDriveResult {
+  category: string
+  results: ProductConfigBlock[]
+}
+
+/** 静态配置（家庭订单中心·配置查询：bs_para_detail(para_type) + bs_static_data(code_type)，家庭订单库） */
+export interface StaticConfigResult {
+  code: string
+  results: ProductConfigBlock[]
+}
+
+/** 业务限制（rule_Cfg.SO_PRE_BUSI_LIMIT，按限制编码查询，规则配置库；弹窗展示） */
+export interface SoPreBusiLimitResult {
+  success: boolean
+  columns: string[]
+  rows: string[][]
+  row_count: number
+  error: string
+  sql: string
+  limit_code: string
+  table_name: string
+}
+
+/** 配置查询单块结果（DEF_RULE / DEF_BUSI_CMPT） */
+export interface SceneRulePartResult {
+  node_name: string
+  success: boolean
+  columns: string[]
+  rows: string[][]
+  row_count: number
+  error: string
+  sql: string
+}
+
+/** 配置查询：规则定义（按场景ID，客户订单配置库） */
+export interface SceneRulesResult {
+  scene_id: string
+  rule: SceneRulePartResult
+  /** 场景单元关系（HALLCFG.SCENE_UNIT_REL，按 SCENE_ID 查询） */
+  unit_rel: SceneRulePartResult
+}
+
+/** 业务组件定义（DEF_BUSI_CMPT 按 BUSI_CMPT_ID 查询） */
+export interface BusiCmptResult {
+  success: boolean
+  columns: string[]
+  rows: string[][]
+  row_count: number
+  error: string
+  sql: string
+  busi_cmpt_id: string
+}
+
+/** SM4 加密字段解密结果（密码服务 /api/decrypt） */
+export interface DecryptResult {
+  ok: boolean
+  plain: string
+  raw: unknown
+  error: string
+}
+
+/** 批量解密结果（按入参顺序对齐） */
+export interface DecryptBatchResult {
+  results: DecryptResult[]
+}
+
+/** 结构化订单信息单表结果（HALL_ORD_*，按 CUST_ORDER_ID 查询） */
+export interface StructuredOrderTableResult {
+  label: string
+  table_name: string
+  sql: string
+  success: boolean
+  error: string
+  columns: string[]
+  rows: string[][]
+  row_count: number
+}
+
+/** 结构化订单信息（17 张 HALL_ORD_* 表并行查询） */
+export interface StructuredOrderInfoResult {
+  cust_order_id: string
+  tables: StructuredOrderTableResult[]
+}
+
+export interface WorkflowTemplateResponse {
+  template_tag: string
+  version_table?: string
+  selected_version_id: number | null
+  versions: WorkflowTemplateVersion[]
 }

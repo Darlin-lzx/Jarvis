@@ -18,11 +18,11 @@ The repository already has many unrelated uncommitted changes. Before each task,
 
 **Files:**
 
-- Create: `db_loc_agent/reliability.py`
+- Create: `jarvis_agent/reliability.py`
 - Create: `tests/test_reliability.py`
-- Modify: `db_loc_agent/config.py`
+- Modify: `jarvis_agent/config.py`
 - Modify: `config.yaml`
-- Modify: `db_loc_agent/llm.py`
+- Modify: `jarvis_agent/llm.py`
 
 - [ ] **Step 1: Write failing tests**
 
@@ -31,8 +31,8 @@ Create `tests/test_reliability.py`:
 ```python
 import pytest
 
-from db_loc_agent.config import ReliabilitySettings
-from db_loc_agent.reliability import CircuitBreaker, CircuitOpenError, ReliableChatModel
+from jarvis_agent.config import ReliabilitySettings
+from jarvis_agent.reliability import CircuitBreaker, CircuitOpenError, ReliableChatModel
 
 
 def test_circuit_breaker_opens_and_half_open_recovers():
@@ -102,7 +102,7 @@ Expected: import failure because reliability classes do not exist.
 
 - [ ] **Step 3: Implement**
 
-Add `ReliabilitySettings` to `db_loc_agent/config.py`:
+Add `ReliabilitySettings` to `jarvis_agent/config.py`:
 
 ```python
 @dataclass
@@ -118,7 +118,7 @@ class ReliabilitySettings:
 
 Add the field to `AppConfig`, serialize it in `to_dict()`, and parse nested `reliability` dictionaries in `load_config()`.
 
-Create `db_loc_agent/reliability.py`. `CircuitBreaker` exposes `state`, `allow_call()`, `check_allowed()`, `record_success()`, and `record_failure()`; its clock is injectable and transitions are `closed -> open -> half_open -> closed/open`. `CircuitOpenError` subclasses `RuntimeError`.
+Create `jarvis_agent/reliability.py`. `CircuitBreaker` exposes `state`, `allow_call()`, `check_allowed()`, `record_success()`, and `record_failure()`; its clock is injectable and transitions are `closed -> open -> half_open -> closed/open`. `CircuitOpenError` subclasses `RuntimeError`.
 
 Implement `ReliableChatModel`:
 
@@ -167,11 +167,11 @@ Expected: `4 passed`.
 
 **Files:**
 
-- Modify: `db_loc_agent/db.py`
-- Create: `db_loc_agent/observability.py`
+- Modify: `jarvis_agent/db.py`
+- Create: `jarvis_agent/observability.py`
 - Create: `tests/test_observability.py`
-- Modify: `db_loc_agent/state_machine.py`
-- Modify: `db_loc_agent/state_stream.py`
+- Modify: `jarvis_agent/state_machine.py`
+- Modify: `jarvis_agent/state_stream.py`
 
 - [ ] **Step 1: Write failing tests**
 
@@ -182,9 +182,9 @@ import json
 
 
 def test_task_gets_trace_and_state_events(tmp_path):
-    from db_loc_agent.db import Database
-    from db_loc_agent.observability import ObservabilityService
-    from db_loc_agent.state_machine import MigrateStateService
+    from jarvis_agent.db import Database
+    from jarvis_agent.observability import ObservabilityService
+    from jarvis_agent.state_machine import MigrateStateService
 
     db = Database(str(tmp_path / "t.db"))
     service = ObservabilityService(db)
@@ -204,8 +204,8 @@ def test_task_gets_trace_and_state_events(tmp_path):
 
 
 def test_trace_logs_are_ordered_and_serializable(tmp_path):
-    from db_loc_agent.db import Database
-    from db_loc_agent.observability import ObservabilityService
+    from jarvis_agent.db import Database
+    from jarvis_agent.observability import ObservabilityService
 
     service = ObservabilityService(Database(str(tmp_path / "t.db")))
     trace_id = service.log(trace_id="", phase="llm", span="invoke", message="call")
@@ -227,7 +227,7 @@ Extend `ArtifactRecord` with `version`, `parent_version`, and indexed `trace_id`
 
 - [ ] **Step 4: Implement ObservabilityService**
 
-Create `db_loc_agent/observability.py`:
+Create `jarvis_agent/observability.py`:
 
 ```python
 class ObservabilityService:
@@ -305,9 +305,9 @@ Expected: all selected tests pass.
 
 **Files:**
 
-- Modify: `db_loc_agent/artifacts.py`
+- Modify: `jarvis_agent/artifacts.py`
 - Create: `tests/test_artifact_versions.py`
-- Modify: `db_loc_agent/app.py`
+- Modify: `jarvis_agent/app.py`
 
 - [ ] **Step 1: Write failing tests**
 
@@ -318,8 +318,8 @@ import pytest
 
 
 def _service(tmp_path):
-    from db_loc_agent.artifacts import ArtifactService
-    from db_loc_agent.db import Database
+    from jarvis_agent.artifacts import ArtifactService
+    from jarvis_agent.db import Database
     return ArtifactService(Database(str(tmp_path / "t.db")), str(tmp_path / "artifacts"))
 
 
@@ -404,9 +404,9 @@ Expected: all selected tests pass.
 
 **Files:**
 
-- Modify: `db_loc_agent/app.py`
-- Modify: `db_loc_agent/graph.py`
-- Modify: `db_loc_agent/db_tools.py`
+- Modify: `jarvis_agent/app.py`
+- Modify: `jarvis_agent/graph.py`
+- Modify: `jarvis_agent/db_tools.py`
 - Modify: `tests/test_api.py`
 - Modify: `tests/test_observability.py`
 
@@ -441,7 +441,7 @@ Also add:
 
 ```python
 def test_agent_state_carries_trace_id():
-    from db_loc_agent.graph import AgentState
+    from jarvis_agent.graph import AgentState
 
     state = AgentState(user_input="x", conv_id=1, trace_id="trace-graph")
     assert state["trace_id"] == "trace-graph"
@@ -600,7 +600,7 @@ Expected: all frontend tests pass.
 
 - [ ] **Step 4: Compile checks**
 
-Run `.venv/bin/python -m compileall db_loc_agent`, then `npm run build` from `web-ui`. Python must pass. If the repository’s known unrelated TypeScript build errors remain, capture them and confirm none reference the new files.
+Run `.venv/bin/python -m compileall jarvis_agent`, then `npm run build` from `web-ui`. Python must pass. If the repository’s known unrelated TypeScript build errors remain, capture them and confirm none reference the new files.
 
 - [ ] **Step 5: Manual smoke**
 

@@ -491,7 +491,7 @@ export function PromptsPanel() {
                     'h-8 text-[12px] bg-[#16161e] border placeholder:text-[#4a4a5a]',
                     createErrors.name ? 'border-red-500/50' : 'border-[#2a2a35]'
                   )}
-                  placeholder="例如：迁移评估角色提示词"
+                  placeholder="例如：页面展示角色提示词"
                   value={createForm.name}
                   onChange={e => setCreateForm({ ...createForm, name: e.target.value })}
                 />

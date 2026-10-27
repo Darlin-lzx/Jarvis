@@ -110,7 +110,7 @@ export function Composer({ onSend, onStop, disabled, activeAgent, convId, spaceI
         <div className="mb-2 flex items-center gap-1">
           <Info className="w-3 h-3 text-indigo-400 shrink-0" />
           <span className="text-[11px] text-[#8b8b9e] truncate">
-            当前处于【数据迁移任务・{currentStage || '数据采集'}】，智能体：
+            当前处于【数据跨工程迭代任务・{currentStage || '页面展示'}】，智能体：
             {agentDisplayName(currentAgent || (activeAgent ? { name: activeAgent } : null))}
           </span>
         </div>

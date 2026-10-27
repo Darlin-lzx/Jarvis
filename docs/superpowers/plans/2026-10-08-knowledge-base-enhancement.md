@@ -13,8 +13,8 @@
 ### Task 1: Knowledge Metadata and Scoring
 
 **Files:**
-- Modify: `db_loc_agent/db.py`
-- Modify: `db_loc_agent/rag.py`
+- Modify: `jarvis_agent/db.py`
+- Modify: `jarvis_agent/rag.py`
 - Test: `tests/test_rag.py`
 
 - [ ] Add failing tests for domain filtering, confidence scoring, low-similarity filtering, and feedback degradation.
@@ -25,7 +25,7 @@
 ### Task 2: Unified Knowledge API
 
 **Files:**
-- Modify: `db_loc_agent/app.py`
+- Modify: `jarvis_agent/app.py`
 - Test: `tests/test_api.py`
 
 - [ ] Add failing API tests for `/api/knowledge/search` and `/api/knowledge/feedback`.

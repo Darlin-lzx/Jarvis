@@ -1,7 +1,7 @@
 import pytest
 
-from db_loc_agent.config import ReliabilitySettings
-from db_loc_agent.reliability import CircuitBreaker, CircuitOpenError, ReliableChatModel
+from jarvis_agent.config import ReliabilitySettings
+from jarvis_agent.reliability import CircuitBreaker, CircuitOpenError, ReliableChatModel
 
 
 def test_circuit_breaker_opens_and_half_open_recovers():
@@ -76,8 +76,8 @@ def test_reliable_chat_model_does_not_advertise_missing_parse():
 
 
 def test_db_tools_guard_connections_with_circuit_breaker(tmp_path):
-    from db_loc_agent.db import Database
-    from db_loc_agent.db_tools import DbTools
+    from jarvis_agent.db import Database
+    from jarvis_agent.db_tools import DbTools
 
     class Recorder:
         def __init__(self):

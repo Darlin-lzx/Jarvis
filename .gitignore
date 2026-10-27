@@ -45,3 +45,7 @@ demo_data/
 # Web UI
 web-ui/node_modules/
 web-ui/dist/
+
+# 敏感本地配置（密钥等）
+config.local.yaml
+data/ds_secret.key

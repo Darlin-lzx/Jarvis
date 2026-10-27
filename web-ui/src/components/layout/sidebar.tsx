@@ -1,11 +1,10 @@
 import { useState, useRef, useEffect } from 'react'
 import { createPortal } from 'react-dom'
-import { Plus, Trash2, ChevronRight, ChevronDown, BookOpen, Brain, Package, Bot, Puzzle, FileText, Database, Plug, Wrench, BarChart3, Shield, MoreHorizontal, Pencil, FolderPlus, FolderOpen, MessageCircle, MessageSquare, FileCode2, Cpu, LayoutDashboard, Zap, PanelLeftClose, PanelLeftOpen } from 'lucide-react'
-import { Button } from '@/components/ui/button'
+import { Plus, Trash2, ChevronRight, ChevronDown, BookOpen, Brain, Package, Bot, Puzzle, FileText, Database, Plug, MoreHorizontal, Pencil, FolderPlus, FolderOpen, MessageCircle, FileCode2, LayoutDashboard, Zap, PanelLeftClose, PanelLeftOpen, Workflow, Activity, Terminal, UserRound } from 'lucide-react'
 import { Input } from '@/components/ui/input'
 import { cn } from '@/lib/utils'
 import { api } from '@/lib/api'
-import type { BizTask, Conversation, Space, UserProfile } from '@/lib/types'
+import type { BizTask, Space, UserProfile } from '@/lib/types'
 import { DeleteTaskDialog } from '@/components/project/delete-task-dialog'
 
 /* ---- 分组式菜单定义 ---- */
@@ -43,16 +42,22 @@ const menuGroups: MenuGroup[] = [
     items: [
       { value: 'dbs', label: '数据源', icon: Database },
       { value: 'mcp', label: 'MCP', icon: Plug },
+      { value: 'users', label: '用户管理', icon: UserRound },
     ],
   },
   {
-    id: 'ops',
-    label: '系统运维',
+    id: 'process',
+    label: '业务编排',
     items: [
-      { value: 'ops', label: '运维', icon: Wrench },
-      { value: 'gov', label: '治理', icon: BarChart3 },
-      { value: 'security', label: '安全', icon: Shield },
-      { value: 'models', label: '模型管理', icon: Cpu },
+      { value: 'workflows', label: '工作流', icon: Workflow },
+    ],
+  },
+  {
+    id: 'analysis',
+    label: '数据分析',
+    items: [
+      { value: 'analysis', label: '数据查询', icon: Activity },
+      { value: 'sql', label: 'SQL 查询', icon: Terminal },
     ],
   },
 ]
@@ -83,16 +88,12 @@ interface AgentInfo {
 }
 
 interface SidebarProps {
-  conversations: Conversation[]
-  currentId: number | null
-  searchKw: string
-  onSearch: (kw: string) => void
-  onSelect: (id: number) => void
-  onNew: () => void
-  onDelete: (id: number) => void
-  onRenameConv?: (id: number, title: string) => void
   activeTab: string
   onTabChange: (tab: string) => void
+  /** 当前登录用户显示名（登录后展示，替代固定档案名） */
+  authName?: string
+  /** 当前登录用户是否管理员（控制「用户管理」菜单可见性） */
+  isAdmin?: boolean
   onSelectSpace?: (g: WorkspaceGroup) => void
   onCreateTask?: (group: WorkspaceGroup) => void
   onSelectTask?: (spaceId: number, taskId: number) => void
@@ -114,12 +115,12 @@ const AUTO_COLLAPSE_WIDTH = 1024
 const defaultExpanded: Record<string, boolean> = {
   tasks: true,
   spaces: true,
-  // 临时会话目录默认收起
-  temp: false,
   // 分组默认展开
   knowledge: true,
   agent: true,
   resource: true,
+  process: true,
+  analysis: true,
   ops: true,
 }
 
@@ -147,36 +148,21 @@ function toWorkspaceGroup(s: Space, tasks: BizTask[]): WorkspaceGroup {
   }
 }
 
-export function Sidebar({ searchKw: _searchKw, onSearch: _onSearch, onNew, onSelect, onDelete, activeTab, onTabChange, onSelectSpace, onCreateTask, onSelectTask, onTaskDeleted, onQuickQA, activeFilter, activeTaskId, activeAgent: _activeAgent, agents: _agents, refreshKey, conversations, onRenameConv }: SidebarProps) {
+export function Sidebar({ activeTab, onTabChange, authName, isAdmin, onSelectSpace, onCreateTask, onSelectTask, onTaskDeleted, onQuickQA, activeFilter, activeTaskId, activeAgent: _activeAgent, agents: _agents, refreshKey }: SidebarProps) {
   const [groups, setGroups] = useState<WorkspaceGroup[]>([])
-  const [tempSpace, setTempSpace] = useState<Space | null>(null)
   const [spacesLoading, setSpacesLoading] = useState(true)
   const [expandedSections, setExpandedSections] = useState<Record<string, boolean>>(() => loadFromStorage(EXPANDED_KEY, defaultExpanded))
   const [menuOpen, setMenuOpen] = useState<{ key: string; x: number; y: number } | null>(null)
   const [editingGroup, setEditingGroup] = useState<string | null>(null)
   const [editName, setEditName] = useState('')
-  const [tempEditId, setTempEditId] = useState<number | null>(null)
-  const [tempEditName, setTempEditName] = useState('')
   const [deleteTarget, setDeleteTarget] = useState<{ id: number; name: string } | null>(null)
   const [deletingTaskId, setDeletingTaskId] = useState<number | null>(null)
   const menuRef = useRef<HTMLDivElement>(null)
-  const startTempRename = (c: Conversation) => {
-    setTempEditId(c.id)
-    setTempEditName(c.title)
-  }
-  const confirmTempRename = () => {
-    if (tempEditId != null) {
-      const t = tempEditName.trim()
-      const cur = conversations.find(x => x.id === tempEditId)
-      if (t && cur && t !== cur.title) onRenameConv?.(tempEditId, t)
-    }
-    setTempEditId(null)
-  }
   const editInputRef = useRef<HTMLInputElement>(null)
 
   // 左下角登录用户信息（轻量：从后端 /api/me 读取，仅展示，不做鉴权）
   const [user, setUser] = useState<UserProfile | null>(null)
-  const avatarChar = (user?.name || '小迁').charAt(0)
+  const avatarChar = (authName || user?.name || '小迁').charAt(0)
   useEffect(() => {
     api.me().then(r => { if (r.success) setUser(r.data ?? null) }).catch(() => {})
   }, [])
@@ -205,11 +191,9 @@ export function Sidebar({ searchKw: _searchKw, onSearch: _onSearch, onNew, onSel
     Promise.all([api.listSpaces(), api.listTasks()])
       .then(([spaceRes, taskRes]) => {
         if (!spaceRes.success) return
-        const all = spaceRes.data || []
+        const all = (spaceRes.data || []).filter(space => space.name !== '默认空间')
         const tasks = taskRes.success ? (taskRes.data || []) : []
-        const temp = all.find(s => s.name === '临时会话') || null
-        setTempSpace(temp)
-        setGroups(all.filter(s => s !== temp).map(space => toWorkspaceGroup(space, tasks)))
+        setGroups(all.map(space => toWorkspaceGroup(space, tasks)))
       })
       .catch(() => {})
       .finally(() => setSpacesLoading(false))
@@ -336,9 +320,6 @@ export function Sidebar({ searchKw: _searchKw, onSearch: _onSearch, onNew, onSel
         <button className={railBtn(false)} onClick={toggleCollapsed} title="展开侧边栏">
           <PanelLeftOpen className="w-4 h-4" />
         </button>
-        <button className={railBtn(false)} onClick={onNew} title="新建会话">
-          <Plus className="w-4 h-4 text-indigo-400" />
-        </button>
         <div className="w-6 h-px bg-[#252530] my-1" />
         <button className={railBtn(activeTab === 'workspace')} onClick={() => onTabChange('workspace')} title="工作台">
           <LayoutDashboard className="w-4 h-4" />
@@ -347,7 +328,7 @@ export function Sidebar({ searchKw: _searchKw, onSearch: _onSearch, onNew, onSel
           <Zap className="w-4 h-4 text-amber-400" />
         </button>
         <div className="mt-auto" />
-        <button className={railBtn(false)} title={user?.name || '小迁'}>
+        <button className={railBtn(false)} title={authName || user?.name || '小迁'}>
           <div className="w-6 h-6 rounded-full flex items-center justify-center text-[10px] font-bold text-white"
                style={{ background: user?.avatar_color || '#5b7cfa' }}>
             {avatarChar}
@@ -363,11 +344,10 @@ export function Sidebar({ searchKw: _searchKw, onSearch: _onSearch, onNew, onSel
       <div className="px-4 pt-4 pb-2">
         <div className="flex items-center gap-2 mb-1">
           <div className="w-7 h-7 rounded-lg bg-gradient-to-br from-indigo-500 to-purple-600 flex items-center justify-center">
-            <Database className="w-3.5 h-3.5 text-white" />
+            <Bot className="w-3.5 h-3.5 text-white" />
           </div>
           <div className="flex-1 min-w-0">
-            <div className="text-[13px] font-semibold text-[#e4e4e9] leading-tight">易迁联</div>
-            <div className="text-[10px] text-[#8b8b9e] leading-tight">数据国产化方案</div>
+            <div className="text-[13px] font-semibold text-[#e4e4e9] leading-tight">贾维斯</div>
           </div>
           <button
             className="p-1 rounded-md text-[#5a5a70] hover:text-[#b9b9c8] hover:bg-white/[0.05] transition-colors"
@@ -377,17 +357,6 @@ export function Sidebar({ searchKw: _searchKw, onSearch: _onSearch, onNew, onSel
             <PanelLeftClose className="w-4 h-4" />
           </button>
         </div>
-      </div>
-
-      {/* 新建会话 */}
-      <div className="px-3 py-1.5">
-        <Button
-          className="w-full justify-start text-white text-[12px] h-8 px-3 bg-gradient-to-br from-[#5b7cfa] to-[#7a5bfa] hover:from-[#4a6dfa] hover:to-[#6a4af5] shadow-lg shadow-indigo-500/20 transition-all"
-          onClick={onNew}
-        >
-          <Plus className="w-3.5 h-3.5 mr-1.5" />
-          新建会话
-        </Button>
       </div>
 
       <div className="flex-1 px-2.5 overflow-y-auto overflow-x-hidden">
@@ -430,79 +399,6 @@ export function Sidebar({ searchKw: _searchKw, onSearch: _onSearch, onNew, onSel
             <Zap className="w-4 h-4 text-amber-400" />
             <span className="text-[12px] text-[#b9b9c8]">快速问答</span>
           </button>
-        </div>
-
-        {/* 临时会话（独立目录，与空间同级；收纳新建会话） */}
-        <div className="pb-2">
-          <div className="flex items-center justify-between px-1 mb-1">
-            <button
-              className="flex-1 flex items-center gap-1 py-1.5 text-[11px] font-semibold text-[#8b8b9e] tracking-wide hover:text-[#8b8b9e] transition-colors"
-              onClick={() => toggleSection('temp')}
-            >
-              {expandedSections.temp !== false ? (
-                <ChevronDown className="w-3 h-3" />
-              ) : (
-                <ChevronRight className="w-3 h-3" />
-              )}
-              临时会话
-              <span className="text-[10px] font-normal text-[#b9b9c8] ml-0.5">
-                {conversations.filter(c => c.space_id === tempSpace?.id).length}
-              </span>
-            </button>
-          </div>
-          {expandedSections.temp !== false && (
-            <div className="space-y-0.5">
-              {conversations.filter(c => c.space_id === tempSpace?.id).length === 0 && (
-                <div className="px-3 py-2 text-[11px] text-[#5a5a70]">暂无临时会话</div>
-              )}
-              {conversations
-                .filter(c => c.space_id === tempSpace?.id)
-                .map(c => (
-                  <div key={c.id} className="group flex items-center pr-1">
-                    {tempEditId === c.id ? (
-                      <Input
-                        className="flex-1 h-7 px-2 py-1 text-[11px]"
-                        autoFocus
-                        value={tempEditName}
-                        onChange={e => setTempEditName(e.target.value)}
-                        onBlur={confirmTempRename}
-                        onKeyDown={e => {
-                          if (e.key === 'Enter') confirmTempRename()
-                          if (e.key === 'Escape') setTempEditId(null)
-                        }}
-                        onClick={e => e.stopPropagation()}
-                      />
-                    ) : (
-                      <>
-                        <button
-                          className="flex-1 flex items-center gap-1.5 px-3 py-1.5 text-[11px] text-[#b9b9c8] hover:text-[#e4e4e9] hover:bg-white/[0.03] rounded-md truncate"
-                          onClick={() => onSelect(c.id)}
-                        >
-                          <MessageSquare className="w-3 h-3 text-cyan-400 shrink-0" />
-                          <span className="truncate">{c.title}</span>
-                        </button>
-                        <div className="opacity-60 hover:opacity-100 flex items-center gap-0.5">
-                          <button
-                            className="p-1 rounded hover:text-[#e4e4e9] hover:bg-white/[0.05]"
-                            title="重命名会话"
-                            onClick={e => { e.stopPropagation(); startTempRename(c) }}
-                          >
-                            <Pencil className="w-3 h-3" />
-                          </button>
-                          <button
-                            className="p-1 rounded hover:text-red-400 hover:bg-white/[0.05]"
-                            title="删除会话"
-                            onClick={e => { e.stopPropagation(); onDelete(c.id) }}
-                          >
-                            <Trash2 className="w-3 h-3" />
-                          </button>
-                        </div>
-                      </>
-                    )}
-                  </div>
-                ))}
-            </div>
-          )}
         </div>
 
         {/* 空间 */}
@@ -684,7 +580,9 @@ export function Sidebar({ searchKw: _searchKw, onSearch: _onSearch, onNew, onSel
             {/* 分组内子菜单 */}
             {expandedSections[group.id] !== false && (
               <div className="space-y-0.5 ml-3 pl-2 border-l border-[#2a2a35]/60">
-                {group.items.map(item => {
+                {group.items
+                  .filter(item => item.value !== 'users' || isAdmin)
+                  .map(item => {
                   const Icon = item.icon
                   return (
                     <button
@@ -715,7 +613,7 @@ export function Sidebar({ searchKw: _searchKw, onSearch: _onSearch, onNew, onSel
             {avatarChar}
           </div>
           <div className="flex-1 min-w-0">
-            <div className="text-[13px] font-semibold text-[#e4e4e9] leading-tight truncate">{user?.name || '小迁'}</div>
+            <div className="text-[13px] font-semibold text-[#e4e4e9] leading-tight truncate">{authName || user?.name || '小迁'}</div>
           </div>
         </div>
       </div>

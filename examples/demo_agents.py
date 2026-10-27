@@ -17,15 +17,15 @@ from pathlib import Path
 
 from langchain_core.messages import HumanMessage, SystemMessage
 
-from db_loc_agent.agents import AGENTS
-from db_loc_agent.artifacts import ArtifactService
-from db_loc_agent.config import AppConfig, LLMSettings
-from db_loc_agent.db import Database
-from db_loc_agent.embedding import create_embedding_function
-from db_loc_agent.graph import AgentState, build_graph
-from db_loc_agent.llm import create_chat_model
-from db_loc_agent.prompts import PromptService
-from db_loc_agent.rag import RAGStore
+from jarvis_agent.agents import AGENTS
+from jarvis_agent.artifacts import ArtifactService
+from jarvis_agent.config import AppConfig, LLMSettings
+from jarvis_agent.db import Database
+from jarvis_agent.embedding import create_embedding_function
+from jarvis_agent.graph import AgentState, build_graph
+from jarvis_agent.llm import create_chat_model
+from jarvis_agent.prompts import PromptService
+from jarvis_agent.rag import RAGStore
 
 DEMO_DIR = Path(__file__).resolve().parent.parent / "demo_data"
 
@@ -136,7 +136,7 @@ def setup_store() -> tuple[Database, RAGStore, ArtifactService, PromptService]:
     kb.mkdir(parents=True, exist_ok=True)
     docs = [("达梦兼容速查.md", "md", KB_MD), ("oracle_ddl_sample.sql", "sql", KB_SQL)]
     with db.session() as s:
-        from db_loc_agent.db import DocumentRecord
+        from jarvis_agent.db import DocumentRecord
         for name, typ, content in docs:
             doc = DocumentRecord(name=name, source_type=typ, doc_path=str(kb / name))
             (kb / name).write_text(content, encoding="utf-8")
