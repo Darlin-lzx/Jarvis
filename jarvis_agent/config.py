@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field, asdict
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Dict, List
 
 try:
     import yaml
@@ -73,6 +73,10 @@ class AppConfig:
     security_log: bool = True
     # 密码服务地址（SM4 字段解密，内网）；配置在 config.local.yaml（不入 git）
     decrypt_url: str = ""
+    # 数据源 SQL 库目录（空则用 <db_path 所在目录>/sql_library）
+    sql_library_dir: str = ""
+    # 接口调试代理的目标主机白名单（主机名列表，空=不限制）；生产建议收敛到业务网关域名
+    api_call_allowed_hosts: List[str] = field(default_factory=list)
     llm: LLMSettings = field(default_factory=LLMSettings)
     reliability: ReliabilitySettings = field(default_factory=ReliabilitySettings)
     ocr: OCRSettings = field(default_factory=OCRSettings)
@@ -110,7 +114,9 @@ def load_config(path: str | None = None) -> AppConfig:
             elif hasattr(cfg, key):
                 setattr(cfg, key, value)
 
-    # 私有覆盖：config.local.yaml（不入 git）按相同结构合并，存放密钥等敏感配置
+    # 私有覆盖：config.local.yaml（不入 git）按相同结构合并，存放密钥等敏感配置。
+    # 分支处理必须与主配置一致：否则嵌套 dataclass（如 workflow）会被整体替换成
+    # 裸 dict，后续属性访问直接 AttributeError。
     local_path = BASE_DIR / "config.local.yaml"
     if local_path.exists() and yaml is not None:
         local = yaml.safe_load(local_path.read_text(encoding="utf-8")) or {}
@@ -123,6 +129,14 @@ def load_config(path: str | None = None) -> AppConfig:
                 for k, v in value.items():
                     if hasattr(cfg.ocr, k):
                         setattr(cfg.ocr, k, v)
+            elif key == "reliability" and isinstance(value, dict):
+                for k, v in value.items():
+                    if hasattr(cfg.reliability, k):
+                        setattr(cfg.reliability, k, v)
+            elif key == "workflow" and isinstance(value, dict):
+                for k, v in value.items():
+                    if hasattr(cfg.workflow, k):
+                        setattr(cfg.workflow, k, v)
             elif hasattr(cfg, key):
                 setattr(cfg, key, value)
 
@@ -134,6 +148,7 @@ def load_config(path: str | None = None) -> AppConfig:
         "JARVIS_OCR_API_KEY": (cfg.ocr, "api_key"),
         "JARVIS_DECRYPT_URL": (cfg, "decrypt_url"),
         "JARVIS_MYSQL_URL": (cfg, "mysql_url"),
+        "JARVIS_SQL_LIBRARY_DIR": (cfg, "sql_library_dir"),
     }
     for env_key, (target, attr) in env_map.items():
         value = os.environ.get(env_key)

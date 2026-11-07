@@ -11,6 +11,7 @@ from io import BytesIO
 from typing import Any, Callable, Dict, List, Optional
 
 from langgraph.graph import END, StateGraph
+from langchain_core.runnables import RunnableConfig
 from typing_extensions import TypedDict
 
 from jarvis_agent.agents import AgentService, PipelineService
@@ -698,6 +699,9 @@ class GraphRuntime:
         self.rag_enabled = rag_enabled
         self.datasources_enabled = datasources_enabled
         self.max_iterations = max_iterations
+        # 当前节点运行的 LangGraph RunnableConfig（_safe_node 注入暂存）：
+        # _stream_llm 需要它把 LLM 调用挂进 messages 回调链，token 才能流式透传
+        self._run_config: Optional[Dict] = None
 
     def _check_cancelled(self) -> None:
         if self.cancellation_event is not None and self.cancellation_event.is_set():
@@ -705,9 +709,14 @@ class GraphRuntime:
 
     def _stream_llm(self, llm: Any, messages: List[Any],
                     config: Optional[Dict] = None) -> tuple[Any, str]:
+        # 显式传入的 config 优先（如 parse 内部调用传 callbacks=[] 断开消息流）；
+        # 未传时挂接当前节点运行的 RunnableConfig：LangGraph 的 messages 流式
+        # 模式依赖该回调链捕获 LLM token，缺失时 token 透传不到前端，
+        # 回答只能等节点整体结束后一次性下发（表现为首字延迟数秒）。
+        config = config or getattr(self, "_run_config", None) or {}
         text_parts: List[str] = []
         agg: Any = None
-        for chunk in llm.stream(messages, config=config or {}):
+        for chunk in llm.stream(messages, config=config):
             self._check_cancelled()
             if hasattr(chunk, "content") and chunk.content:
                 text_parts.append(chunk.content)
@@ -744,6 +753,15 @@ class GraphRuntime:
     def parse(self, state: AgentState) -> AgentState:
         self._check_cancelled()
         text = state.get("user_input", "")
+        # 前端显式指定指挥官（工作台控制台/快速问答）时路由已确定，
+        # 意图解析的 LLM 调用是纯开销（实测约 3 秒）；跳过解析直接给空结果，
+        # route 节点仍按显式 agent_id 走原路径，首轮响应显著提前。
+        if state.get("agent_id") == "jarvis_commander":
+            state["parse_result"] = {"intent": "", "agent_id": "", "object_name": "",
+                                     "source_db": "", "target_db": "", "skill_id": "",
+                                     "params": {}, "confidence": 0.0}
+            state["skill_id"] = ""
+            return state
         if hasattr(self.llm, "parse"):
             result = self.llm.parse(text)
             self._check_cancelled()
@@ -1068,7 +1086,13 @@ class GraphRuntime:
 
     def _safe_node(self, name: str, fn: Callable[[AgentState], AgentState]):
         """节点异常统一标记到状态；是否重试由 error 节点决定。"""
-        def run(state: AgentState) -> AgentState:
+        # 注意：config 必须标注为 RunnableConfig，LangGraph 才会按签名注入
+        # 当前运行的配置（标注普通类型时注入 None，token 无法挂进消息流）。
+        def run(state: AgentState, config: RunnableConfig | None = None) -> AgentState:
+            # LangGraph 注入当前运行的 RunnableConfig；暂存到实例上，
+            # 供节点内 _stream_llm（未显式传 config 时）挂接 messages 回调链。
+            # 图实例随请求创建，跨请求不会串扰。
+            self._run_config = config
             retrying = state.get("retry_target") == name
             try:
                 result = fn(state)
@@ -1092,6 +1116,10 @@ class GraphRuntime:
                 state["control_target"] = "error"
                 self._trace(state, "node", name, str(exc), level="error")
                 return state
+        # 模块启用了 from __future__ import annotations：函数对象上的注解是
+        # 字符串，LangGraph 的签名检查识别不了，会把 config 注入成 None。
+        # 这里回填真实类型对象，确保 RunnableConfig 被正确注入。
+        run.__annotations__["config"] = RunnableConfig | None
         return run
 
     def error_node(self, state: AgentState) -> AgentState:

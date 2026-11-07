@@ -29,13 +29,15 @@ from jarvis_agent.db import (ArtifactRecord, Conversation, Database, Message,
                              ProjectTask, Space, SpaceSubsystem, TemplateRecord)
 from jarvis_agent.db_tools import DbTools
 from jarvis_agent.embedding import create_embedding_function
-from jarvis_agent.graph import AgentState, ChatRunCancelled, build_graph
+from jarvis_agent.graph import AgentState, ChatRunCancelled, build_graph, _is_artifact_request
 from jarvis_agent.kg import KnowledgeGraph
 from jarvis_agent.llm import create_chat_model
 from jarvis_agent.observability import ObservabilityService
 from jarvis_agent.project import DEFAULT_SPACE_NAME, ProjectError, ProjectService
 from jarvis_agent.prompts import PromptService
 from jarvis_agent.rag import RAGStore
+from jarvis_agent import api_call
+from jarvis_agent import sql_library
 from jarvis_agent.reliability import CircuitBreaker
 from jarvis_agent.skills import SkillService
 from jarvis_agent.state_machine import (JarvisStateError, JarvisStateService,
@@ -50,9 +52,15 @@ from jarvis_agent.analysis import (
     decrypt_cipher_batch, decrypt_cipher_value, ensure_analysis_seed,
     execute_node_query, execute_scene_query, list_centers, query_accept_message,
     query_billing_message, query_busi_cmpt, query_customer_order_message,
-    query_def_scene, query_instance_order, query_instance_user, query_item_relat,
-    query_business_info, query_plan_config, query_pre_lmt_param, query_up_rule,
+    query_def_scene, query_instance_order, query_instance_srv_attr, query_instance_terminal,
+    query_instance_user,
+    query_item_relat,
+    query_business_info, query_consume_ex, query_family_other, query_offer_srv_attr, query_plan_config,
+    query_pre_lmt_param,
+    query_rule_busi_detail,
+    query_up_rule,
     query_product_drive,
+    query_so_busi_print,
     query_static_config, query_product_config, query_scene_rules, query_so_pre_busi_limit,
     query_stage_reply,
     query_async_flow, query_structured_order_info, query_wired_message, query_workflow,
@@ -277,6 +285,8 @@ def create_app(db_path: str = "data/db.sqlite3", artifact_root: str = "artifacts
         _analysis.DECRYPT_API_URL = cfg.decrypt_url
     prompts = PromptService(db)
     skills = SkillService(db, str(Path(db_path).parent / "skills"))
+    # 数据源 SQL 库目录：随 db_path 的 data 目录走，可用 cfg.sql_library_dir 覆盖
+    sql_library_dir = Path(cfg.sql_library_dir or (Path(db_path).parent / "sql_library"))
     artifacts = ArtifactService(db, artifact_root)
     proj = ProjectService(db)
     agents_svc = AgentService(db)
@@ -391,6 +401,9 @@ def create_app(db_path: str = "data/db.sqlite3", artifact_root: str = "artifacts
 
     # ---------- 用户管理（仅管理员） ----------
     def _require_admin(request: Request) -> str:
+        # 与 auth_middleware 同款开关：JARVIS_AUTH_DISABLED=1（测试/本地调试）时跳过
+        if auth_disabled:
+            return ""
         header = request.headers.get("authorization", "")
         token = header[7:].strip() if header.lower().startswith("bearer ") else ""
         username = auth_validate(db, token)
@@ -399,6 +412,15 @@ def create_app(db_path: str = "data/db.sqlite3", artifact_root: str = "artifacts
         if get_role(db, username) != "admin":
             raise HTTPException(403, "需要管理员权限")
         return username
+
+    def _mask_secret(value: str) -> str:
+        """密钥脱敏展示：保留尾 4 位便于辨认，其余以 *** 代替；空值保持为空。
+        前端/接口调用方以 *** 开头回传时视为「未修改」（见 update_model）。"""
+        value = value or ""
+        if not value:
+            return ""
+        return "***" + value[-4:]
+
 
     @app.get("/api/auth/users")
     def auth_users_list(request: Request):
@@ -952,7 +974,7 @@ def create_app(db_path: str = "data/db.sqlite3", artifact_root: str = "artifacts
     def update_datasource(name: str, payload: Dict):
         """更新数据源配置（支持改名：payload.name 为新名称，路径 name 为旧名称）"""
         try:
-            return {"success": True, "data": db_tools.update(
+            result = {"success": True, "data": db_tools.update(
                 str(name).strip(),
                 str(payload.get("name") or name or "").strip(),
                 str(payload.get("kind", "sqlite")).strip(),
@@ -964,9 +986,19 @@ def create_app(db_path: str = "data/db.sqlite3", artifact_root: str = "artifacts
                 payload.get("space_id"), payload.get("sub_system_id"))}
         except ValueError as e:
             raise HTTPException(400, str(e))
+        # 数据源改名 → 同步移动绑定 SQL 库文件（目标已存在则不覆盖）
+        new_name = str(payload.get("name") or name or "").strip()
+        if new_name and new_name != str(name).strip():
+            try:
+                sql_library.rename_file(sql_library_dir, str(name).strip(), new_name)
+            except ValueError:
+                pass
+        return result
 
     @app.delete("/api/datasources/{name}")
-    def delete_datasource(name: str):
+    def delete_datasource(name: str, request: Request):
+        # 删除数据源属破坏性操作，仅管理员可执行
+        _require_admin(request)
         db_tools.delete(name)
         return {"success": True}
 
@@ -996,6 +1028,40 @@ def create_app(db_path: str = "data/db.sqlite3", artifact_root: str = "artifacts
         try:
             r = db_tools.explain(name, sql)
             return {"success": True, "data": r}
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+
+    # ---------- 数据源 SQL 库 ----------
+    @app.get("/api/sql-library")
+    def sql_library_list():
+        """全部数据源 SQL 库文件列表（目录约定绑定：文件名即数据源名）"""
+        return {"success": True, "data": sql_library.list_library(sql_library_dir)}
+
+    @app.get("/api/sql-library/{datasource}")
+    def sql_library_get(datasource: str):
+        """读取数据源绑定 SQL 文件：内容 + 按 `-- name:` 解析出的条目"""
+        try:
+            return {"success": True, "data": sql_library.get_file(sql_library_dir, datasource)}
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+
+    @app.put("/api/sql-library/{datasource}")
+    def sql_library_save(datasource: str, payload: Dict, request: Request):
+        """保存数据源绑定 SQL 文件（整文件覆盖写，仅管理员）"""
+        _require_admin(request)
+        try:
+            return {"success": True, "data": sql_library.save_file(
+                sql_library_dir, datasource, str(payload.get("content") or ""))}
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+
+    # ---------- 接口调用（页面接口 / 中台接口调试代理） ----------
+    @app.post("/api/api-call")
+    def api_call_endpoint(payload: Dict):
+        """后端代理转发接口调试请求：浏览器直连外部接口会有 CORS 限制"""
+        try:
+            return {"success": True, "data": api_call.call_interface(
+                payload, allowed_hosts=cfg.api_call_allowed_hosts)}
         except ValueError as e:
             raise HTTPException(400, str(e))
 
@@ -1947,7 +2013,8 @@ def create_app(db_path: str = "data/db.sqlite3", artifact_root: str = "artifacts
 
     @app.get("/api/models")
     def list_models(type: Optional[str] = None, enabled: Optional[int] = None):
-        """模型管理列表；enabled=1 且 type=LLM 时用于对话输入框模型下拉"""
+        """模型管理列表；enabled=1 且 type=LLM 时用于对话输入框模型下拉。
+        api_key 脱敏返回（尾 4 位），完整密钥仅在创建/更新时由管理员录入"""
         from sqlalchemy import select
         from jarvis_agent.db import ModelDef
         with db.session() as s:
@@ -1960,7 +2027,7 @@ def create_app(db_path: str = "data/db.sqlite3", artifact_root: str = "artifacts
             return {"success": True, "data": [{
                 "id": r.id, "name": r.name, "model_id": r.model_id, "type": r.type,
                 "provider": r.provider, "status": r.status, "api_url": r.api_url,
-                "api_key": r.api_key, "version": r.version, "timeout": r.timeout,
+                "api_key": _mask_secret(r.api_key), "version": r.version, "timeout": r.timeout,
                 "max_tokens": r.max_tokens, "description": r.description,
                 "total_calls": r.total_calls, "fail_count": r.fail_count,
                 "used_by_agents": json.loads(r.used_by_agents or "[]"),
@@ -2016,7 +2083,10 @@ def create_app(db_path: str = "data/db.sqlite3", artifact_root: str = "artifacts
             if "api_url" in payload:
                 r.api_url = str(payload["api_url"])
             if "api_key" in payload:
-                r.api_key = str(payload["api_key"])
+                # 回传脱敏占位（***开头）视为未修改，避免把脱敏值写库覆盖真实密钥
+                new_key = str(payload["api_key"])
+                if not new_key.startswith("***"):
+                    r.api_key = new_key
             if "version" in payload:
                 r.version = str(payload["version"])
             if "timeout" in payload:
@@ -2665,9 +2735,13 @@ def create_app(db_path: str = "data/db.sqlite3", artifact_root: str = "artifacts
             pending_prefix = ""        # 最前可能为解析 JSON 前缀的文本缓冲区
             # 直接对话的产物型 Agent：正文必须先缓冲，等 artifact 节点确认是否为核心交付物。
             # 落产物 -> 只发文件卡片；未落产物（追问/普通说明）-> 流结束后恢复正文。
+            # 缓冲会让整段回复失去流式效果（首字延迟 = 全部生成时间），因此仅在
+            # 「产物型 Agent + 用户输入确实在索要产物（报告/清单等）」时才启用；
+            # 普通问答（问候/闲聊/咨询）照常逐 token 下发。
             direct_agent_id = str(agent_id or "")
             direct_cfg = agents_svc.get(direct_agent_id) or {} if direct_agent_id else {}
-            buffer_direct_reply = bool(direct_cfg.get("gen_artifact", False))
+            buffer_direct_reply = bool(direct_cfg.get("gen_artifact", False)) \
+                and _is_artifact_request(user_input)
             direct_reply_buffer = ""
             direct_artifacts: List[Dict] = []
             emitted_error_messages: set[str] = set()
@@ -2819,7 +2893,8 @@ def create_app(db_path: str = "data/db.sqlite3", artifact_root: str = "artifacts
                         if etype == "route_preflight":
                             direct_agent_id = str(ev.get("agent_id") or direct_agent_id)
                             routed_cfg = agents_svc.get(direct_agent_id) or {}
-                            buffer_direct_reply = bool(routed_cfg.get("gen_artifact", False))
+                            buffer_direct_reply = bool(routed_cfg.get("gen_artifact", False)) \
+                                and _is_artifact_request(user_input)
                             continue
                         if etype == "system":
                             ev_body = {"message": ev.get("message", ""),
@@ -2864,7 +2939,8 @@ def create_app(db_path: str = "data/db.sqlite3", artifact_root: str = "artifacts
                             routed_agent_id = str(update.get("agent_id") or direct_agent_id)
                             routed_cfg = agents_svc.get(routed_agent_id) or {}
                             direct_agent_id = routed_agent_id
-                            buffer_direct_reply = bool(routed_cfg.get("gen_artifact", False))
+                            buffer_direct_reply = bool(routed_cfg.get("gen_artifact", False)) \
+                                and _is_artifact_request(user_input)
                             if pr:
                                 yield event("parse", pr)
                                 trace("parse", pr)
@@ -3448,11 +3524,56 @@ def create_app(db_path: str = "data/db.sqlite3", artifact_root: str = "artifacts
             raise HTTPException(400, str(exc))
         return {"success": True, "data": data}
 
+    @app.get("/api/analysis/family-order/consume-ex")
+    def analysis_family_consume_ex(task_id: str = "", city_code: str = "574",
+                                   in_transit: str = "yes", history_month: str = ""):
+        """消息（aiorder.com_consume_ex 按 key_ele_id=task_id，家庭订单库）"""
+        transit, month = _family_params(in_transit, history_month)
+        try:
+            data = query_consume_ex(db_tools, task_id, city_code, transit, month)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc))
+        return {"success": True, "data": data}
+
+    @app.get("/api/analysis/family-order/offer-srv-attr")
+    def analysis_family_offer_srv_attr(customer_order_id: str = "", offer_order_id: str = "",
+                                       city_code: str = "574",
+                                       in_transit: str = "yes", history_month: str = ""):
+        """关联服务属性（aiorder.ord_srv_attr_{city} 按客户订单+策划订单，家庭订单库；
+        策划订单项「关联」按钮）"""
+        transit, month = _family_params(in_transit, history_month)
+        try:
+            data = query_offer_srv_attr(db_tools, customer_order_id, offer_order_id,
+                                        city_code, transit, month)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc))
+        return {"success": True, "data": data}
+
+    @app.get("/api/analysis/family-order/other")
+    def analysis_family_other(business_key: str = "", city_code: str = "574",
+                              in_transit: str = "yes", history_month: str = ""):
+        """家庭订单中心·其他（ord_router_lock_net 按客户订单号，家庭订单库）"""
+        transit, month = _family_params(in_transit, history_month)
+        try:
+            data = query_family_other(db_tools, business_key, city_code, transit, month)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc))
+        return {"success": True, "data": data}
+
     @app.get("/api/analysis/product-drive-center/up-rule")
     def analysis_up_rule(rule_id: str = ""):
         """框架规则定义（busicfg.UP_RULE 按规则ID，家庭业务配置库；框架规则点击弹窗）"""
         try:
             data = query_up_rule(db_tools, rule_id)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc))
+        return {"success": True, "data": data}
+
+    @app.get("/api/analysis/rule-center/busi-rules")
+    def analysis_rule_busi_rules(busi_code: str = "", rule_code: str = ""):
+        """规则中心·业务规则：业务编码或规则编码（互斥）联查规则明细及因子构造链"""
+        try:
+            data = query_rule_busi_detail(db_tools, busi_code, rule_code)
         except ValueError as exc:
             raise HTTPException(400, str(exc))
         return {"success": True, "data": data}
@@ -3512,11 +3633,29 @@ def create_app(db_path: str = "data/db.sqlite3", artifact_root: str = "artifacts
             raise HTTPException(400, str(exc))
         return {"success": True, "data": data}
 
+    @app.get("/api/analysis/instance-center/srv-attr")
+    def analysis_instance_srv_attr(offer_inst_id: str = "", city_code: str = "574"):
+        """服务属性（so570{city}.ins_srv_attr_{city} 未过期，营业库；订购信息点击弹窗）"""
+        try:
+            data = query_instance_srv_attr(db_tools, offer_inst_id, city_code)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc))
+        return {"success": True, "data": data}
+
     @app.get("/api/analysis/instance-center/order-info")
     def analysis_instance_order(bill_id: str = "", city_code: str = ""):
         """订购信息（按计费账号，营业库；表名待确认）"""
         try:
             data = query_instance_order(db_tools, bill_id, city_code)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc))
+        return {"success": True, "data": data}
+
+    @app.get("/api/analysis/instance-center/terminal-info")
+    def analysis_instance_terminal(bill_id: str = "", city_code: str = ""):
+        """终端信息（按计费账号级联 user_id 查 ins_device_{city}，营业库）"""
+        try:
+            data = query_instance_terminal(db_tools, bill_id, city_code)
         except ValueError as exc:
             raise HTTPException(400, str(exc))
         return {"success": True, "data": data}
@@ -3542,6 +3681,16 @@ def create_app(db_path: str = "data/db.sqlite3", artifact_root: str = "artifacts
             raise HTTPException(400, str(exc))
         return {"success": True, "data": data}
 
+    @app.get("/api/analysis/hall-center/so-busi-print")
+    def analysis_hall_so_busi_print(bill_id: str = "", create_date: str = "", city_code: str = "574"):
+        """免填单（协议单 task_type=3）：SO_BUSI_PRINT_{city}_{YYYYMM} 按计费账号查（营业库），
+        月份取客户订单信息 CREATE_DATE 的年月"""
+        try:
+            data = query_so_busi_print(db_tools, bill_id, create_date, city_code)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc))
+        return {"success": True, "data": data}
+
     @app.get("/api/analysis/hall-center/structured-order-info")
     def analysis_hall_structured_order_info(cust_order_id: str = "", city_code: str = "574",
                                             in_transit: str = "yes", history_month: str = ""):
@@ -3555,8 +3704,9 @@ def create_app(db_path: str = "data/db.sqlite3", artifact_root: str = "artifacts
         return {"success": True, "data": data}
 
     @app.post("/api/analysis/hall-center/retry-task")
-    def analysis_hall_retry_task(payload: Dict = None):
-        """工单重试（task_type=5）：在途 HALL_TASK 的 TASK_STATE 置 2（固定模板写操作）"""
+    def analysis_hall_retry_task(payload: Dict = None, request: Request = None):
+        """工单重试（task_type=5）：在途 HALL_TASK 的 TASK_STATE 置 2（固定模板写操作，仅管理员）"""
+        _require_admin(request)
         payload = payload or {}
         try:
             data = retry_hall_task(db_tools, str(payload.get("cust_order_id") or ""),
@@ -3663,9 +3813,10 @@ def create_app(db_path: str = "data/db.sqlite3", artifact_root: str = "artifacts
                           response.status_code, duration)
         return response
 
-    # 安全审计查询
+    # 安全审计查询（含 SQL 明文，仅管理员）
     @app.get("/api/security/logs")
-    def security_logs(limit: int = 100):
+    def security_logs(limit: int = 100, request: Request = None):
+        _require_admin(request)
         if not cfg.security_log:
             return {"success": True, "data": []}
         with db.session() as s:

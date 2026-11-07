@@ -154,6 +154,58 @@ export interface DatasourceTestResult {
   message?: string
 }
 
+/** 数据源 SQL 库：绑定文件内按 `-- name:` 分段的一条 SQL */
+export interface SqlLibraryEntry {
+  name: string
+  sql: string
+}
+
+/** 数据源绑定的 SQL 库文件（内容 + 解析条目） */
+export interface SqlLibraryFile {
+  datasource: string
+  content: string
+  entries: SqlLibraryEntry[]
+  exists: boolean
+}
+
+/** SQL 库目录下文件列表项 */
+export interface SqlLibraryItem {
+  datasource: string
+  statement_count: number
+  updated_at: number
+}
+
+/** 接口调用调试：页面接口(page，JSON)/中台接口(gateway，XML)请求参数 */
+export interface ApiCallRequest {
+  kind: 'page' | 'gateway'
+  url: string
+  body: string
+  /** 页面接口鉴权头 */
+  main_acct?: string
+  token?: string
+  /** 中台接口网关鉴权头 */
+  access_token?: string
+  api_code?: string
+  api_version?: string
+  app_code?: string
+  format?: string
+  operator_id?: string
+  /** 请求超时秒数（后端默认 30，上限 120） */
+  timeout?: number
+}
+
+/** 接口调用结果：拿到 HTTP 响应即 ok=true，ok=false 表示网络层失败 */
+export interface ApiCallResult {
+  ok: boolean
+  status: number
+  elapsed_ms: number
+  url: string
+  request_headers: Record<string, string>
+  response_headers: Record<string, string>
+  body: string
+  message: string
+}
+
 export interface KBDocument {
   id: number
   name: string
@@ -894,6 +946,18 @@ export interface InstanceUserResult {
   results: ProductConfigBlock[]
 }
 
+/** 服务属性（so570{city}.ins_srv_attr_{city} 按订购实例ID查询未过期，营业库；订购信息点击弹窗展示） */
+export interface InstanceSrvAttrResult {
+  success: boolean
+  columns: string[]
+  rows: string[][]
+  row_count: number
+  error: string
+  sql: string
+  offer_inst_id: string
+  table_name: string
+}
+
 /** 框架规则定义（busicfg.UP_RULE 按规则ID查询，家庭业务配置库；框架规则点击弹窗展示） */
 export interface UpRuleResult {
   success: boolean
@@ -904,6 +968,44 @@ export interface UpRuleResult {
   sql: string
   rule_id: string
   table_name: string
+}
+
+/** 规则中心·业务规则：业务编码联查 RULE_BUSI_REL→INSTANCE→TEMPLATE 及因子构造链（单结果集） */
+export interface RuleBusiResult {
+  busi_code: string
+  table_name: string
+  success: boolean
+  columns: string[]
+  rows: string[][]
+  row_count: number
+  error: string
+  sql: string
+}
+
+/** 免填单（协议单）：so570{city}.SO_BUSI_PRINT_{city}_{YYYYMM} 按计费账号查询（营业库） */
+export interface SoBusiPrintResult {
+  bill_id: string
+  table_name: string
+  success: boolean
+  columns: string[]
+  rows: string[][]
+  row_count: number
+  error: string
+  sql: string
+}
+
+/** 关联服务属性（家庭订单中心·策划订单项「关联」按钮）：
+ * aiorder.ord_srv_attr_{city} 按 customer_order_id + offer_order_id 查询（家庭订单库） */
+export interface OfferSrvAttrResult {
+  customer_order_id: string
+  offer_order_id: string
+  table_name: string
+  success: boolean
+  columns: string[]
+  rows: string[][]
+  row_count: number
+  error: string
+  sql: string
 }
 
 /** 业务信息（product.up_business 按业务ID查询，产品库；业务关系点击弹窗展示） */
@@ -921,6 +1023,23 @@ export interface BusinessInfoResult {
 /** 产品驱动（家庭业务中心；待接入真实 SQL） */
 export interface ProductDriveResult {
   category: string
+  results: ProductConfigBlock[]
+}
+
+/** 消息（aiorder.com_consume_ex 按 key_ele_id=task_id 查询，家庭订单库；工单行「消息」按钮弹窗展示） */
+export interface ConsumeExResult {
+  success: boolean
+  columns: string[]
+  rows: string[][]
+  row_count: number
+  error: string
+  sql: string
+  task_id: string
+  table_name: string
+}
+
+/** 家庭订单中心·其他查询（待接入真实 SQL） */
+export interface FamilyOtherResult {
   results: ProductConfigBlock[]
 }
 

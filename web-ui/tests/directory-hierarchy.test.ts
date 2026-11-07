@@ -24,7 +24,7 @@ test('sidebar task nodes expose direct deletion', () => {
   assert.equal(sidebar.includes('deleteTaskFromSidebar'), true)
   assert.equal(sidebar.includes('api.deleteTask(taskId)'), true)
   assert.equal(sidebar.includes('onTaskDeleted'), true)
-  assert.equal(sidebar.includes("title=\"删除任务\""), true)
+  assert.equal(sidebar.includes("title=\"Delete task\""), true)
   assert.equal(sidebar.includes('group-hover/child:opacity-100'), true)
   assert.equal(app.includes('handleTaskDeleted'), true)
 })
@@ -53,7 +53,7 @@ test('sidebar space nodes support creating a task in place', () => {
   const app = read('../src/App.tsx')
 
   assert.equal(sidebar.includes('onCreateTask?: (group: WorkspaceGroup) => void'), true)
-  assert.equal(sidebar.includes('title="新增任务"'), true)
+  assert.equal(sidebar.includes('title="New task"'), true)
   assert.equal(sidebar.includes('onCreateTask?.(group)'), true)
   assert.equal(app.includes('handleCreateTaskInSpace'), true)
   assert.equal(app.includes('lockSpace: true'), true)

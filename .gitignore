@@ -42,6 +42,10 @@ ppt-build/
 data/
 demo_data/
 
+# 本地文件产物（数据库导出、临时文档等，可能含敏感数据）
+file/
+.zcode/
+
 # Web UI
 web-ui/node_modules/
 web-ui/dist/

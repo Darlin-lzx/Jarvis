@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect } from 'react'
 import { createPortal } from 'react-dom'
-import { Plus, Trash2, ChevronRight, ChevronDown, BookOpen, Brain, Package, Bot, Puzzle, FileText, Database, Plug, MoreHorizontal, Pencil, FolderPlus, FolderOpen, MessageCircle, FileCode2, LayoutDashboard, Zap, PanelLeftClose, PanelLeftOpen, Workflow, Activity, Terminal, UserRound } from 'lucide-react'
+import { Plus, Trash2, ChevronRight, ChevronDown, BookOpen, Brain, Package, Bot, Puzzle, FileText, Database, Plug, MoreHorizontal, Pencil, FolderPlus, FolderOpen, MessageCircle, FileCode2, Globe, LayoutDashboard, Zap, PanelLeftClose, PanelLeftOpen, Workflow, Activity, Terminal, UserRound } from 'lucide-react'
 import { Input } from '@/components/ui/input'
 import { cn } from '@/lib/utils'
 import { api } from '@/lib/api'
@@ -17,47 +17,54 @@ interface MenuGroup {
 const menuGroups: MenuGroup[] = [
   {
     id: 'knowledge',
-    label: '知识管理',
+    label: 'Knowledge',
     items: [
-      { value: 'kb', label: '知识库', icon: BookOpen },
-      { value: 'artifacts', label: '产物', icon: Package },
-      { value: 'vector', label: '向量库管理', icon: Database },
-      { value: 'kg', label: '知识图谱', icon: Brain },
+      { value: 'kb', label: 'Knowledge Base', icon: BookOpen },
+      { value: 'artifacts', label: 'Artifacts', icon: Package },
+      { value: 'vector', label: 'Vector Store', icon: Database },
+      { value: 'kg', label: 'Knowledge Graph', icon: Brain },
     ],
   },
   {
     id: 'agent',
-    label: '智能体能力',
+    label: 'Agent Capabilities',
     items: [
-      { value: 'agents', label: '智能体', icon: Bot },
-      { value: 'conversations', label: '会话管理', icon: MessageCircle },
-      { value: 'skills', label: '技能', icon: Puzzle },
-      { value: 'prompts', label: '提示词', icon: FileText },
-      { value: 'templates', label: '模板中心', icon: FileCode2 },
+      { value: 'agents', label: 'Agents', icon: Bot },
+      { value: 'conversations', label: 'Conversations', icon: MessageCircle },
+      { value: 'skills', label: 'Skills', icon: Puzzle },
+      { value: 'prompts', label: 'Prompts', icon: FileText },
+      { value: 'templates', label: 'Templates', icon: FileCode2 },
     ],
   },
   {
     id: 'resource',
-    label: '资源接入',
+    label: 'Integrations',
     items: [
-      { value: 'dbs', label: '数据源', icon: Database },
+      { value: 'dbs', label: 'Data Sources', icon: Database },
       { value: 'mcp', label: 'MCP', icon: Plug },
-      { value: 'users', label: '用户管理', icon: UserRound },
+      { value: 'users', label: 'Users', icon: UserRound },
     ],
   },
   {
     id: 'process',
-    label: '业务编排',
+    label: 'Orchestration',
     items: [
-      { value: 'workflows', label: '工作流', icon: Workflow },
+      { value: 'workflows', label: 'Workflows', icon: Workflow },
     ],
   },
   {
     id: 'analysis',
-    label: '数据分析',
+    label: 'Analytics',
     items: [
-      { value: 'analysis', label: '数据查询', icon: Activity },
-      { value: 'sql', label: 'SQL 查询', icon: Terminal },
+      { value: 'analysis', label: 'Data Query', icon: Activity },
+      { value: 'sql', label: 'SQL Query', icon: Terminal },
+    ],
+  },
+  {
+    id: 'apicall',
+    label: 'API Tools',
+    items: [
+      { value: 'apicall', label: 'API Console', icon: Globe },
     ],
   },
 ]
@@ -107,21 +114,25 @@ interface SidebarProps {
   refreshKey?: number
 }
 
-const EXPANDED_KEY = 'sidebar_expanded'
+// v3：所有菜单分组默认收起后升级存储键，丢弃旧版本自动持久化的展开状态，
+// 否则已访问过的浏览器会带着旧的 true 继续展开，新默认不生效
+const EXPANDED_KEY = 'sidebar_expanded_v3'
 const COLLAPSED_KEY = 'sidebar_collapsed'
 /** 窄屏自动折叠阈值：220px 侧边栏在小屏会过度挤压主内容区 */
 const AUTO_COLLAPSE_WIDTH = 1024
 
 const defaultExpanded: Record<string, boolean> = {
   tasks: true,
-  spaces: true,
-  // 分组默认展开
-  knowledge: true,
-  agent: true,
-  resource: true,
-  process: true,
-  analysis: true,
-  ops: true,
+  // 所有菜单分组默认收起：侧边栏只保留分组标题，点击标题展开/收起，
+  // 手动展开状态照常持久化（存储键见 EXPANDED_KEY）
+  spaces: false,
+  knowledge: false,
+  agent: false,
+  resource: false,
+  process: false,
+  analysis: false,
+  apicall: false,
+  ops: false,
 }
 
 function loadFromStorage<T>(key: string, fallback: T): T {
@@ -159,10 +170,12 @@ export function Sidebar({ activeTab, onTabChange, authName, isAdmin, onSelectSpa
   const [deletingTaskId, setDeletingTaskId] = useState<number | null>(null)
   const menuRef = useRef<HTMLDivElement>(null)
   const editInputRef = useRef<HTMLInputElement>(null)
+  // 重命名防重入：Enter 提交后 Input 卸载会再触发一次 blur，防止同一改名 PUT 两次
+  const renamingRef = useRef(false)
 
   // 左下角登录用户信息（轻量：从后端 /api/me 读取，仅展示，不做鉴权）
   const [user, setUser] = useState<UserProfile | null>(null)
-  const avatarChar = (authName || user?.name || '小迁').charAt(0)
+  const avatarChar = (authName || user?.name || 'Admin').charAt(0)
   useEffect(() => {
     api.me().then(r => { if (r.success) setUser(r.data ?? null) }).catch(() => {})
   }, [])
@@ -239,7 +252,7 @@ export function Sidebar({ activeTab, onTabChange, authName, isAdmin, onSelectSpa
   }
 
   const addGroup = async () => {
-    const name = '新空间'
+    const name = 'New space'
     const r = await api.createSpace({ name })
     if (r.success && r.data) {
       const id = String(r.data.id)
@@ -260,16 +273,22 @@ export function Sidebar({ activeTab, onTabChange, authName, isAdmin, onSelectSpa
   }
 
   const confirmRenameGroup = async () => {
-    if (editingGroup && editName.trim()) {
-      const g = groups.find(x => x.id === editingGroup)
-      if (g) {
-        const r = await api.updateSpace(Number(g.id), { name: editName.trim() })
-        if (r.success) {
-          setGroups(prev => prev.map(x => x.id === editingGroup ? { ...x, name: editName.trim() } : x))
+    if (renamingRef.current) return
+    renamingRef.current = true
+    try {
+      if (editingGroup && editName.trim()) {
+        const g = groups.find(x => x.id === editingGroup)
+        if (g) {
+          const r = await api.updateSpace(Number(g.id), { name: editName.trim() })
+          if (r.success) {
+            setGroups(prev => prev.map(x => x.id === editingGroup ? { ...x, name: editName.trim() } : x))
+          }
         }
       }
+      setEditingGroup(null)
+    } finally {
+      renamingRef.current = false
     }
-    setEditingGroup(null)
   }
 
   const deleteGroup = async (id: string) => {
@@ -288,7 +307,7 @@ export function Sidebar({ activeTab, onTabChange, authName, isAdmin, onSelectSpa
     try {
       const r = await api.deleteTask(taskId)
       if (!r.success) {
-        window.alert('删除失败，请稍后重试')
+        window.alert('Delete failed. Please try again later.')
         return
       }
       setGroups(prev => prev.map(group => ({
@@ -297,7 +316,7 @@ export function Sidebar({ activeTab, onTabChange, authName, isAdmin, onSelectSpa
       })))
       onTaskDeleted?.(taskId)
     } catch {
-      window.alert('删除失败，请稍后重试')
+      window.alert('Delete failed. Please try again later.')
     } finally {
       setDeletingTaskId(null)
       setDeleteTarget(null)
@@ -317,18 +336,18 @@ export function Sidebar({ activeTab, onTabChange, authName, isAdmin, onSelectSpa
     )
     return (
       <aside className="w-12 bg-[#12121a] border-r border-[#1e1e28] flex flex-col items-center py-3 gap-1 shrink-0">
-        <button className={railBtn(false)} onClick={toggleCollapsed} title="展开侧边栏">
+        <button className={railBtn(false)} onClick={toggleCollapsed} title="Expand sidebar">
           <PanelLeftOpen className="w-4 h-4" />
         </button>
         <div className="w-6 h-px bg-[#252530] my-1" />
-        <button className={railBtn(activeTab === 'workspace')} onClick={() => onTabChange('workspace')} title="工作台">
+        <button className={railBtn(activeTab === 'workspace')} onClick={() => onTabChange('workspace')} title="Workspace">
           <LayoutDashboard className="w-4 h-4" />
         </button>
-        <button className={railBtn(false)} onClick={() => onQuickQA?.()} title="快速问答：免创建空间，临时提问（产物仅本地、不可入库）">
+        <button className={railBtn(false)} onClick={() => onQuickQA?.()} title="Quick Q&A: ask without creating a space (artifacts stay local, not stored)">
           <Zap className="w-4 h-4 text-amber-400" />
         </button>
         <div className="mt-auto" />
-        <button className={railBtn(false)} title={authName || user?.name || '小迁'}>
+        <button className={railBtn(false)} title={authName || user?.name || 'Admin'}>
           <div className="w-6 h-6 rounded-full flex items-center justify-center text-[10px] font-bold text-white"
                style={{ background: user?.avatar_color || '#5b7cfa' }}>
             {avatarChar}
@@ -347,12 +366,12 @@ export function Sidebar({ activeTab, onTabChange, authName, isAdmin, onSelectSpa
             <Bot className="w-3.5 h-3.5 text-white" />
           </div>
           <div className="flex-1 min-w-0">
-            <div className="text-[13px] font-semibold text-[#e4e4e9] leading-tight">贾维斯</div>
+            <div className="text-[13px] font-semibold text-[#e4e4e9] leading-tight">Jarvis</div>
           </div>
           <button
             className="p-1 rounded-md text-[#5a5a70] hover:text-[#b9b9c8] hover:bg-white/[0.05] transition-colors"
             onClick={toggleCollapsed}
-            title="收起侧边栏"
+            title="Collapse sidebar"
           >
             <PanelLeftClose className="w-4 h-4" />
           </button>
@@ -364,7 +383,8 @@ export function Sidebar({ activeTab, onTabChange, authName, isAdmin, onSelectSpa
         <div className="pb-2">
           <button
             className={cn(
-              'w-full flex items-center gap-2 px-3 py-2 rounded-md transition-all duration-150',
+              // relative：激活指示条（absolute）以按钮为定位基准，否则会相对视口漂移到屏幕左缘
+              'relative w-full flex items-center gap-2 px-3 py-2 rounded-md transition-all duration-150',
               activeTab === 'workspace'
                 ? 'bg-indigo-500/10 border border-indigo-500/20'
                 : 'hover:bg-white/[0.03] border border-transparent'
@@ -382,7 +402,7 @@ export function Sidebar({ activeTab, onTabChange, authName, isAdmin, onSelectSpa
               'text-[12px]',
               activeTab === 'workspace' ? 'text-indigo-300 font-medium' : 'text-[#b9b9c8]'
             )}>
-              工作台
+              Workspace
             </span>
           </button>
         </div>
@@ -394,10 +414,10 @@ export function Sidebar({ activeTab, onTabChange, authName, isAdmin, onSelectSpa
               'hover:bg-white/[0.03] border border-transparent'
             )}
             onClick={() => onQuickQA?.()}
-            title="快速问答：免创建空间，临时提问（产物仅本地、不可入库）"
+            title="Quick Q&A: ask without creating a space (artifacts stay local, not stored)"
           >
             <Zap className="w-4 h-4 text-amber-400" />
-            <span className="text-[12px] text-[#b9b9c8]">快速问答</span>
+            <span className="text-[12px] text-[#b9b9c8]">Quick Q&A</span>
           </button>
         </div>
 
@@ -413,7 +433,7 @@ export function Sidebar({ activeTab, onTabChange, authName, isAdmin, onSelectSpa
               ) : (
                 <ChevronRight className="w-3 h-3" />
               )}
-              空间
+              Spaces
               <span className="text-[10px] font-normal text-[#b9b9c8] ml-0.5">
                 {spacesLoading ? '…' : `(${groups.length})`}
               </span>
@@ -421,7 +441,7 @@ export function Sidebar({ activeTab, onTabChange, authName, isAdmin, onSelectSpa
             <button
               className="text-[#b9b9c8] hover:text-[#8b8b9e] transition-colors p-0.5 rounded hover:bg-white/[0.03]"
               onClick={addGroup}
-              title="新增空间"
+              title="New space"
             >
               <FolderPlus className="w-3 h-3" />
             </button>
@@ -434,7 +454,7 @@ export function Sidebar({ activeTab, onTabChange, authName, isAdmin, onSelectSpa
                   <div className="group flex items-center">
                     <button
                       className="shrink-0 p-1.5 text-[#b9b9c8] hover:text-[#cdd3e0] hover:bg-white/[0.04] rounded transition-colors"
-                      title={expandedSections[group.id] ? '收起' : '展开'}
+                      title={expandedSections[group.id] ? 'Collapse' : 'Expand'}
                       onClick={() => toggleGroup(group.id)}
                     >
                       {expandedSections[group.id] ? (
@@ -450,7 +470,7 @@ export function Sidebar({ activeTab, onTabChange, authName, isAdmin, onSelectSpa
                           ? 'text-indigo-300 bg-indigo-500/15 hover:bg-indigo-500/25'
                           : 'text-[#b9b9c8] hover:bg-[#16161f]/60 hover:text-[#e4e4e9]'
                       )}
-                      title="进入空间主页"
+                      title="Open space home"
                       onClick={(e) => {
                         if (editingGroup === group.id) { e.stopPropagation(); return }
                         onSelectSpace?.(group)
@@ -476,7 +496,7 @@ export function Sidebar({ activeTab, onTabChange, authName, isAdmin, onSelectSpa
                     </button>
                     <button
                       className="p-1 rounded text-[#5a5a70] opacity-0 group-hover:opacity-100 hover:text-indigo-400 hover:bg-white/[0.05] transition-all shrink-0"
-                      title="新增任务"
+                      title="New task"
                       onClick={e => {
                         e.stopPropagation()
                         setMenuOpen(null)
@@ -501,7 +521,7 @@ export function Sidebar({ activeTab, onTabChange, authName, isAdmin, onSelectSpa
                             onClick={() => startRenameGroup(group.id)}
                           >
                             <Pencil className="w-3 h-3" />
-                            重命名
+                            Rename
                           </button>
                           <div className="border-t border-[#2a2a35] my-1" />
                           <button
@@ -509,7 +529,7 @@ export function Sidebar({ activeTab, onTabChange, authName, isAdmin, onSelectSpa
                             onClick={() => deleteGroup(group.id)}
                           >
                             <Trash2 className="w-3 h-3" />
-                            删除空间
+                            Delete space
                           </button>
                         </div>,
                         document.body
@@ -535,7 +555,7 @@ export function Sidebar({ activeTab, onTabChange, authName, isAdmin, onSelectSpa
                           </button>
                           <button
                             className="p-1 rounded text-[#5a5a70] opacity-0 group-hover/child:opacity-100 hover:text-red-400 hover:bg-white/[0.05] transition-all disabled:opacity-40 disabled:cursor-not-allowed"
-                            title="删除任务"
+                            title="Delete task"
                             disabled={deletingTaskId === Number(child.id)}
                             onClick={e => {
                               e.stopPropagation()
@@ -613,7 +633,7 @@ export function Sidebar({ activeTab, onTabChange, authName, isAdmin, onSelectSpa
             {avatarChar}
           </div>
           <div className="flex-1 min-w-0">
-            <div className="text-[13px] font-semibold text-[#e4e4e9] leading-tight truncate">{authName || user?.name || '小迁'}</div>
+            <div className="text-[13px] font-semibold text-[#e4e4e9] leading-tight truncate">{authName || user?.name || 'Admin'}</div>
           </div>
         </div>
       </div>

@@ -14,6 +14,7 @@ import { MigratePanel } from './migrate-panel'
 import { WorkflowPanel } from './workflow-panel'
 import { AnalysisPanel } from './analysis-panel'
 import { SqlPanel } from './sql-panel'
+import { ApiCallPanel } from './api-call-panel'
 import { UsersPanel } from './users-panel'
 import { JarvisWorkbench } from './jarvis-workbench'
 
@@ -63,6 +64,7 @@ export function WorkbenchView({
         <AnalysisPanel onQueryWorkflow={tag => { setWorkflowTag(tag); onTabChange?.('workflows') }} />
       )
       case 'sql': return <SqlPanel />
+      case 'apicall': return <ApiCallPanel />
       case 'users': return <UsersPanel currentUser={authUser ?? ''} />
       default: return null
     }

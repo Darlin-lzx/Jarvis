@@ -39,10 +39,28 @@ def _norm_month(history_month: str) -> str:
     return (history_month or "").strip().replace("-", "")
 
 
+def _city(value: str) -> str:
+    """城市编码校验：city 直接拼进表名标识符，必须为纯数字；空值回退默认 574。"""
+    city = (value or "").strip()
+    if not city:
+        return "574"
+    if not city.isdigit():
+        raise ValueError("城市编码格式错误，只能包含数字")
+    return city
+
+
+def _history_month(history_month: str) -> str:
+    """历史月份校验：归一化后必须为 YYYYMM（6 位数字）或空（在途表），防止表名注入。"""
+    month = _norm_month(history_month)
+    if month and not (len(month) == 6 and month.isdigit()):
+        raise ValueError("历史月份格式错误，应为 YYYYMM（如 202601）")
+    return month
+
+
 def history_table_name(table: str, history_month: str) -> str:
     """历史表名转换（与原工具平台一致）：
     普通表 xxx_574 → xxx_h_574_YYYYMM；vm_ 工作流表 → h_vm_xxx_574_YYYYMM。"""
-    month = _norm_month(history_month)
+    month = _history_month(history_month)
     if not month:
         return table
     if table.startswith("vm_"):
@@ -63,7 +81,7 @@ def convert_table_name_for_center(center: AnalysisCenter, table: str, city: str,
     """按中心配置的表名规则生成实际表名，占位符 {table}/{city}/{month}。
     如家庭订单：在途 {table}_{city}、历史 {table}_h_{city}_{month}；
     客户订单：在途 {table}、历史 HIS_{table}。"""
-    month = _norm_month(history_month)
+    month = _history_month(history_month)
     rule = center.history_table_rule if month else center.in_transit_table_rule
     return rule.format(table=table, city=city, month=month)
 
@@ -88,7 +106,9 @@ def _digit(value: str, field: str) -> str:
 
 
 def _field_values(result: dict[str, Any], field: str) -> list[str]:
-    """从查询结果列中取指定字段的全部取值（去重、去空）。"""
+    """从查询结果列中取指定字段的全部取值（去重、去空）。
+    这些值会被拼进下游 SQL 的 IN 字面量列表，含单引号/反斜杠的值会破坏
+    语句结构（二阶注入），ID 类关联字段本不该出现该类字符，直接跳过。"""
     columns = [str(column).lower() for column in result.get("columns", [])]
     if field.lower() not in columns:
         return []
@@ -96,8 +116,11 @@ def _field_values(result: dict[str, Any], field: str) -> list[str]:
     values: list[str] = []
     for row in result.get("rows", []):
         value = str(row[index]).strip() if index < len(row) else ""
-        if value and value not in values:
-            values.append(value)
+        if not value or value in values:
+            continue
+        if "'" in value or "\\" in value:
+            continue
+        values.append(value)
     return values
 
 
@@ -176,8 +199,8 @@ def execute_scene_query(db: Database, db_tools, center_code: str, scene_code: st
                         history_month: str) -> dict[str, Any]:
     """执行一个场景的级联查询：根节点按业务主键，子节点按父结果关联字段 IN 查询。"""
     key = _digit(business_key, "业务主键")
-    city = (city or "").strip() or "574"
-    month = _norm_month(history_month) if not in_transit else ""
+    city = _city(city)
+    month = _history_month(history_month) if not in_transit else ""
 
     center = _center(db, center_code)
     _, nodes = _scene_nodes(db, center, scene_code)
@@ -218,8 +241,8 @@ def execute_node_query(db: Database, db_tools, center_code: str, scene_code: str
                        history_month: str) -> dict[str, Any]:
     """单节点实时查询（如点击调度订单后实时查工单）。"""
     value = _digit(value, "查询值")
-    city = (city or "").strip() or "574"
-    month = _norm_month(history_month) if not in_transit else ""
+    city = _city(city)
+    month = _history_month(history_month) if not in_transit else ""
 
     center = _center(db, center_code)
     _, nodes = _scene_nodes(db, center, scene_code)
@@ -252,8 +275,8 @@ def query_workflow(db_tools, order_id: str, scheduler_ids: str, city: str,
                    in_transit: bool, history_month: str) -> dict[str, Any]:
     """工作流信息：主工作流 → 调度；RBoss 工作流 → RBoss 调度 → RBoss 任务（工作流订单库）。"""
     order_id = _digit(order_id, "家庭订单编号")
-    city = (city or "").strip() or "574"
-    month = _norm_month(history_month) if not in_transit else ""
+    city = _city(city)
+    month = _history_month(history_month) if not in_transit else ""
     ds = WORKFLOW_ORDER_DATASOURCE
 
     def table(name: str) -> str:
@@ -311,7 +334,7 @@ def query_wired_message(db_tools, task_id: str, done_date: str, message_type: st
     task_id = _digit(task_id, "任务ID")
     if message_type not in WIRED_MESSAGE_TYPES:
         raise ValueError(f"不支持的报文类型: {message_type}")
-    city = (city or "").strip() or "574"
+    city = _city(city)
     date = (done_date or "").strip()
     if not (len(date) == 8 and date.isdigit()):
         date = datetime.now().strftime("%Y%m%d")
@@ -328,7 +351,7 @@ def query_billing_message(db_tools, cust_order_id: str, key_ele_id: str, done_da
     日报表按天分表，历史数据仍在对应日期的表内，历史模式表名不变（不走月表 h 规则）。"""
     cust_order_id = _digit(cust_order_id, "客户订单ID")
     key_ele_id = _digit(key_ele_id, "调度订单ID")
-    city = (city or "").strip() or "574"
+    city = _city(city)
     date = (done_date or "").strip()
     if not (len(date) == 8 and date.isdigit()):
         date = datetime.now().strftime("%Y%m%d")
@@ -345,8 +368,8 @@ def query_stage_reply(db_tools, task_id: str, city: str, in_transit: bool,
                       history_month: str) -> dict[str, Any]:
     """阶段性回复：aiorder.ORD_TASK_dealinfo_{city}，按任务ID 查询。"""
     task_id = _digit(task_id, "任务ID")
-    city = (city or "").strip() or "574"
-    month = _norm_month(history_month) if not in_transit else ""
+    city = _city(city)
+    month = _history_month(history_month) if not in_transit else ""
 
     table = history_table_name(f"ORD_TASK_dealinfo_{city}", month)
     sql = f"SELECT t.* FROM aiorder.{table} t WHERE task_id = '{task_id}'"
@@ -374,8 +397,8 @@ def query_async_flow(db_tools, order_id: str, city: str,
     在途查询本身失败（数据源需 VPN，未连通时连接超时）则直接返回，不连环扫历史表。
     历史模式未指定月份时默认查当月历史表。"""
     order_id = _digit(order_id, "家庭订单编号")
-    city = (city or "").strip() or "574"
-    month = _norm_month(history_month) if not in_transit else ""
+    city = _city(city)
+    month = _history_month(history_month) if not in_transit else ""
     if not in_transit and not month:
         month = datetime.now().strftime("%Y%m")
 
@@ -440,6 +463,110 @@ def query_up_rule(db_tools, rule_id: str) -> dict[str, Any]:
     sql = f"SELECT * FROM busicfg.UP_RULE WHERE RULE_ID = {rule_id}"
     return {"rule_id": rule_id, "table_name": "busicfg.UP_RULE",
             **_query(db_tools, FAMILY_BUSINESS_CONFIG_DATASOURCE, sql)}
+
+
+def query_rule_busi_detail(db_tools, busi_code: str = "", rule_code: str = "") -> dict[str, Any]:
+    """规则中心·业务规则：业务编码或规则编码联查规则明细（规则配置库 RULE_CFG），两条件互斥。
+    - 业务编码：主链 RULE_BUSI_REL(STATE='1' 生效期内) → RULE_INSTANCE → RULE_TEMPLATE，
+      LEFT JOIN 因子构造链 RULE_ATTR_REL → RULE_OBJECT / RULE_ATTR；BUSI_CODE 数值型；
+    - 规则编码：RULE_INSTANCE 按编码查（不过滤实例状态，STATE 作列展示），
+      同样 JOIN 模板及因子构造链；RULE_CODE 字符串。"""
+    busi_code = (busi_code or "").strip()
+    rule_code = (rule_code or "").strip()
+    if bool(busi_code) == bool(rule_code):
+        raise ValueError("业务编码与规则编码只能填一个")
+
+    join_sql = (
+        "FROM RULE_CFG.RULE_INSTANCE ri "
+        "JOIN RULE_CFG.RULE_TEMPLATE rt ON rt.RULE_TMPL_ID = ri.RULE_TMPL_ID AND rt.STATE = '1' "
+        "LEFT JOIN RULE_CFG.RULE_ATTR_REL ar ON ar.RULE_TMPL_ID = rt.RULE_TMPL_ID AND ar.STATE = '1' "
+        "LEFT JOIN RULE_CFG.RULE_OBJECT ro ON ro.OBJECT_ID = ar.OBJECT_ID AND ro.STATE = '1' "
+        "LEFT JOIN RULE_CFG.RULE_ATTR ra ON ra.ATTR_ID = ar.ATTR_ID AND ra.STATE = '1' ")
+
+    if rule_code:
+        if not re.fullmatch(r"[A-Za-z0-9_.-]+", rule_code):
+            raise ValueError("规则编码格式错误，只能包含字母数字下划线点横线")
+        sql = (
+            "SELECT ri.RULE_ID, ri.RULE_CODE, ri.RULE_NAME, ri.RULE_TYPE, ri.STATE, "
+            "rt.RULE_TMPL_ID, rt.RULE_TMPL_DESC, rt.RULE_TMPL_EXP, "
+            "ro.OBJECT_CODE, ro.OBJECT_NAME, ro.CONST_TYPE, ro.CONST_CLASS, ro.CONST_FUNC, ro.PARAM_LIST, "
+            "ra.ATTR_CODE, ra.ATTR_NAME, ra.SRC_TABLE, ra.SRC_FIELD "
+            f"{join_sql}"
+            f"WHERE ri.RULE_CODE = '{rule_code}' "
+            "ORDER BY ro.OBJECT_CODE, ra.ATTR_CODE")
+        table_name = "RULE_CFG.RULE_INSTANCE"
+    else:
+        if not busi_code.isdigit():
+            raise ValueError("业务编码格式错误，只能包含数字")
+        sql = (
+            "SELECT br.BUSI_CODE, br.RULE_ID, br.INVOKE_SORT, br.LIMIT_FLAG, br.IS_INTERRUPT, "
+            "ri.RULE_CODE, ri.RULE_NAME, ri.RULE_TYPE, "
+            "rt.RULE_TMPL_ID, rt.RULE_TMPL_DESC, rt.RULE_TMPL_EXP, "
+            "ro.OBJECT_CODE, ro.OBJECT_NAME, ro.CONST_TYPE, ro.CONST_CLASS, ro.CONST_FUNC, ro.PARAM_LIST, "
+            "ra.ATTR_CODE, ra.ATTR_NAME, ra.SRC_TABLE, ra.SRC_FIELD, ra.SRC_SYS "
+            "FROM RULE_CFG.RULE_BUSI_REL br "
+            "JOIN RULE_CFG.RULE_INSTANCE ri ON ri.RULE_ID = br.RULE_ID AND ri.STATE = '1' "
+            "JOIN RULE_CFG.RULE_TEMPLATE rt ON rt.RULE_TMPL_ID = ri.RULE_TMPL_ID AND rt.STATE = '1' "
+            "LEFT JOIN RULE_CFG.RULE_ATTR_REL ar ON ar.RULE_TMPL_ID = rt.RULE_TMPL_ID AND ar.STATE = '1' "
+            "LEFT JOIN RULE_CFG.RULE_OBJECT ro ON ro.OBJECT_ID = ar.OBJECT_ID AND ro.STATE = '1' "
+            "LEFT JOIN RULE_CFG.RULE_ATTR ra ON ra.ATTR_ID = ar.ATTR_ID AND ra.STATE = '1' "
+            f"WHERE br.BUSI_CODE = {busi_code} AND br.STATE = '1' "
+            "AND now() BETWEEN br.EFFECT_DATE AND br.EXPIRE_DATE "
+            "ORDER BY br.INVOKE_SORT, br.RULE_ID, ro.OBJECT_CODE, ra.ATTR_CODE")
+        table_name = "RULE_CFG.RULE_BUSI_REL"
+
+    return {"busi_code": busi_code, "rule_code": rule_code, "table_name": table_name,
+            **_query(db_tools, RULE_CONFIG_DATASOURCE, sql)}
+
+
+def query_consume_ex(db_tools, task_id: str, city: str = "",
+                     in_transit: bool = True, history_month: str = "") -> dict[str, Any]:
+    """消息（家庭订单中心·工单信息）：aiorder.com_consume_ex 按 key_ele_id=task_id 查询
+    （家庭订单库，在途/历史走中心表名规则）。工单行「消息」按钮下钻。"""
+    task_id = _digit(task_id, "任务ID")
+    city = _city(city)
+    month = _history_month(history_month) if not in_transit else ""
+    table = convert_table_name("aiorder.com_consume_ex", city, month)
+    sql = f"SELECT * FROM {table} WHERE key_ele_id = '{task_id}'"
+    return {"task_id": task_id, "table_name": table,
+            **_query(db_tools, FAMILY_DATASOURCE, sql)}
+
+
+def query_offer_srv_attr(db_tools, customer_order_id: str, offer_order_id: str,
+                         city: str = "", in_transit: bool = True,
+                         history_month: str = "") -> dict[str, Any]:
+    """关联服务属性（家庭订单中心·策划订单项「关联」按钮）：
+    aiorder.ord_srv_attr_{city} 按 customer_order_id + offer_order_id 查询
+    （家庭订单库，在途/历史走中心表名规则）。"""
+    customer_order_id = _digit(customer_order_id, "客户订单号")
+    offer_order_id = _digit(offer_order_id, "策划订单号")
+    city = _city(city)
+    month = _history_month(history_month) if not in_transit else ""
+    table = convert_table_name("aiorder.ord_srv_attr", city, month)
+    sql = (f"SELECT * FROM {table} "
+           f"WHERE customer_order_id = '{customer_order_id}' "
+           f"AND offer_order_id = '{offer_order_id}'")
+    return {"customer_order_id": customer_order_id, "offer_order_id": offer_order_id,
+            "table_name": table, **_query(db_tools, FAMILY_DATASOURCE, sql)}
+
+
+def query_family_other(db_tools, business_key: str, city: str = "",
+                       in_transit: bool = True, history_month: str = "") -> dict[str, Any]:
+    """家庭订单中心·其他：ord_router_lock_net（路由锁网）+ ord_wifi_group（WiFi组网）
+    按客户订单号查询（家庭订单库，在途/历史走中心表名规则）。
+    锁网数据不落历史（历史表不存在）：路由锁网始终查在途表。"""
+    key = _digit(business_key, "客户订单号")
+    city = _city(city)
+    month = _history_month(history_month) if not in_transit else ""
+    results = []
+    for label, base in (("路由锁网", "ord_router_lock_net"), ("WiFi组网", "ord_wifi_group")):
+        # 锁网表强制查在途，避免历史模式拼出不存在的 _h_ 表
+        table = convert_table_name(base, city, "" if base == "ord_router_lock_net" else month)
+        sql = f"SELECT * FROM {table} WHERE cust_order_id = '{key}'"
+        results.append({"name": label, "table_name": table,
+                        "datasource": FAMILY_DATASOURCE,
+                        **_query(db_tools, FAMILY_DATASOURCE, sql)})
+    return {"results": results}
 
 
 def query_business_info(db_tools, business_id: str) -> dict[str, Any]:
@@ -561,7 +688,7 @@ def _instance_bill_params(bill_id: str, city: str) -> tuple[str, str, str]:
     bill_id = (bill_id or "").strip()
     if not re.fullmatch(r"[A-Za-z0-9_\-]+", bill_id):
         raise ValueError("计费账号格式错误，只能包含字母数字")
-    city = (city or "").strip() or "574"
+    city = _city(city)
     if not city.isdigit():
         raise ValueError("地市格式错误，只能包含数字")
     return bill_id, city, f"so570{city}"
@@ -606,6 +733,22 @@ def query_instance_user(db_tools, bill_id: str, city: str = "") -> dict[str, Any
     return {"bill_id": bill_id, "results": results}
 
 
+def query_instance_srv_attr(db_tools, offer_inst_id: str, city: str = "574") -> dict[str, Any]:
+    """服务属性：so570{city}.ins_srv_attr_{city} 按订购实例ID查询未过期记录（营业库）。
+    实例中心「订购信息」点击 offer_inst_id 弹出展示。"""
+    offer_inst_id = (offer_inst_id or "").strip()
+    if not offer_inst_id.isdigit():
+        raise ValueError("订购实例ID格式错误，只能包含数字")
+    city = _city(city)
+    if not city.isdigit():
+        raise ValueError("地市格式错误，只能包含数字")
+    table = f"so570{city}.ins_srv_attr_{city}"
+    sql = (f"SELECT * FROM {table} "
+           f"WHERE offer_inst_id = {offer_inst_id} AND expire_date > now()")
+    return {"offer_inst_id": offer_inst_id, "table_name": table,
+            **_query(db_tools, INSTANCE_DATASOURCE, sql)}
+
+
 def query_instance_order(db_tools, bill_id: str, city: str = "") -> dict[str, Any]:
     """订购信息（实例中心）：先按计费账号查 ins_user 取 user_id，再按 user_id 查订购表
     （营业库）。TODO 订购表名仍为占位（按实例库 ins_* 命名惯例暂定 ins_offer），待确认。"""
@@ -629,6 +772,32 @@ def query_instance_order(db_tools, bill_id: str, city: str = "") -> dict[str, An
     sql = f"SELECT * FROM {order_table} WHERE user_id IN ({', '.join(user_ids)})"
     return {"bill_id": bill_id,
             "results": [{"name": "订购信息", "table_name": order_table,
+                         **_query(db_tools, INSTANCE_DATASOURCE, sql)}]}
+
+
+def query_instance_terminal(db_tools, bill_id: str, city: str = "") -> dict[str, Any]:
+    """终端信息（实例中心）：先按计费账号查 ins_user 取 user_id，再按 user_id 查
+    so570{city}.ins_device_{city}（营业库）。user_id 即用户信息行的 user_id。"""
+    bill_id, city, prefix = _instance_bill_params(bill_id, city)
+    user = _query(db_tools, INSTANCE_DATASOURCE,
+                  f"SELECT * FROM {prefix}.ins_user_{city} WHERE bill_id = '{bill_id}'")
+    columns = [str(column).lower() for column in user.get("columns", [])]
+    user_ids: list[str] = []
+    for row in user.get("rows", []):
+        uid = str(dict(zip(columns, row)).get("user_id") or "").strip()
+        if uid.isdigit() and uid not in user_ids:
+            user_ids.append(uid)
+
+    terminal_table = f"{prefix}.ins_device_{city}"
+    if not user_ids:
+        return {"bill_id": bill_id,
+                "results": [{"name": "终端信息", "table_name": terminal_table,
+                             "success": False, "columns": [], "rows": [], "row_count": 0,
+                             "error": "该计费账号未查到用户信息（user_id 为空），无法查询终端信息",
+                             "sql": ""}]}
+    sql = f"SELECT * FROM {terminal_table} WHERE user_id IN ({', '.join(user_ids)})"
+    return {"bill_id": bill_id,
+            "results": [{"name": "终端信息", "table_name": terminal_table,
                          **_query(db_tools, INSTANCE_DATASOURCE, sql)}]}
 
 
@@ -827,11 +996,10 @@ def query_customer_order_message(db_tools, cust_order_id: str, city: str,
     表名规则走中心配置（在途 {table} / 历史 HIS_{table}），对齐 Nexus customer_order/message。"""
     import json as _json
 
-    cust_order_id = (cust_order_id or "").strip()
-    if not cust_order_id:
-        raise ValueError("客户订单编号不能为空")
-    city = (city or "").strip() or "574"
-    month = _norm_month(history_month) if not in_transit else ""
+    # 客户订单编号为纯数字主键，直接拼进 SQL 字面量前必须校验（防注入）
+    cust_order_id = _digit(cust_order_id, "客户订单编号")
+    city = _city(city)
+    month = _history_month(history_month) if not in_transit else ""
 
     center = _center(db_tools.db, CUSTOMER_ORDER_CENTER)
     table = convert_table_name_for_center(center, "hall_cust_dtl", city, month)
@@ -893,11 +1061,10 @@ def query_structured_order_info(db_tools, cust_order_id: str, city: str,
     customer_order/structured-order-info。"""
     from concurrent.futures import ThreadPoolExecutor
 
-    cust_order_id = (cust_order_id or "").strip()
-    if not cust_order_id:
-        raise ValueError("客户订单编号不能为空")
-    city = (city or "").strip() or "574"
-    month = _norm_month(history_month) if not in_transit else ""
+    # 客户订单编号为纯数字主键，直接拼进 SQL 字面量前必须校验（防注入）
+    cust_order_id = _digit(cust_order_id, "客户订单编号")
+    city = _city(city)
+    month = _history_month(history_month) if not in_transit else ""
 
     center = _center(db_tools.db, CUSTOMER_ORDER_CENTER)
     rule = center.history_table_rule if month else center.in_transit_table_rule
@@ -1051,12 +1218,9 @@ def retry_hall_task(db_tools, cust_order_id: str, task_id: str) -> dict[str, Any
     """工单重试（工单信息 task_type=5 场景）：在途表 HALL_TASK 的 TASK_STATE 置 2，
     并同步将 HALL_TASK_FLOW_INS 的 handle_type 置 2（流程实例重新处理）。
     两条固定模板写操作，经 DbTools.ob_execute 白名单通道执行；历史表不可重试。"""
-    cust_order_id = (cust_order_id or "").strip()
-    task_id = (task_id or "").strip()
-    if not cust_order_id or "'" in cust_order_id:
-        raise ValueError("客户订单ID不能为空且不能包含引号")
-    if not task_id.isdigit():
-        raise ValueError("任务ID格式错误，只能包含数字")
+    # 两个 ID 均为纯数字主键：统一用 _digit 严格校验（原先只拦单引号，反斜杠仍可改写语句结构）
+    cust_order_id = _digit(cust_order_id, "客户订单ID")
+    task_id = _digit(task_id, "任务ID")
 
     center = _center(db_tools.db, CUSTOMER_ORDER_CENTER)
     rule = center.in_transit_table_rule
@@ -1085,12 +1249,8 @@ def query_accept_message(db_tools, cust_order_id: str, task_flow_ins_id: str) ->
     """受理报文：HALL_ORDER_BUSI_LOG 最近一条（按 CREATE_DATE 取 MAX），
     请求报文 = HALL_REQ_INFO_A~G、响应报文 = ORDER_RESP_INFO_A~C（SQL 内 NVL 拼接）。
     对齐 Nexus customer_order/accept-message；该日志表不随在途/历史转换表名。"""
-    cust_order_id = (cust_order_id or "").strip()
-    if not cust_order_id:
-        raise ValueError("客户订单ID不能为空")
-    task_flow_ins_id = (task_flow_ins_id or "").strip()
-    if not task_flow_ins_id:
-        raise ValueError("流程实例ID不能为空")
+    cust_order_id = _digit(cust_order_id, "客户订单ID")
+    task_flow_ins_id = _digit(task_flow_ins_id, "流程实例ID")
 
     sql = (
         "SELECT TASK_FLOW_INS_ID, CUST_ORDER_ID, CREATE_DATE, CALL_INTERFACE, "
@@ -1104,6 +1264,29 @@ def query_accept_message(db_tools, cust_order_id: str, task_flow_ins_id: str) ->
         f"WHERE CUST_ORDER_ID = '{cust_order_id}' AND TASK_FLOW_INS_ID = '{task_flow_ins_id}')")
     return {"cust_order_id": cust_order_id, "task_flow_ins_id": task_flow_ins_id,
             **_query(db_tools, CUSTOMER_DATASOURCE, sql)}
+
+
+def query_so_busi_print(db_tools, bill_id: str, create_date: str, city: str = "") -> dict[str, Any]:
+    """免填单（客户订单中心·工单信息 协议单 task_type=3）：
+    so570{city}.SO_BUSI_PRINT_{city}_{YYYYMM} 按计费账号查询（营业库）。
+    月份取客户订单信息(hall_cust) CREATE_DATE 的年月（如 2026-10-30 15:29:02 → 202610）。
+    返回全部列；info_data 与 info_data_1~6 的内容由前端隐藏展示、
+    拼接后供「复制」按钮使用，故这里必须 cell_limit=None 防止长内容截断。"""
+    bill_id = (bill_id or "").strip()
+    if not re.fullmatch(r"[A-Za-z0-9_\-]+", bill_id):
+        raise ValueError("计费账号格式错误，只能包含字母数字")
+    city = _city(city)
+    if not city.isdigit():
+        raise ValueError("地市格式错误，只能包含数字")
+    match = re.search(r"(\d{4})\D?(\d{2})", create_date or "")
+    if not match:
+        raise ValueError("创建时间格式错误，无法识别年月")
+    month = f"{match.group(1)}{match.group(2)}"
+
+    table = f"so570{city}.SO_BUSI_PRINT_{city}_{month}"
+    sql = f"SELECT * FROM {table} WHERE bill_id = '{bill_id}'"
+    return {"bill_id": bill_id, "table_name": table,
+            **_query(db_tools, INSTANCE_DATASOURCE, sql, cell_limit=None)}
 
 
 # ---------- 种子配置 ----------

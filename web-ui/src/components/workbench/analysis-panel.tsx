@@ -11,62 +11,84 @@ import type {
   AnalysisCenterInfo, AnalysisMessageResult, AnalysisNodeResult,
   AnalysisQueryBlock, AnalysisSceneResult, AnalysisWorkflowResult,
   CustomerOrderMessageResult, AcceptMessageResult, StructuredOrderInfoResult,
-  SceneRulesResult, BusiCmptResult, DefSceneResult, DecryptResult,
-  WorkflowTemplateResponse, AsyncFlowResult, ProductConfigResult, SoPreBusiLimitResult,
-  InstanceUserResult, StaticConfigResult, ProductDriveResult, BusinessInfoResult,
-  UpRuleResult,
+  ApiResponse, SceneRulesResult, DefSceneResult, DecryptResult,
+  WorkflowTemplateResponse, AsyncFlowResult, ProductConfigResult,
+  InstanceUserResult, StaticConfigResult, ProductDriveResult,
+  FamilyOtherResult, RuleBusiResult, SoBusiPrintResult,
 } from '@/lib/types'
 import {
-  Activity, CircleAlert, Copy, Layers, MessageSquareText, Search,
+  Activity, CircleAlert, Copy, Layers, Link2, MessageSquareText, Printer, Search,
 } from 'lucide-react'
 
 const FAMILY_CENTER_CODE = 'family_order'
 const PRODUCT_CENTER_CODE = 'product_center'
 const INSTANCE_CENTER_CODE = 'instance_center'
 const PRODUCT_DRIVE_CENTER_CODE = 'product_drive_center'
-const WORKFLOW_SCENE = { scene_code: 'workflow_info', scene_name: '工作流信息', render_mode: 'workflow' }
+const RULE_CENTER_CODE = 'rule_center'
+const WORKFLOW_SCENE = { scene_code: 'workflow_info', scene_name: 'Workflow Info', render_mode: 'workflow' }
 /** 客户订单中心专用：结构化订单信息（17 张 HALL_ORD_* 表） */
-const STRUCTURED_SCENE = { scene_code: 'structured_order', scene_name: '结构化订单信息', render_mode: 'structured' }
+const STRUCTURED_SCENE = { scene_code: 'structured_order', scene_name: 'Structured Order Info', render_mode: 'structured' }
 /** 家庭订单中心专用：异步流程 */
-const ASYNC_FLOW_SCENE = { scene_code: 'async_flow', scene_name: '异步流程', render_mode: 'async_flow' }
+const ASYNC_FLOW_SCENE = { scene_code: 'async_flow', scene_name: 'Async Flows', render_mode: 'async_flow' }
+/** 工作流引擎 state 枚举 → 中文（vm_wf_order/vm_wf_rboss/vm_task_rboss 等；未匹配的值原样展示） */
+const WORKFLOW_STATE_NAMES: Record<string, string> = {
+  '1': 'Not schedulable',
+  '2': 'Schedulable',
+  '3': 'Completed',
+  '4': 'Terminated',
+  '5': 'Manual handling',
+  '6': 'Rolled back',
+  '7': 'Waiting for external event',
+  '8': 'Expired',
+  '9': 'Waiting for dispatch',
+  '21': 'Replied to flow engine',
+  '99': 'System error',
+}
+
+/** 家庭订单中心专用：其他（待接入真实 SQL） */
+const OTHER_SCENE = { scene_code: 'family_other', scene_name: 'Other', render_mode: 'family_other' }
 /** 家庭业务中心专用：产品驱动（角色/策划/产品/终端 四类，待接入真实 SQL） */
-const PRODUCT_DRIVE_SCENE = { scene_code: 'product_drive', scene_name: '产品驱动', render_mode: 'product_drive' }
-const PRODUCT_DRIVE_CATEGORIES: [string, string][] = [['role', '角色'], ['plan', '策划'], ['product', '产品'], ['terminal', '终端']]
+const PRODUCT_DRIVE_SCENE = { scene_code: 'product_drive', scene_name: 'Product Drive', render_mode: 'product_drive' }
+/** 规则中心专用：业务规则（业务编码联查 BUSI_REL→INSTANCE→TEMPLATE 及因子构造链，规则配置库） */
+const RULE_BUSI_SCENE = { scene_code: 'rule_busi', scene_name: 'Business Rules', render_mode: 'rule_busi' }
+const PRODUCT_DRIVE_CATEGORIES: [string, string][] = [['role', 'Role'], ['plan', 'Plan'], ['product', 'Product'], ['terminal', 'Terminal']]
 /** 实例中心专用：用户信息（so570{city}.ins_user_{city}，营业库） */
-const INSTANCE_USER_SCENE = { scene_code: 'user_info', scene_name: '用户信息', render_mode: 'instance_user' }
+const INSTANCE_USER_SCENE = { scene_code: 'user_info', scene_name: 'User Info', render_mode: 'instance_user' }
 /** 实例中心专用：订购信息（占位表名，待接真实 SQL） */
-const INSTANCE_ORDER_SCENE = { scene_code: 'instance_order', scene_name: '订购信息', render_mode: 'instance_order' }
+const INSTANCE_ORDER_SCENE = { scene_code: 'instance_order', scene_name: 'Subscriptions', render_mode: 'instance_order' }
+/** 实例中心专用：终端信息（按计费账号级联 user_id 查 ins_device_{city}，营业库） */
+const INSTANCE_TERMINAL_SCENE = { scene_code: 'terminal_info', scene_name: 'Terminal', render_mode: 'instance_terminal' }
 /** 产品中心专用：档次配置（up_product_item/特性/关系）+ 策划配置（up_plan），产品库 */
-const PRODUCT_CONFIG_SCENE = { scene_code: 'product_config', scene_name: '档次配置', render_mode: 'product_config' }
-const PLAN_CONFIG_SCENE = { scene_code: 'plan_config', scene_name: '策划配置', render_mode: 'plan_config' }
+const PRODUCT_CONFIG_SCENE = { scene_code: 'product_config', scene_name: 'Offer Config', render_mode: 'product_config' }
+const PLAN_CONFIG_SCENE = { scene_code: 'plan_config', scene_name: 'Plan Config', render_mode: 'plan_config' }
 /** DEF_RULE.RULE_TYPE 枚举 → 中文含义（7/8/9 按业务口径；27/28 为购物车多规则校验魔法值） */
 const RULE_TYPE_NAMES: Record<string, string> = {
-  '0': '订单查询·业务查询规则',
-  '7': '规则',
-  '8': '免填单',
-  '9': '补全',
-  '10': '营销案引流',
-  '11': '进程超时自动操作',
-  '12': '特殊沉淀工单',
-  '13': '拆单沉淀业务信息',
-  '17': '异步工单插入',
-  '19': '异常匹配',
-  '21': '实时调度规则校验',
-  '27': '购物车多规则校验（拆单扩展）',
-  '28': '购物车多规则校验（协议单）',
+  '0': 'Order query rule',
+  '7': 'Rule',
+  '8': 'No-receipt print',
+  '9': 'Completion',
+  '10': 'Marketing funnel',
+  '11': 'Timeout auto-action',
+  '12': 'Special deposit ticket',
+  '13': 'Split deposit info',
+  '17': 'Async ticket insert',
+  '19': 'Exception matching',
+  '21': 'Realtime scheduling check',
+  '27': 'Cart multi-rule check (split)',
+  '28': 'Cart multi-rule check (protocol)',
 }
 
 /** 调度订单 STATE 枚举 → 中文含义 */
 const SCHEDULER_STATE_NAMES: Record<string, string> = {
-  '0': '初始化（待调度）',
-  '1': '过程中（已下发工作流，处理中）',
-  '2': '已完成（竣工）',
-  '4': '正在执行定单撤单',
-  '5': '挂起',
-  '6': '处理异常（可恢复:6→1）',
-  '7': '失效（未调度即作废:0→7）',
-  '8': '已完成定单撤单（竣工后撤单）',
-  '10': '撤单过程中发生异常（可恢复:10→4）',
+  '0': 'Initialized (pending)',
+  '1': 'In progress (dispatched)',
+  '2': 'Completed',
+  '4': 'Cancelling order',
+  '5': 'Suspended',
+  '6': 'Error (recoverable 6→1)',
+  '7': 'Voided (0→7)',
+  '8': 'Cancelled (after completion)',
+  '10': 'Cancel error (recoverable 10→4)',
 }
 
 const CARD_COLORS: Record<string, string> = {
@@ -100,7 +122,7 @@ function itemTypeStats(result: AnalysisNodeResult) {
     result.columns.some(item => item.toLowerCase() === name))
   if (!column) return null
   const index = result.columns.findIndex(item => item.toLowerCase() === column)
-  const stats: Record<string, number> = { 用户: 0, 客户: 0, 策划: 0, 终端: 0 }
+  const stats: Record<string, number> = { User: 0, Customer: 0, Plan: 0, Terminal: 0 }
   for (const row of result.rows) {
     const value = String(row[index] ?? '')
     for (const key of Object.keys(stats)) {
@@ -130,7 +152,7 @@ function QueryResultTable({
     !!clickableColumns?.includes(column.toLowerCase())
     && !!onCellClick && (clickableValue ?? defaultClickable)(value)
   if (rows.length === 0) {
-    return <div className="px-4 py-6 text-center text-[12px] text-[#8b8b9e]">暂无数据</div>
+    return <div className="px-4 py-6 text-center text-[12px] text-[#8b8b9e]">No data</div>
   }
   return (
     <div className="max-h-[420px] overflow-auto">
@@ -138,7 +160,7 @@ function QueryResultTable({
         <thead className="sticky top-0 z-[1] bg-[#20202c]">
           <tr>
             {renderActions && (
-              <th className="sticky left-0 z-[2] whitespace-nowrap border-b border-[#3d3d4a] bg-[#20202c] px-2.5 py-1.5 font-semibold text-[#e8e8f0]">操作</th>
+              <th className="sticky left-0 z-[2] whitespace-nowrap border-b border-[#3d3d4a] bg-[#20202c] px-2.5 py-1.5 font-semibold text-[#e8e8f0]">Actions</th>
             )}
             {columns.map(column => (
               <th key={column} className="whitespace-nowrap border-b border-[#3d3d4a] px-2.5 py-1.5 font-semibold text-[#e8e8f0]">
@@ -195,6 +217,97 @@ function QueryResultTable({
   )
 }
 
+
+/** ---------- 后端来源名称的英文展示映射 ----------
+ * 后端结果块名/数据源名/中心场景名是中文数据键（比较、查找逻辑都依赖原文），
+ * 仅在渲染时映射为英文显示；未命中的键原样展示。 */
+const BLOCK_NAME_EN: Record<string, string> = {
+  '订单信息': 'Order Info',
+  '业务订单信息': 'Business Order Info',
+  '客户订单信息': 'Customer Order Info',
+  '客户信息': 'Customer Info',
+  '工单信息': 'Work Orders',
+  '订单属性': 'Order Attributes',
+  '策划订单项': 'Offer Order Items',
+  '订单项': 'Order Items',
+  '工作流订单': 'Workflow Orders',
+  'RBoss工作流': 'RBoss Workflow',
+  '调度订单信息': 'Schedule Order Info',
+  '流程实例信息': 'Flow Instance Info',
+  '用户信息': 'User Info',
+  '个人客户信息': 'Individual Customer',
+  '家庭客户信息': 'Family Customer',
+  '订购信息': 'Subscriptions',
+  '终端信息': 'Terminals',
+  '路由锁网': 'Router Lock Net',
+  'WiFi组网': 'Wi-Fi Grouping',
+  '消息': 'Messages',
+  '属性信息': 'Attribute Info',
+  '关联产品': 'Related Products',
+  '前项限制': 'Pre-Limits',
+  '业务关系': 'Business Relations',
+  '产品关系': 'Product Relations',
+  '产品': 'Products',
+  '档次信息': 'Offer Info',
+  '框架规则': 'Framework Rules',
+  '框架匹配': 'Framework Matches',
+  '框架属性': 'Framework Attributes',
+  '限制参数': 'Pre-Limit Params',
+  '角色信息': 'Role Info',
+  '业务组件': 'Business Components',
+  '场景定义': 'Scene Definitions',
+  '规则定义': 'Rule Definitions',
+  '场景单元关系': 'Scene Unit Relations',
+  '异步流程': 'Async Flows',
+  '设备策划关系': 'Device Offer Relations',
+  '规则': 'Rules',
+}
+const DS_NAME_EN: Record<string, string> = {
+  '家庭订单库': 'Family Order DB',
+  '家庭订单配置库': 'Family Order Config DB',
+  '家庭业务配置库': 'Family Biz Config DB',
+  '营业库': 'Billing DB',
+  '产品库': 'Product DB',
+  '规则配置库': 'Rule Config DB',
+  '客户订单配置库': 'Customer Order Config DB',
+  '客户订单库': 'Customer Order DB',
+  '工作流配置库': 'Workflow Config DB',
+  '工作流订单库': 'Workflow Order DB',
+}
+const CENTER_NAME_EN: Record<string, string> = {
+  hall_center: 'Customer Orders',
+  family_order: 'Family Orders',
+  instance_center: 'Instances',
+  product_drive_center: 'Family Business',
+  product_center: 'Products',
+  rule_center: 'Rules',
+}
+const SCENE_NAME_EN: Record<string, string> = {
+  order_info: 'Order Info',
+  order_attr: 'Order Attributes',
+  order_items: 'Order Items',
+  workflow_info: 'Workflow Info',
+  structured_order: 'Structured Order Info',
+  async_flow: 'Async Flows',
+  family_other: 'Other',
+  product_drive: 'Product Drive',
+  rule_busi: 'Business Rules',
+  user_info: 'User Info',
+  instance_order: 'Subscriptions',
+  terminal_info: 'Terminal',
+  product_config: 'Offer Config',
+  plan_config: 'Plan Config',
+  scene_rule: 'Config Query',
+  static_config: 'Static Config',
+  template_version: 'Template Versions',
+}
+const blockNameEn = (name?: string) => (name ? BLOCK_NAME_EN[name] ?? name : '')
+const dsEn = (name?: string) => (name ? DS_NAME_EN[name] ?? name : '')
+const centerNameEn = (c?: { center_code?: string; center_name?: string } | null) =>
+  (c ? CENTER_NAME_EN[c.center_code ?? ''] ?? c.center_name ?? '' : '')
+const sceneNameEn = (sc?: { scene_code?: string; scene_name?: string } | null) =>
+  (sc ? SCENE_NAME_EN[sc.scene_code ?? ''] ?? sc.scene_name ?? '' : '')
+
 function ResultCard({
   title, badge, table, datasource, rowCount, hint, action, children,
 }: {
@@ -214,15 +327,15 @@ function ResultCard({
         {badge ? (
           <span className={cn('shrink-0 rounded border px-1.5 py-0.5 text-[10px]',
             CARD_COLORS[badge] ?? CARD_COLORS.blue)}>
-            {title}
+            {blockNameEn(title)}
           </span>
         ) : (
-          <span className="text-[12px] font-medium text-[#e4e4e9]">{title}</span>
+          <span className="text-[12px] font-medium text-[#e4e4e9]">{blockNameEn(title)}</span>
         )}
         {table && <span className="font-mono text-[10px] text-[#5a5a70]">{table}</span>}
-        {datasource && <span className="font-mono text-[10px] text-[#4a6a8a]">@{datasource}</span>}
+        {datasource && <span className="font-mono text-[10px] text-[#4a6a8a]">@{dsEn(datasource)}</span>}
         {rowCount !== undefined && (
-          <span className="rounded bg-white/5 px-1.5 py-0.5 text-[10px] text-[#8b8b9e]">{rowCount} 条</span>
+          <span className="rounded bg-white/5 px-1.5 py-0.5 text-[10px] text-[#8b8b9e]">{rowCount} rows</span>
         )}
         {(hint || action) && (
           <div className="ml-auto flex items-center gap-2">
@@ -270,12 +383,12 @@ function NodeCard({
 }
 
 const MESSAGE_KINDS = [
-  { key: 'SEND_TO_IMEP', label: '送 IMEP 报文' },
-  { key: 'IMEP_BACK', label: 'IMEP 回单报文' },
-  { key: 'SEND_TO_IRMS', label: '送资管报文' },
-  { key: 'IRMS_BACK', label: '资管回单报文' },
-  { key: 'billing', label: '计费报文' },
-  { key: 'stage', label: '阶段性回复' },
+  { key: 'SEND_TO_IMEP', label: 'To IMEP message' },
+  { key: 'IMEP_BACK', label: 'IMEP receipt message' },
+  { key: 'SEND_TO_IRMS', label: 'To IRMS message' },
+  { key: 'IRMS_BACK', label: 'IRMS receipt message' },
+  { key: 'billing', label: 'Billing message' },
+  { key: 'stage', label: 'Stage reply' },
 ] as const
 
 type MessageKind = typeof MESSAGE_KINDS[number]['key']
@@ -307,7 +420,7 @@ function MessageContentCell({ text }: { text: string }) {
           setExpanded(value => !value)
         }}
       >
-        {expanded ? '收起' : `查看全文 (${text.length} 字符)`}
+        {expanded ? 'Collapse' : `View full text (${text.length} chars)`}
       </button>
       {expanded && (
         <pre className="mt-1 max-h-[280px] w-[520px] max-w-full overflow-auto break-all whitespace-pre-wrap rounded border border-[#252530] bg-[#0b0b10] p-2 font-mono text-[10px] text-[#cdd3e0]">
@@ -359,7 +472,7 @@ function MessageDialog({
       setResult(response.data)
     } else {
       setResult(null)
-      setError(response.error || '报文查询失败')
+      setError(response.error || 'Message query failed')
     }
     setLoading(false)
   }
@@ -406,12 +519,12 @@ function MessageDialog({
       <DialogContent className="max-h-[85vh] max-w-4xl gap-3 overflow-y-auto">
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2 text-[15px]">
-            <MessageSquareText className="h-4 w-4 text-indigo-400" />报文查询
+            <MessageSquareText className="h-4 w-4 text-indigo-400" />Message Query
           </DialogTitle>
         </DialogHeader>
         <div className="flex flex-wrap items-end gap-2 text-[11px] text-[#8b8b9e]">
           <label className="space-y-1">
-            <span>类型</span>
+            <span>Type</span>
             <select
               className="h-7 rounded-md border border-[#252530] bg-[#0f0f14] px-2 text-[12px] text-[#cdd3e0]"
               value={kind}
@@ -422,30 +535,30 @@ function MessageDialog({
           </label>
           {kind !== 'billing' && (
             <label className="space-y-1">
-              <span>任务ID</span>
+              <span>Task ID</span>
               <Input className={cn(fieldClass, 'w-44')} value={taskId} onChange={e => setTaskId(e.target.value)} />
             </label>
           )}
           {kind !== 'stage' && (
             <label className="space-y-1">
-              <span>日期(YYYYMMDD)</span>
-              <Input className={cn(fieldClass, 'w-32')} placeholder="默认当天" value={doneDate} onChange={e => setDoneDate(e.target.value)} />
+              <span>Date (YYYYMMDD)</span>
+              <Input className={cn(fieldClass, 'w-32')} placeholder="Defaults to today" value={doneDate} onChange={e => setDoneDate(e.target.value)} />
             </label>
           )}
           {kind === 'billing' && (
             <>
               <label className="space-y-1">
-                <span>客户订单ID</span>
+                <span>Customer Order ID</span>
                 <Input className={cn(fieldClass, 'w-44')} value={custOrderId} onChange={e => setCustOrderId(e.target.value)} />
               </label>
               <label className="space-y-1">
-                <span>调度订单ID</span>
+                <span>Schedule Order ID</span>
                 <Input className={cn(fieldClass, 'w-44')} value={keyEleId} onChange={e => setKeyEleId(e.target.value)} />
               </label>
             </>
           )}
           <Button size="sm" className="h-7" disabled={loading} onClick={() => void run()}>
-            <Search className="mr-1 h-3 w-3" />{loading ? '查询中' : '查询'}
+            <Search className="mr-1 h-3 w-3" />{loading ? 'Querying' : 'Query'}
           </Button>
         </div>
 
@@ -457,13 +570,13 @@ function MessageDialog({
             {result.sql && <div className="truncate font-mono text-[10px] text-[#5a5a70]" title={result.sql}>{result.sql}</div>}
             {decrypting && (
               <div className="rounded-md border border-emerald-500/30 bg-emerald-500/10 px-3 py-1.5 text-[11px] text-emerald-200">
-                检测到加密报文，正在解密…
+                Encrypted message detected, decrypting…
               </div>
             )}
             {result.success ? (
               <div className="max-h-[46vh] overflow-auto rounded-md border border-[#252530]">
                 {(decryptedRows ?? result.rows).length === 0 ? (
-                  <div className="px-3 py-6 text-center text-[12px] text-[#8b8b9e]">暂无数据</div>
+                  <div className="px-3 py-6 text-center text-[12px] text-[#8b8b9e]">No data</div>
                 ) : (
                   <table className="w-full border-collapse text-left text-[11px]">
                     <thead className="sticky top-0 bg-[#20202c]">
@@ -481,7 +594,7 @@ function MessageDialog({
                               {cell.length > 160 ? (
                                 <div className="space-y-1">
                                   <MessageContentCell text={cell} />
-                                  <CopyButton text={cell} label="复制报文" />
+                                  <CopyButton text={cell} label="Copy message" />
                                 </div>
                               ) : cell}
                             </td>
@@ -494,13 +607,13 @@ function MessageDialog({
               </div>
             ) : (
               <div className="rounded-md border border-red-500/30 bg-red-500/10 px-3 py-2 text-[12px] text-red-200">
-                {result.error || '查询失败'}
+                {result.error || 'Query failed'}
               </div>
             )}
           </div>
         )}
         <DialogFooter>
-          <Button size="sm" variant="outline" className="h-8" onClick={() => onOpenChange(false)}>关闭</Button>
+          <Button size="sm" variant="outline" className="h-8" onClick={() => onOpenChange(false)}>Close</Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>
@@ -509,7 +622,7 @@ function MessageDialog({
 
 /** 客户订单下单报文：hall_cust_dtl 各行 CUST_DTL_INFO_A~P 拼接，JSON 报文提取 originalData/transformedData */
 /** 复制按钮：clipboard API 优先，失败回退 execCommand（iframe 环境） */
-function CopyButton({ text, label = '复制' }: { text: string; label?: string }) {
+function CopyButton({ text, label = 'Copy' }: { text: string; label?: string }) {
   const [copied, setCopied] = useState(false)
   return (
     <button
@@ -529,7 +642,7 @@ function CopyButton({ text, label = '复制' }: { text: string; label?: string }
         setTimeout(() => setCopied(false), 1500)
       }}
     >
-      <Copy className="h-3 w-3" />{copied ? '已复制' : label}
+      <Copy className="h-3 w-3" />{copied ? 'Copied' : label}
     </button>
   )
 }
@@ -586,9 +699,9 @@ function CustomerOrderMessageDialog({
       if (cancelled) return
       if (response.success && response.data) {
         setResult(response.data)
-        if (!response.data.success) setError(response.data.error || '报文查询失败')
+        if (!response.data.success) setError(response.data.error || 'Message query failed')
       } else {
-        setError(response.error || '报文查询失败')
+        setError(response.error || 'Message query failed')
       }
     }).finally(() => {
       if (!cancelled) setLoading(false)
@@ -604,29 +717,29 @@ function CustomerOrderMessageDialog({
         if (typeof item === 'object' && item !== null) {
           const record = item as Record<string, unknown>
           return {
-            sceneId: String(record.sceneId ?? record.scene_id ?? '未知'),
+            sceneId: String(record.sceneId ?? record.scene_id ?? 'Unknown'),
             data: record.data ?? item,
           }
         }
-        return { sceneId: '未知', data: item }
+        return { sceneId: 'Unknown', data: item }
       })
     }
-    return raw != null ? [{ sceneId: '未知', data: raw }] : []
+    return raw != null ? [{ sceneId: 'Unknown', data: raw }] : []
   }, [result])
 
   const currentText = useMemo(() => {
     if (!result?.success) return ''
-    if (tab === 'full') return prettyContent(result.message) || '（空）'
+    if (tab === 'full') return prettyContent(result.message) || '(empty)'
     if (tab === 'original') {
-      return result.original_data != null ? prettyJson(result.original_data) : '未找到原始报文数据'
+      return result.original_data != null ? prettyJson(result.original_data) : 'Original message not found'
     }
     const item = transformedList[sceneIdx]
     if (item) return prettyJson(item.data)
-    return transformedList.length > 0 ? '请选择 sceneId' : '未找到转换后报文数据'
+    return transformedList.length > 0 ? 'Select a sceneId' : 'Transformed message not found'
   }, [result, tab, sceneIdx, transformedList])
 
-  const copyable = !!currentText && !currentText.startsWith('未找到')
-    && currentText !== '（空）' && currentText !== '请选择 sceneId'
+  const copyable = !!currentText && !currentText.startsWith('Not found')
+    && currentText !== '(empty)' && currentText !== 'Select a sceneId'
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -634,10 +747,10 @@ function CustomerOrderMessageDialog({
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2 text-[15px]">
             <MessageSquareText className="h-4 w-4 text-indigo-400" />
-            下单报文 · {custOrderId}
+            Order Message · {custOrderId}
           </DialogTitle>
         </DialogHeader>
-        {loading && <div className="py-6 text-center text-[12px] text-[#8b8b9e]">查询中…</div>}
+        {loading && <div className="py-6 text-center text-[12px] text-[#8b8b9e]">Querying…</div>}
         {!loading && error && (
           <div className="rounded-md border border-red-500/30 bg-red-500/10 px-3 py-2 text-[12px] text-red-200">{error}</div>
         )}
@@ -645,12 +758,12 @@ function CustomerOrderMessageDialog({
           <div className="space-y-2" data-customer-message-result>
             <div className="flex items-center justify-between gap-2 font-mono text-[10px] text-[#5a5a70]">
               <span className="truncate" title={result.sql}>{result.sql}</span>
-              <span className="shrink-0">{result.table_name} · {result.row_count} 行</span>
+              <span className="shrink-0">{result.table_name} · {result.row_count} rows</span>
             </div>
             {result.success && (
               <>
                 <div className="flex flex-wrap items-center gap-1.5">
-                  {([['full', '完整报文'], ['original', '原始报文'], ['transformed', '转换后报文']] as const)
+                  {([['full', 'Full Message'], ['original', 'Original'], ['transformed', 'Transformed']] as const)
                     .map(([key, label]) => (
                       <button
                         key={key}
@@ -672,7 +785,7 @@ function CustomerOrderMessageDialog({
                       value={sceneIdx}
                       onChange={event => setSceneIdx(Number(event.target.value))}
                     >
-                      <option value={-1}>请选择 sceneId</option>
+                      <option value={-1}>Select a sceneId</option>
                       {transformedList.map((item, index) => (
                         <option key={index} value={index}>{item.sceneId}</option>
                       ))}
@@ -687,8 +800,8 @@ function CustomerOrderMessageDialog({
           </div>
         )}
         <DialogFooter className="gap-2">
-          {!loading && copyable && <CopyButton text={currentText} label="复制报文" />}
-          <Button size="sm" variant="outline" className="h-8" onClick={() => onOpenChange(false)}>关闭</Button>
+          {!loading && copyable && <CopyButton text={currentText} label="Copy message" />}
+          <Button size="sm" variant="outline" className="h-8" onClick={() => onOpenChange(false)}>Close</Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>
@@ -721,9 +834,9 @@ function AcceptMessageDialog({
       if (cancelled) return
       if (response.success && response.data) {
         setResult(response.data)
-        if (!response.data.success) setError(response.data.error || '受理报文查询失败')
+        if (!response.data.success) setError(response.data.error || 'Accept message query failed')
       } else {
-        setError(response.error || '受理报文查询失败')
+        setError(response.error || 'Accept message query failed')
       }
     }).finally(() => {
       if (!cancelled) setLoading(false)
@@ -747,14 +860,14 @@ function AcceptMessageDialog({
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2 text-[15px]">
             <MessageSquareText className="h-4 w-4 text-amber-400" />
-            受理报文 · 流程实例 {taskFlowInsId}
+            Accept Message · Flow Instance {taskFlowInsId}
           </DialogTitle>
         </DialogHeader>
         <div className="flex items-center gap-4 text-[11px] text-[#8b8b9e]">
-          <span>客户订单ID <span className="font-mono text-[#cdd3e0]">{custOrderId}</span></span>
-          <span>流程实例ID <span className="font-mono text-[#cdd3e0]">{taskFlowInsId}</span></span>
+          <span>Customer Order ID <span className="font-mono text-[#cdd3e0]">{custOrderId}</span></span>
+          <span>Flow Instance ID <span className="font-mono text-[#cdd3e0]">{taskFlowInsId}</span></span>
         </div>
-        {loading && <div className="py-6 text-center text-[12px] text-[#8b8b9e]">查询中…</div>}
+        {loading && <div className="py-6 text-center text-[12px] text-[#8b8b9e]">Querying…</div>}
         {!loading && error && (
           <div className="rounded-md border border-red-500/30 bg-red-500/10 px-3 py-2 text-[12px] text-red-200">{error}</div>
         )}
@@ -762,22 +875,22 @@ function AcceptMessageDialog({
           <div className="space-y-2" data-accept-message-result>
             <div className="truncate font-mono text-[10px] text-[#5a5a70]" title={result.sql}>{result.sql}</div>
             {records.length === 0 && (
-              <div className="rounded-md border border-[#252530] px-3 py-6 text-center text-[12px] text-[#8b8b9e]">暂无数据</div>
+              <div className="rounded-md border border-[#252530] px-3 py-6 text-center text-[12px] text-[#8b8b9e]">No data</div>
             )}
             {records.map((record, index) => (
               <div key={index} className="min-w-0 space-y-2 rounded-md border border-[#252530] bg-[#12121a] p-2.5">
                 <div className="flex flex-wrap items-center gap-3 text-[11px] text-[#8b8b9e]">
-                  <span>时间 <span className="font-mono text-[#cdd3e0]">{record.createDate || '—'}</span></span>
-                  <span>调用接口 <span className="font-mono text-[#cdd3e0]">{record.callInterface || '—'}</span></span>
+                  <span>Time <span className="font-mono text-[#cdd3e0]">{record.createDate || '—'}</span></span>
+                  <span>Interface <span className="font-mono text-[#cdd3e0]">{record.callInterface || '—'}</span></span>
                 </div>
-                {([['请求报文', record.reqMessage], ['响应报文', record.respMessage]] as const).map(([title, text]) => (
+                {([['Request', record.reqMessage], ['Response', record.respMessage]] as const).map(([title, text]) => (
                   <div key={title}>
                     <div className="mb-1 flex items-center gap-2 text-[11px] text-[#8b8b9e]">
-                      <span>{title}（{text.length} 字符）</span>
+                      <span>{title}({text.length} chars)</span>
                       {text ? <CopyButton text={text} /> : null}
                     </div>
                     <pre className="min-w-0 max-h-[24vh] w-full overflow-auto break-all whitespace-pre-wrap rounded border border-[#252530] bg-[#0b0b10] p-2 font-mono text-[10px] text-[#cdd3e0]">
-                      {prettyContent(text) || '（空）'}
+                      {prettyContent(text) || '(empty)'}
                     </pre>
                   </div>
                 ))}
@@ -786,7 +899,133 @@ function AcceptMessageDialog({
           </div>
         )}
         <DialogFooter>
-          <Button size="sm" variant="outline" className="h-8" onClick={() => onOpenChange(false)}>关闭</Button>
+          <Button size="sm" variant="outline" className="h-8" onClick={() => onOpenChange(false)}>Close</Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
+/** 通用查询结果表：列行展示（break-all 换行），空数据展示占位 */
+function DialogResultTable({ columns, rows }: { columns: string[]; rows: string[][] }) {
+  if (rows.length === 0) {
+    return <div className="px-3 py-6 text-center text-[12px] text-[#8b8b9e]">No data</div>
+  }
+  return (
+    <table className="w-full border-collapse text-left text-[11px]">
+      <thead className="sticky top-0 bg-[#20202c]">
+        <tr>
+          {columns.map((column: string) => (
+            <th key={column} className="whitespace-nowrap border-b border-[#3d3d4a] px-2.5 py-1.5 font-semibold text-[#e8e8f0]">{column}</th>
+          ))}
+        </tr>
+      </thead>
+      <tbody>
+        {rows.map((row: string[], index: number) => (
+          <tr key={index} className="border-b border-[#1d1d26] align-top hover:bg-white/[0.03]">
+            {row.map((cell: string, cellIndex: number) => (
+              <td key={cellIndex} className="max-w-[420px] break-all px-2.5 py-1.5 text-[#cdd3e0]">{cell}</td>
+            ))}
+          </tr>
+        ))}
+      </tbody>
+    </table>
+  )
+}
+
+/** 查询结果弹窗的通用数据形态：各业务接口结果的最小公共字段 */
+interface DialogResultData {
+  columns: string[]
+  rows: string[][]
+  success?: boolean
+  error?: string
+  sql?: string
+  table_name?: string
+}
+
+/**
+ * 通用查询结果弹窗：业务弹窗（服务属性/消息/规则定义等）的同构骨架收敛于此。
+ * open 时执行 fetch（返回 null 表示参数未齐，不发起请求），cancelled 守卫防止
+ * 快速开关/换目标时的过期响应覆盖；loading/error/空态与表格样式统一。
+ * fetch 每次渲染都是新闭包，经 ref 取最新值，effect 只随 open 触发。
+ */
+function QueryResultDialog<T extends DialogResultData>({
+  open, onOpenChange, title, icon, datasourceLabel, tableName, errorText, fetch, renderTable, testId,
+}: {
+  open: boolean
+  onOpenChange: (open: boolean) => void
+  /** 标题（含动态 ID 部分，如 业务组件 · 300937） */
+  title: string
+  icon: ReactNode
+  datasourceLabel: string
+  /** 表名补充说明；缺省按 result.table_name 展示，返回空串则整段隐藏 */
+  tableName?: (result: T | null) => string
+  /** 查询失败兜底文案 */
+  errorText: string
+  /** open 且参数齐备时发起的请求；返回 null 表示参数未齐 */
+  fetch: (() => Promise<ApiResponse<T>>) | null
+  /** 自定义表格渲染（如免填单的报文复制列）；缺省用标准列行表格 */
+  renderTable?: (result: T) => ReactNode
+  /** 测试锚点 data-testid */
+  testId?: string
+}) {
+  const [result, setResult] = useState<T | null>(null)
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState('')
+  const fetchRef = useRef(fetch)
+  fetchRef.current = fetch
+
+  useEffect(() => {
+    const request = open ? fetchRef.current : null
+    if (!request) return
+    let cancelled = false
+    setLoading(true)
+    setError('')
+    setResult(null)
+    request().then(response => {
+      if (cancelled) return
+      if (response.success && response.data) {
+        setResult(response.data)
+        if (response.data.success === false) setError(response.data.error || errorText)
+      } else {
+        setError(response.error || errorText)
+      }
+    }).finally(() => {
+      if (!cancelled) setLoading(false)
+    })
+    return () => { cancelled = true }
+  }, [open, errorText])
+
+  const tableNameText = tableName ? tableName(result) : (result?.table_name ?? '')
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="max-h-[85vh] max-w-4xl gap-3 overflow-y-auto">
+        <DialogHeader>
+          <DialogTitle className="flex items-center gap-2 text-[15px]">
+            {icon}
+            {title}
+          </DialogTitle>
+        </DialogHeader>
+        <div className="text-[11px] text-[#8b8b9e]">
+          Data Source <span className="font-mono text-[#cdd3e0]">{datasourceLabel}</span>
+          {tableNameText && <span className="ml-2 font-mono text-[10px] text-[#5a5a70]">{tableNameText}</span>}
+        </div>
+        {loading && <div className="py-6 text-center text-[12px] text-[#8b8b9e]">Querying…</div>}
+        {!loading && error && (
+          <div className="rounded-md border border-red-500/30 bg-red-500/10 px-3 py-2 text-[12px] text-red-200">{error}</div>
+        )}
+        {!loading && result && !error && (
+          <div className="space-y-2" data-testid={testId}>
+            <div className="truncate font-mono text-[10px] text-[#5a5a70]" title={result.sql}>{result.sql}</div>
+            <div className="max-h-[52vh] overflow-auto rounded-md border border-[#252530]">
+              {renderTable
+                ? renderTable(result)
+                : <DialogResultTable columns={result.columns} rows={result.rows} />}
+            </div>
+          </div>
+        )}
+        <DialogFooter>
+          <Button size="sm" variant="outline" className="h-8" onClick={() => onOpenChange(false)}>Close</Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>
@@ -801,80 +1040,213 @@ function BusiCmptDialog({
   onOpenChange: (open: boolean) => void
   busiCmptId: string
 }) {
-  const [result, setResult] = useState<BusiCmptResult | null>(null)
-  const [loading, setLoading] = useState(false)
-  const [error, setError] = useState('')
-
-  useEffect(() => {
-    if (!open || !busiCmptId.trim()) return
-    let cancelled = false
-    setLoading(true)
-    setError('')
-    setResult(null)
-    api.getBusiCmpt({ busi_cmpt_id: busiCmptId.trim() }).then(response => {
-      if (cancelled) return
-      if (response.success && response.data) {
-        setResult(response.data)
-        if (!response.data.success) setError(response.data.error || '业务组件查询失败')
-      } else {
-        setError(response.error || '业务组件查询失败')
-      }
-    }).finally(() => {
-      if (!cancelled) setLoading(false)
-    })
-    return () => { cancelled = true }
-  }, [open, busiCmptId])
-
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-h-[85vh] max-w-4xl gap-3 overflow-y-auto">
-        <DialogHeader>
-          <DialogTitle className="flex items-center gap-2 text-[15px]">
-            <Layers className="h-4 w-4 text-cyan-400" />
-            业务组件 · {busiCmptId}
-          </DialogTitle>
-        </DialogHeader>
-        <div className="text-[11px] text-[#8b8b9e]">
-          数据源 <span className="font-mono text-[#cdd3e0]">客户订单配置库</span>
-        </div>
-        {loading && <div className="py-6 text-center text-[12px] text-[#8b8b9e]">查询中…</div>}
-        {!loading && error && (
-          <div className="rounded-md border border-red-500/30 bg-red-500/10 px-3 py-2 text-[12px] text-red-200">{error}</div>
-        )}
-        {!loading && result && !error && (
-          <div className="space-y-2" data-busi-cmpt-result>
-            <div className="truncate font-mono text-[10px] text-[#5a5a70]" title={result.sql}>{result.sql}</div>
-            <div className="max-h-[52vh] overflow-auto rounded-md border border-[#252530]">
-              {result.rows.length === 0 ? (
-                <div className="px-3 py-6 text-center text-[12px] text-[#8b8b9e]">暂无数据</div>
-              ) : (
-                <table className="w-full border-collapse text-left text-[11px]">
-                  <thead className="sticky top-0 bg-[#20202c]">
-                    <tr>
-                      {result.columns.map((column: string) => (
-                        <th key={column} className="whitespace-nowrap border-b border-[#3d3d4a] px-2.5 py-1.5 font-semibold text-[#e8e8f0]">{column}</th>
-                      ))}
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {result.rows.map((row: string[], index: number) => (
-                      <tr key={index} className="border-b border-[#1d1d26] align-top hover:bg-white/[0.03]">
-                        {row.map((cell: string, cellIndex: number) => (
-                          <td key={cellIndex} className="max-w-[420px] break-all px-2.5 py-1.5 text-[#cdd3e0]">{cell}</td>
-                        ))}
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              )}
-            </div>
-          </div>
-        )}
-        <DialogFooter>
-          <Button size="sm" variant="outline" className="h-8" onClick={() => onOpenChange(false)}>关闭</Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
+    <QueryResultDialog
+      open={open}
+      onOpenChange={onOpenChange}
+      title={`Business Component · ${busiCmptId}`}
+      icon={<Layers className="h-4 w-4 text-cyan-400" />}
+      datasourceLabel="Customer Order Config DB"
+      errorText="Business component query failed"
+      testId="busi-cmpt-result"
+      fetch={open && busiCmptId.trim()
+        ? () => api.getBusiCmpt({ busi_cmpt_id: busiCmptId.trim() })
+        : null}
+    />
+  )
+}
+
+/** 报文原始列（内容不展示，按此顺序拼接后供「复制」按钮复制全文） */
+const SO_BUSI_PRINT_INFO_COLUMNS = ['info_data', 'info_data_1', 'info_data_2', 'info_data_3',
+  'info_data_4', 'info_data_5', 'info_data_6']
+
+/** 按创建时间倒序排列（YYYY-MM-DD HH:MM:SS 格式字符串可直接比较；
+ * 无 create_date 列时保持查询原序） */
+function sortSoBusiPrintRows(rows: string[][], columns: string[]): string[][] {
+  const idx = columns.findIndex(column => column.toLowerCase() === 'create_date')
+  if (idx < 0) return rows
+  return [...rows].sort((a, b) => String(b[idx] ?? '').localeCompare(String(a[idx] ?? '')))
+}
+
+/** 免填单结果表：按 create_date 倒序；报文原始 7 列内容隐藏，
+ * 「报文」列固定在行首，提供拼接全文复制按钮 */
+function SoBusiPrintTable({ result, copiedIndex, onCopied }: {
+  result: SoBusiPrintResult
+  copiedIndex: number
+  onCopied: (index: number) => void
+}) {
+  if (result.rows.length === 0) {
+    return <div className="px-3 py-6 text-center text-[12px] text-[#8b8b9e]">No data</div>
+  }
+  const sortedRows = sortSoBusiPrintRows(result.rows, result.columns)
+  const lowerColumns = result.columns.map(column => column.toLowerCase())
+  const printIndexes = SO_BUSI_PRINT_INFO_COLUMNS
+    .map(name => lowerColumns.indexOf(name))
+    .filter(index => index >= 0)
+  const visibleIndexes = result.columns
+    .map((_, index) => index)
+    .filter(index => !printIndexes.includes(index))
+  const rowText = (row: string[]) =>
+    printIndexes.map(index => String(row[index] ?? '')).join('')
+  return (
+    <div className="max-h-[60vh] overflow-auto rounded-md border border-[#252530]">
+      <table className="w-full border-collapse text-left text-[11px]">
+        <thead className="sticky top-0 bg-[#20202c]">
+          <tr>
+            <th className="whitespace-nowrap border-b border-[#3d3d4a] px-2.5 py-1.5 font-semibold text-[#e8e8f0]">Message</th>
+            {visibleIndexes.map(index => (
+              <th key={index} className="whitespace-nowrap border-b border-[#3d3d4a] px-2.5 py-1.5 font-semibold text-[#e8e8f0]">
+                {result.columns[index]}
+              </th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {sortedRows.map((row, rowIndex) => (
+            // 排序会打乱原索引，key 用首列值 + 索引复合，避免排序后 DOM 复用错位
+            <tr key={`${String(row[0] ?? '')}-${rowIndex}`} className="border-b border-[#1d1d26] align-top hover:bg-white/[0.03]">
+              <td className="px-2.5 py-1.5">
+                <Button size="sm" variant="outline" className="h-7 text-[11px]"
+                  data-so-busi-print-copy
+                  onClick={async () => {
+                    await navigator.clipboard.writeText(rowText(row))
+                    onCopied(rowIndex)
+                    setTimeout(() => onCopied(-1), 1500)
+                  }}>
+                  <Copy className="mr-1 h-3 w-3" />{copiedIndex === rowIndex ? 'Copied' : 'Copy'}
+                </Button>
+              </td>
+              {visibleIndexes.map(cellIndex => (
+                <td key={cellIndex} className="max-w-[300px] break-all px-2.5 py-1.5 text-[#cdd3e0]">
+                  {String(row[cellIndex] ?? '')}
+                </td>
+              ))}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  )
+}
+
+/** 免填单：so570{city}.SO_BUSI_PRINT_{city}_{YYYYMM} 按计费账号查询（营业库），
+ * 月份取客户订单 CREATE_DATE 年月；协议单（task_type=3）「免填单」点击弹出 */
+function SoBusiPrintDialog({
+  open, onOpenChange, billId, createDate, city,
+}: {
+  open: boolean
+  onOpenChange: (open: boolean) => void
+  billId: string
+  createDate: string
+  city: string
+}) {
+  // 最近一次复制成功的行号（按钮短暂显示「已复制」）
+  const [copiedIndex, setCopiedIndex] = useState(-1)
+  return (
+    <QueryResultDialog
+      open={open}
+      onOpenChange={onOpenChange}
+      title={`No-Receipt · ${billId}`}
+      icon={<Printer className="h-4 w-4 text-sky-400" />}
+      datasourceLabel="Billing DB"
+      errorText="No-receipt query failed"
+      testId="so-busi-print-result"
+      fetch={open && billId.trim() && createDate.trim()
+        ? () => api.getSoBusiPrint({ bill_id: billId.trim(), create_date: createDate.trim(), city_code: city })
+        : null}
+      renderTable={(result: SoBusiPrintResult) => (
+        <SoBusiPrintTable result={result} copiedIndex={copiedIndex} onCopied={setCopiedIndex} />
+      )}
+    />
+  )
+}
+
+/** 服务属性：so570{city}.ins_srv_attr_{city} 按订购实例ID查询未过期（实例中心「订购信息」点击弹出） */
+function InstanceSrvAttrDialog({
+  open, onOpenChange, offerInstId,
+}: {
+  open: boolean
+  onOpenChange: (open: boolean) => void
+  offerInstId: string
+}) {
+  return (
+    <QueryResultDialog
+      open={open}
+      onOpenChange={onOpenChange}
+      title={`Srv Attributes · ${offerInstId}`}
+      icon={<Layers className="h-4 w-4 text-cyan-400" />}
+      datasourceLabel="Billing DB"
+      tableName={result => result?.table_name ?? 'so570574.ins_srv_attr_574'}
+      errorText="Srv attribute query failed"
+      testId="instance-srv-attr-result"
+      fetch={open && offerInstId.trim()
+        ? () => api.getInstanceSrvAttr({ offer_inst_id: offerInstId.trim() })
+        : null}
+    />
+  )
+}
+
+/** 消息：aiorder.com_consume_ex 按 key_ele_id=task_id 查询（工单信息行「消息」按钮弹出） */
+function ConsumeExDialog({
+  open, onOpenChange, taskId, context,
+}: {
+  open: boolean
+  onOpenChange: (open: boolean) => void
+  taskId: string
+  context: { city: string; inTransit: boolean; historyMonth: string }
+}) {
+  return (
+    <QueryResultDialog
+      open={open}
+      onOpenChange={onOpenChange}
+      title={`Messages · Task ${taskId}`}
+      icon={<MessageSquareText className="h-4 w-4 text-cyan-400" />}
+      datasourceLabel="Family Order DB"
+      tableName={result => result?.table_name ?? 'aiorder.com_consume_ex'}
+      errorText="Message query failed"
+      testId="consume-ex-result"
+      fetch={open && taskId.trim()
+        ? () => api.getConsumeEx({
+            task_id: taskId.trim(), city_code: context.city,
+            in_transit: context.inTransit ? 'yes' : 'no',
+            history_month: context.inTransit ? '' : context.historyMonth,
+          })
+        : null}
+    />
+  )
+}
+
+/** 关联服务属性：aiorder.ord_srv_attr_{city} 按客户订单+策划订单查询（家庭订单库），
+ * 策划订单项行「关联」按钮点击弹出；在途/历史跟随页面当前模式 */
+function OfferSrvAttrDialog({
+  open, onOpenChange, customerOrderId, offerOrderId, context,
+}: {
+  open: boolean
+  onOpenChange: (open: boolean) => void
+  customerOrderId: string
+  offerOrderId: string
+  context: { city: string; inTransit: boolean; historyMonth: string }
+}) {
+  return (
+    <QueryResultDialog
+      open={open}
+      onOpenChange={onOpenChange}
+      title={`Linked Srv Attributes · ${offerOrderId}`}
+      icon={<Link2 className="h-4 w-4 text-emerald-400" />}
+      datasourceLabel="Family Order DB"
+      tableName={result => result?.table_name ?? 'aiorder.ord_srv_attr'}
+      errorText="Linked srv attribute query failed"
+      testId="offer-srv-attr-result"
+      fetch={open && customerOrderId.trim() && offerOrderId.trim()
+        ? () => api.getOfferSrvAttr({
+            customer_order_id: customerOrderId.trim(),
+            offer_order_id: offerOrderId.trim(),
+            city_code: context.city,
+            in_transit: context.inTransit ? 'yes' : 'no',
+            history_month: context.inTransit ? '' : context.historyMonth,
+          })
+        : null}
+    />
   )
 }
 
@@ -886,81 +1258,20 @@ function SoPreBusiLimitDialog({
   onOpenChange: (open: boolean) => void
   limitCode: string
 }) {
-  const [result, setResult] = useState<SoPreBusiLimitResult | null>(null)
-  const [loading, setLoading] = useState(false)
-  const [error, setError] = useState('')
-
-  useEffect(() => {
-    if (!open || !limitCode.trim()) return
-    let cancelled = false
-    setLoading(true)
-    setError('')
-    setResult(null)
-    api.getSoPreBusiLimit({ limit_code: limitCode.trim() }).then(response => {
-      if (cancelled) return
-      if (response.success && response.data) {
-        setResult(response.data)
-        if (!response.data.success) setError(response.data.error || '业务限制查询失败')
-      } else {
-        setError(response.error || '业务限制查询失败')
-      }
-    }).finally(() => {
-      if (!cancelled) setLoading(false)
-    })
-    return () => { cancelled = true }
-  }, [open, limitCode])
-
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-h-[85vh] max-w-4xl gap-3 overflow-y-auto">
-        <DialogHeader>
-          <DialogTitle className="flex items-center gap-2 text-[15px]">
-            <Layers className="h-4 w-4 text-amber-400" />
-            业务限制 · {limitCode}
-          </DialogTitle>
-        </DialogHeader>
-        <div className="text-[11px] text-[#8b8b9e]">
-          数据源 <span className="font-mono text-[#cdd3e0]">规则配置库</span>
-          <span className="ml-2 font-mono text-[10px] text-[#5a5a70]">rule_Cfg.SO_PRE_BUSI_LIMIT</span>
-        </div>
-        {loading && <div className="py-6 text-center text-[12px] text-[#8b8b9e]">查询中…</div>}
-        {!loading && error && (
-          <div className="rounded-md border border-red-500/30 bg-red-500/10 px-3 py-2 text-[12px] text-red-200">{error}</div>
-        )}
-        {!loading && result && !error && (
-          <div className="space-y-2" data-so-pre-busi-limit-result>
-            <div className="truncate font-mono text-[10px] text-[#5a5a70]" title={result.sql}>{result.sql}</div>
-            <div className="max-h-[52vh] overflow-auto rounded-md border border-[#252530]">
-              {result.rows.length === 0 ? (
-                <div className="px-3 py-6 text-center text-[12px] text-[#8b8b9e]">暂无数据</div>
-              ) : (
-                <table className="w-full border-collapse text-left text-[11px]">
-                  <thead className="sticky top-0 bg-[#20202c]">
-                    <tr>
-                      {result.columns.map((column: string) => (
-                        <th key={column} className="whitespace-nowrap border-b border-[#3d3d4a] px-2.5 py-1.5 font-semibold text-[#e8e8f0]">{column}</th>
-                      ))}
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {result.rows.map((row: string[], index: number) => (
-                      <tr key={index} className="border-b border-[#1d1d26] align-top hover:bg-white/[0.03]">
-                        {row.map((cell: string, cellIndex: number) => (
-                          <td key={cellIndex} className="max-w-[420px] break-all px-2.5 py-1.5 text-[#cdd3e0]">{cell}</td>
-                        ))}
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              )}
-            </div>
-          </div>
-        )}
-        <DialogFooter>
-          <Button size="sm" variant="outline" className="h-8" onClick={() => onOpenChange(false)}>关闭</Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
+    <QueryResultDialog
+      open={open}
+      onOpenChange={onOpenChange}
+      title={`Pre-Limit · ${limitCode}`}
+      icon={<Layers className="h-4 w-4 text-amber-400" />}
+      datasourceLabel="Rule Config DB"
+      tableName={() => 'rule_Cfg.SO_PRE_BUSI_LIMIT'}
+      errorText="Pre-limit query failed"
+      testId="so-pre-busi-limit-result"
+      fetch={open && limitCode.trim()
+        ? () => api.getSoPreBusiLimit({ limit_code: limitCode.trim() })
+        : null}
+    />
   )
 }
 
@@ -972,81 +1283,20 @@ function UpRuleDialog({
   onOpenChange: (open: boolean) => void
   ruleId: string
 }) {
-  const [result, setResult] = useState<UpRuleResult | null>(null)
-  const [loading, setLoading] = useState(false)
-  const [error, setError] = useState('')
-
-  useEffect(() => {
-    if (!open || !ruleId.trim()) return
-    let cancelled = false
-    setLoading(true)
-    setError('')
-    setResult(null)
-    api.getUpRule({ rule_id: ruleId.trim() }).then(response => {
-      if (cancelled) return
-      if (response.success && response.data) {
-        setResult(response.data)
-        if (!response.data.success) setError(response.data.error || '框架规则定义查询失败')
-      } else {
-        setError(response.error || '框架规则定义查询失败')
-      }
-    }).finally(() => {
-      if (!cancelled) setLoading(false)
-    })
-    return () => { cancelled = true }
-  }, [open, ruleId])
-
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-h-[85vh] max-w-4xl gap-3 overflow-y-auto">
-        <DialogHeader>
-          <DialogTitle className="flex items-center gap-2 text-[15px]">
-            <Layers className="h-4 w-4 text-emerald-400" />
-            规则定义 · {ruleId}
-          </DialogTitle>
-        </DialogHeader>
-        <div className="text-[11px] text-[#8b8b9e]">
-          数据源 <span className="font-mono text-[#cdd3e0]">家庭业务配置库</span>
-          <span className="ml-2 font-mono text-[10px] text-[#5a5a70]">busicfg.UP_RULE</span>
-        </div>
-        {loading && <div className="py-6 text-center text-[12px] text-[#8b8b9e]">查询中…</div>}
-        {!loading && error && (
-          <div className="rounded-md border border-red-500/30 bg-red-500/10 px-3 py-2 text-[12px] text-red-200">{error}</div>
-        )}
-        {!loading && result && !error && (
-          <div className="space-y-2" data-up-rule-result>
-            <div className="truncate font-mono text-[10px] text-[#5a5a70]" title={result.sql}>{result.sql}</div>
-            <div className="max-h-[52vh] overflow-auto rounded-md border border-[#252530]">
-              {result.rows.length === 0 ? (
-                <div className="px-3 py-6 text-center text-[12px] text-[#8b8b9e]">暂无数据</div>
-              ) : (
-                <table className="w-full border-collapse text-left text-[11px]">
-                  <thead className="sticky top-0 bg-[#20202c]">
-                    <tr>
-                      {result.columns.map((column: string) => (
-                        <th key={column} className="whitespace-nowrap border-b border-[#3d3d4a] px-2.5 py-1.5 font-semibold text-[#e8e8f0]">{column}</th>
-                      ))}
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {result.rows.map((row: string[], index: number) => (
-                      <tr key={index} className="border-b border-[#1d1d26] align-top hover:bg-white/[0.03]">
-                        {row.map((cell: string, cellIndex: number) => (
-                          <td key={cellIndex} className="max-w-[420px] break-all px-2.5 py-1.5 text-[#cdd3e0]">{cell}</td>
-                        ))}
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              )}
-            </div>
-          </div>
-        )}
-        <DialogFooter>
-          <Button size="sm" variant="outline" className="h-8" onClick={() => onOpenChange(false)}>关闭</Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
+    <QueryResultDialog
+      open={open}
+      onOpenChange={onOpenChange}
+      title={`Rule Definition · ${ruleId}`}
+      icon={<Layers className="h-4 w-4 text-emerald-400" />}
+      datasourceLabel="Family Biz Config DB"
+      tableName={() => 'busicfg.UP_RULE'}
+      errorText="Rule definition query failed"
+      testId="up-rule-result"
+      fetch={open && ruleId.trim()
+        ? () => api.getUpRule({ rule_id: ruleId.trim() })
+        : null}
+    />
   )
 }
 
@@ -1058,122 +1308,109 @@ function BusinessInfoDialog({
   onOpenChange: (open: boolean) => void
   businessId: string
 }) {
-  const [result, setResult] = useState<BusinessInfoResult | null>(null)
-  const [loading, setLoading] = useState(false)
-  const [error, setError] = useState('')
-
-  useEffect(() => {
-    if (!open || !businessId.trim()) return
-    let cancelled = false
-    setLoading(true)
-    setError('')
-    setResult(null)
-    api.getBusinessInfo({ business_id: businessId.trim() }).then(response => {
-      if (cancelled) return
-      if (response.success && response.data) {
-        setResult(response.data)
-        if (!response.data.success) setError(response.data.error || '业务信息查询失败')
-      } else {
-        setError(response.error || '业务信息查询失败')
-      }
-    }).finally(() => {
-      if (!cancelled) setLoading(false)
-    })
-    return () => { cancelled = true }
-  }, [open, businessId])
-
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-h-[85vh] max-w-4xl gap-3 overflow-y-auto">
-        <DialogHeader>
-          <DialogTitle className="flex items-center gap-2 text-[15px]">
-            <Layers className="h-4 w-4 text-cyan-400" />
-            业务信息 · {businessId}
-          </DialogTitle>
-        </DialogHeader>
-        <div className="text-[11px] text-[#8b8b9e]">
-          数据源 <span className="font-mono text-[#cdd3e0]">产品库</span>
-          <span className="ml-2 font-mono text-[10px] text-[#5a5a70]">product.up_business</span>
-        </div>
-        {loading && <div className="py-6 text-center text-[12px] text-[#8b8b9e]">查询中…</div>}
-        {!loading && error && (
-          <div className="rounded-md border border-red-500/30 bg-red-500/10 px-3 py-2 text-[12px] text-red-200">{error}</div>
-        )}
-        {!loading && result && !error && (
-          <div className="space-y-2" data-business-info-result>
-            <div className="truncate font-mono text-[10px] text-[#5a5a70]" title={result.sql}>{result.sql}</div>
-            <div className="max-h-[52vh] overflow-auto rounded-md border border-[#252530]">
-              {result.rows.length === 0 ? (
-                <div className="px-3 py-6 text-center text-[12px] text-[#8b8b9e]">暂无数据</div>
-              ) : (
-                <table className="w-full border-collapse text-left text-[11px]">
-                  <thead className="sticky top-0 bg-[#20202c]">
-                    <tr>
-                      {result.columns.map((column: string) => (
-                        <th key={column} className="whitespace-nowrap border-b border-[#3d3d4a] px-2.5 py-1.5 font-semibold text-[#e8e8f0]">{column}</th>
-                      ))}
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {result.rows.map((row: string[], index: number) => (
-                      <tr key={index} className="border-b border-[#1d1d26] align-top hover:bg-white/[0.03]">
-                        {row.map((cell: string, cellIndex: number) => (
-                          <td key={cellIndex} className="max-w-[420px] break-all px-2.5 py-1.5 text-[#cdd3e0]">{cell}</td>
-                        ))}
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              )}
-            </div>
-          </div>
-        )}
-        <DialogFooter>
-          <Button size="sm" variant="outline" className="h-8" onClick={() => onOpenChange(false)}>关闭</Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
+    <QueryResultDialog
+      open={open}
+      onOpenChange={onOpenChange}
+      title={`Business Info · ${businessId}`}
+      icon={<Layers className="h-4 w-4 text-cyan-400" />}
+      datasourceLabel="Product DB"
+      tableName={() => 'product.up_business'}
+      errorText="Business info query failed"
+      testId="business-info-result"
+      fetch={open && businessId.trim()
+        ? () => api.getBusinessInfo({ business_id: businessId.trim() })
+        : null}
+    />
   )
 }
 
-/** 字段解密结果展示：明文 + 原始响应 + 密文信封对照（纯展示，解密由调用方完成后传入） */
+/** 字段解密弹窗：open 后自取数——缓存明文直接展示，否则解析密文信封调密码服务。
+ * 解密成功经 onDecrypted 通知调用方回写缓存（表格原位替换明文）。 */
 function DecryptDialog({
-  open, onOpenChange, envelopeText, result, loading,
+  open, onOpenChange, envelopeText, cachedPlain, onDecrypted,
 }: {
   open: boolean
   onOpenChange: (open: boolean) => void
   envelopeText: string
-  result: DecryptResult | null
-  loading: boolean
+  /** 解密缓存命中时携带的明文；缺省表示需要调密码服务 */
+  cachedPlain?: string
+  onDecrypted?: (plain: string) => void
 }) {
+  const [result, setResult] = useState<DecryptResult | null>(null)
+  const [loading, setLoading] = useState(false)
   const [showCipher, setShowCipher] = useState(false)
+
+  useEffect(() => {
+    if (!open) return
+    setShowCipher(false)
+    if (cachedPlain !== undefined) {
+      setResult({ ok: true, plain: cachedPlain, raw: null, error: '' })
+      setLoading(false)
+      return
+    }
+    // 信封解析：JSON 信封优先；库里存的裸密文（如 0yOIb1|9RR7...）客户端补装信封
+    let envelope: { policy: string; cipher: string }
+    const text = envelopeText.trim()
+    try {
+      envelope = JSON.parse(text)
+    } catch {
+      if (!text.includes('{') && text.includes('|')) {
+        envelope = { policy: 'SM4', cipher: text }
+      } else {
+        setResult({ ok: false, plain: '', raw: null, error: 'Unrecognized cipher: neither envelope JSON nor raw cipher' })
+        setLoading(false)
+        return
+      }
+    }
+    let cancelled = false
+    setLoading(true)
+    setResult(null)
+    api.decryptValue(envelope).then(response => {
+      if (cancelled) return
+      if (response.success && response.data?.ok) {
+        setResult(response.data)
+        onDecrypted?.(response.data.plain)
+      } else if (response.data) {
+        setResult(response.data)
+      } else {
+        setResult({ ok: false, plain: '', raw: null, error: response.error || 'Decrypt failed' })
+      }
+    }).catch(e => {
+      if (!cancelled) setResult({ ok: false, plain: '', raw: null, error: `Decrypt request failed: ${e}` })
+    }).finally(() => {
+      if (!cancelled) setLoading(false)
+    })
+    return () => { cancelled = true }
+  }, [open, envelopeText, cachedPlain])
+
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-h-[85vh] max-w-3xl gap-3 overflow-y-auto">
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2 text-[15px]">
             <CircleAlert className="h-4 w-4 text-emerald-400" />
-            字段解密 · SM4
+            Field Decrypt · SM4
           </DialogTitle>
         </DialogHeader>
-        {loading && <div className="py-6 text-center text-[12px] text-[#8b8b9e]">解密中…</div>}
+        {loading && <div className="py-6 text-center text-[12px] text-[#8b8b9e]">Decrypting…</div>}
         {!loading && result && !result.ok && (
-          <div className="rounded-md border border-red-500/30 bg-red-500/10 px-3 py-2 text-[12px] text-red-200">{result.error || '解密失败'}</div>
+          <div className="rounded-md border border-red-500/30 bg-red-500/10 px-3 py-2 text-[12px] text-red-200">{result.error || 'Decrypt failed'}</div>
         )}
         {!loading && result?.ok && (
           <div className="space-y-2" data-decrypt-result>
             <div className="mb-1 flex items-center justify-between text-[11px] text-[#8b8b9e]">
-              <span>明文（{result.plain.length} 字符）</span>
-              <CopyButton text={result.plain} label="复制明文" />
+              <span>Plain text ({result.plain.length} chars)</span>
+              <CopyButton text={result.plain} label="Copy plain text" />
             </div>
             <pre className="max-h-[34vh] overflow-auto break-all whitespace-pre-wrap rounded-md border border-emerald-500/30 bg-[#0b0f0c] p-2 font-mono text-[11px] text-emerald-200">
-              {prettyContent(result.plain) || '（空）'}
+              {prettyContent(result.plain) || '(empty)'}
             </pre>
           </div>
         )}
         {!loading && result && !result.ok && result.raw != null && (
           <div>
-            <div className="mb-1 text-[11px] text-[#8b8b9e]">解密服务原始响应</div>
+            <div className="mb-1 text-[11px] text-[#8b8b9e]">Raw decrypt service response</div>
             <pre className="max-h-[24vh] overflow-auto break-all whitespace-pre-wrap rounded-md border border-[#252530] bg-[#0b0b10] p-2 font-mono text-[10px] text-[#cdd3e0]">
               {typeof result.raw === 'string' ? result.raw : JSON.stringify(result.raw, null, 2)}
             </pre>
@@ -1184,7 +1421,7 @@ function DecryptDialog({
             className="text-[11px] text-[#8b8b9e] hover:text-[#cdd3e0] hover:underline"
             onClick={() => setShowCipher(value => !value)}
           >
-            {showCipher ? '收起密文' : '查看原始密文信封'}
+            {showCipher ? 'Hide cipher' : 'View raw cipher envelope'}
           </button>
           {showCipher && (
             <pre className="mt-1 max-h-[20vh] overflow-auto break-all whitespace-pre-wrap rounded-md border border-[#252530] bg-[#0b0b10] p-2 font-mono text-[10px] text-[#8b8b9e]">
@@ -1193,7 +1430,7 @@ function DecryptDialog({
           )}
         </div>
         <DialogFooter>
-          <Button size="sm" variant="outline" className="h-8" onClick={() => onOpenChange(false)}>关闭</Button>
+          <Button size="sm" variant="outline" className="h-8" onClick={() => onOpenChange(false)}>Close</Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>
@@ -1208,84 +1445,31 @@ function OccBusiCmptDialog({
   onOpenChange: (open: boolean) => void
   cmptCfgId: string
 }) {
-  const [result, setResult] = useState<ComponentQueryResult | null>(null)
-  const [loading, setLoading] = useState(false)
-
-  useEffect(() => {
-    if (!open || !cmptCfgId.trim()) return
-    let cancelled = false
-    setLoading(true)
-    setResult(null)
-    const sql = `SELECT * FROM occ_busi_cmpt WHERE cmpt_cfg_id = '${cmptCfgId.trim()}'`
-    api.queryDatasource('家庭订单配置库', sql, 100).then(response => {
-      if (cancelled) return
-      if (response.success && response.data) {
-        setResult({ label: '业务组件', sql, ...response.data })
-      } else {
-        setResult({ label: '业务组件', sql, ok: false, columns: [], rows: [],
-                   row_count: 0, message: response.error || '查询失败' })
-      }
-      setLoading(false)
-    })
-    return () => { cancelled = true }
-  }, [open, cmptCfgId])
-
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-h-[85vh] max-w-4xl gap-3 overflow-y-auto">
-        <DialogHeader>
-          <DialogTitle className="flex items-center gap-2 text-[15px]">
-            <Layers className="h-4 w-4 text-emerald-400" />
-            业务组件 · {cmptCfgId}
-          </DialogTitle>
-        </DialogHeader>
-        <div className="text-[11px] text-[#8b8b9e]">
-          数据源 <span className="font-mono text-[#cdd3e0]">家庭订单配置库</span>
-        </div>
-        {loading && <div className="py-8 text-center text-[12px] text-[#8b8b9e]">查询中…</div>}
-        {!loading && result && (
-          <ResultCard title="业务组件（occ_busi_cmpt）" rowCount={result.row_count}>
-            <div className="border-b border-[#252530] bg-[#0d0d14] px-3 py-2">
-              <div className="flex items-start gap-2">
-                <span className="mt-[1px] shrink-0 rounded bg-indigo-500/20 px-1.5 py-0.5 text-[9px] font-semibold text-indigo-300">SQL</span>
-                <code className="break-all font-mono text-[10.5px] leading-relaxed text-[#9db4dd]" title={result.sql}>{result.sql}</code>
-              </div>
-            </div>
-            {!result.ok ? (
-              <div className="flex items-start gap-2 px-3 py-3 text-[11px] text-red-300">
-                <CircleAlert className="mt-0.5 h-3.5 w-3.5 shrink-0" />{result.message}
-              </div>
-            ) : result.rows.length === 0 ? (
-              <div className="px-4 py-6 text-center text-[12px] text-[#8b8b9e]">暂无数据</div>
-            ) : (
-              <div className="max-h-[420px] overflow-auto">
-                <table className="w-full border-collapse text-left text-[11px]">
-                  <thead className="sticky top-0 z-[1] bg-[#20202c]">
-                    <tr>
-                      {result.columns.map(column => (
-                        <th key={column} className="whitespace-nowrap border-b border-[#3d3d4a] px-2.5 py-1.5 font-semibold text-[#e8e8f0]">{column}</th>
-                      ))}
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {result.rows.map((row, index) => (
-                      <tr key={index} className="border-b border-[#1d1d26] align-top hover:bg-white/[0.03]">
-                        {row.map((cell, cellIndex) => (
-                          <td key={cellIndex} className="max-w-[360px] break-all px-2.5 py-1.5 text-[#cdd3e0]" title={cell}>{cell}</td>
-                        ))}
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            )}
-          </ResultCard>
-        )}
-        <DialogFooter>
-          <Button size="sm" variant="outline" className="h-8" onClick={() => onOpenChange(false)}>关闭</Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
+    <QueryResultDialog
+      open={open}
+      onOpenChange={onOpenChange}
+      title={`Business Component · ${cmptCfgId}`}
+      icon={<Layers className="h-4 w-4 text-emerald-400" />}
+      datasourceLabel="Family Order Config DB"
+      tableName={() => 'occ_busi_cmpt'}
+      errorText="Query failed"
+      fetch={open && cmptCfgId.trim()
+        ? async () => {
+            // 只读通道直查（配置库无专用端点），把 queryDatasource 的 ok/message
+            // 适配为通用弹窗的 success/error 形态
+            const sql = `SELECT * FROM occ_busi_cmpt WHERE cmpt_cfg_id = '${cmptCfgId.trim()}'`
+            const response = await api.queryDatasource('家庭订单配置库', sql, 100)
+            if (response.success && response.data) {
+              return { success: true, data: {
+                columns: response.data.columns, rows: response.data.rows,
+                success: response.data.ok, error: response.data.message, sql,
+              } }
+            }
+            return { success: false, error: response.error || 'Query failed' }
+          }
+        : null}
+    />
   )
 }
 
@@ -1308,8 +1492,8 @@ function SceneConfigDialog({
     setLoading(true)
     setResults([])
     const queries = [
-      { label: '场景（occ_busi_scene）', sql: `SELECT * FROM occ_busi_scene WHERE scene_cfg_id = '${sceneCfgId.trim()}'` },
-      { label: '场景节点（occ_assets_cmpt_rel）', sql: `SELECT * FROM occ_assets_cmpt_rel WHERE scene_cfg_id = '${sceneCfgId.trim()}'` },
+      { label: 'Scene (occ_busi_scene)', sql: `SELECT * FROM occ_busi_scene WHERE scene_cfg_id = '${sceneCfgId.trim()}'` },
+      { label: 'Scene Nodes (occ_assets_cmpt_rel)', sql: `SELECT * FROM occ_assets_cmpt_rel WHERE scene_cfg_id = '${sceneCfgId.trim()}'` },
     ]
     Promise.all(queries.map(query =>
       api.queryDatasource('家庭订单配置库', query.sql, 100).then(response => {
@@ -1317,7 +1501,7 @@ function SceneConfigDialog({
           return { label: query.label, sql: query.sql, ...response.data } as ComponentQueryResult
         }
         return { label: query.label, sql: query.sql, ok: false, columns: [], rows: [],
-                 row_count: 0, message: response.error || '查询失败' } as ComponentQueryResult
+                 row_count: 0, message: response.error || 'Query failed' } as ComponentQueryResult
       }),
     )).then(list => {
       if (cancelled) return
@@ -1333,13 +1517,13 @@ function SceneConfigDialog({
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2 text-[15px]">
             <Layers className="h-4 w-4 text-cyan-400" />
-            场景配置 · {sceneCfgId}
+            Scene Config · {sceneCfgId}
           </DialogTitle>
         </DialogHeader>
         <div className="text-[11px] text-[#8b8b9e]">
-          数据源 <span className="font-mono text-[#cdd3e0]">家庭订单配置库</span>
+          Data Source <span className="font-mono text-[#cdd3e0]">Family Order Config DB</span>
         </div>
-        {loading && <div className="py-8 text-center text-[12px] text-[#8b8b9e]">查询中…</div>}
+        {loading && <div className="py-8 text-center text-[12px] text-[#8b8b9e]">Querying…</div>}
         {!loading && results.map(result => (
           <ResultCard key={result.label} title={result.label} rowCount={result.row_count}>
             <div className="border-b border-[#252530] bg-[#0d0d14] px-3 py-2">
@@ -1353,7 +1537,7 @@ function SceneConfigDialog({
                 <CircleAlert className="mt-0.5 h-3.5 w-3.5 shrink-0" />{result.message}
               </div>
             ) : result.rows.length === 0 ? (
-              <div className="px-4 py-6 text-center text-[12px] text-[#8b8b9e]">暂无数据</div>
+              <div className="px-4 py-6 text-center text-[12px] text-[#8b8b9e]">No data</div>
             ) : (
               <div className="max-h-[320px] overflow-auto">
                 <table className="w-full border-collapse text-left text-[11px]">
@@ -1376,7 +1560,7 @@ function SceneConfigDialog({
                               {clickable ? (
                                 <button
                                   className="break-all text-left font-medium text-cyan-300 underline decoration-cyan-400/60 decoration-dotted underline-offset-2 hover:text-cyan-200 hover:decoration-solid"
-                                  title="点击跳转工作流查询"
+                                  title="Open in workflow query"
                                   onClick={() => onQueryWorkflow?.(String(cell).trim())}
                                 >
                                   {cell}
@@ -1394,7 +1578,7 @@ function SceneConfigDialog({
           </ResultCard>
         ))}
         <DialogFooter>
-          <Button size="sm" variant="outline" className="h-8" onClick={() => onOpenChange(false)}>关闭</Button>
+          <Button size="sm" variant="outline" className="h-8" onClick={() => onOpenChange(false)}>Close</Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>
@@ -1403,10 +1587,10 @@ function SceneConfigDialog({
 
 /** 订单组件查询页签 */
 const ORDER_COMPONENT_TABS: { key: string; label: string }[] = [
-  { key: 'transform', label: '数据转换' },
-  { key: 'rule', label: '规则适配' },
-  { key: 'post_task', label: '后置任务' },
-  { key: 'flow_template', label: '流程模版' },
+  { key: 'transform', label: 'Transform' },
+  { key: 'rule', label: 'Rule Adapt' },
+  { key: 'post_task', label: 'Post Tasks' },
+  { key: 'flow_template', label: 'Flow Templates' },
 ]
 
 /**
@@ -1418,12 +1602,12 @@ const ORDER_COMPONENT_TABS: { key: string; label: string }[] = [
 const ORDER_COMPONENT_QUERIES: Record<string, { label: string; datasource: string; sql: string }[]> = {
   transform: [
     {
-      label: '接口适配器（occ_interface_adapter）',
+      label: 'Adapter (occ_interface_adapter)',
       datasource: '家庭订单配置库',
       sql: "SELECT * FROM occ_interface_adapter WHERE interface_code = '{interface_code}'",
     },
     {
-      label: '业务组件（occ_busi_cmpt）',
+      label: 'Business Components (occ_busi_cmpt)',
       datasource: '家庭订单配置库',
       sql: "SELECT * FROM occ_busi_cmpt WHERE cmpt_cfg_id IN "
            + "(SELECT cmpt_cfg_id FROM occ_interface_adapter WHERE interface_code = '{interface_code}')",
@@ -1431,13 +1615,13 @@ const ORDER_COMPONENT_QUERIES: Record<string, { label: string; datasource: strin
   ],
   rule: [
     {
-      label: '规则匹配关系（occ_rule_normal_match_rel）',
+      label: 'Rule Match (occ_rule_normal_match_rel)',
       datasource: '家庭订单配置库',
       sql: "SELECT * FROM occ_rule_normal_match_rel WHERE match_type = 'MATCH_RULE_CHECK' "
            + "AND prim_cond = '{business_id}' AND second_cond = '{interface_code}'",
     },
     {
-      label: '业务组件（occ_busi_cmpt）',
+      label: 'Business Components (occ_busi_cmpt)',
       datasource: '家庭订单配置库',
       sql: "SELECT * FROM occ_busi_cmpt WHERE cmpt_cfg_id IN "
            + "(SELECT target_id FROM occ_rule_normal_match_rel WHERE match_type = 'MATCH_RULE_CHECK' "
@@ -1446,7 +1630,7 @@ const ORDER_COMPONENT_QUERIES: Record<string, { label: string; datasource: strin
   ],
   post_task: [
     {
-      label: '后置任务匹配（occ_rule_normal_match_rel）',
+      label: 'Post Task Match (occ_rule_normal_match_rel)',
       datasource: '家庭订单配置库',
       sql: "SELECT * FROM occ_rule_normal_match_rel WHERE match_type = 'MATCH_ORDITEM_AFTERTASK' "
            + "AND prim_cond = '{business_id}'",
@@ -1454,13 +1638,13 @@ const ORDER_COMPONENT_QUERIES: Record<string, { label: string; datasource: strin
   ],
   flow_template: [
     {
-      label: '调度模版匹配（occ_rule_normal_match_rel）',
+      label: 'Schedule Match (occ_rule_normal_match_rel)',
       datasource: '家庭订单配置库',
       sql: "SELECT * FROM occ_rule_normal_match_rel WHERE match_type = 'MATCH_SCHEDULE_TEMPL' "
            + "AND PRIM_COND = '{interface_code}'",
     },
     {
-      label: '调度模版（occ_busi_schedule_template）',
+      label: 'Schedule Template (occ_busi_schedule_template)',
       datasource: '家庭订单配置库',
       sql: "SELECT * FROM occ_busi_schedule_template WHERE tmeplate_id IN "
            + "(SELECT target_id FROM occ_rule_normal_match_rel WHERE match_type = 'MATCH_SCHEDULE_TEMPL' "
@@ -1508,7 +1692,7 @@ function OrderComponentsDialog({
         .map(match => match[1])
         .filter(name => !params[name]?.trim())))]
     if (missing.length > 0) {
-      setError(`客户订单信息缺少字段值：${missing.join('、')}，无法查询（请先确认订单查询有结果）`)
+      setError(`Customer order missing fields: ${missing.join(", ")} — cannot query (run order query first)`)
       return
     }
     const queries = templates.map(query => ({
@@ -1523,7 +1707,7 @@ function OrderComponentsDialog({
           return { label: query.label, sql: query.sql, ...response.data } as ComponentQueryResult
         }
         return { label: query.label, sql: query.sql, ok: false, columns: [], rows: [],
-                 row_count: 0, message: response.error || '查询失败' } as ComponentQueryResult
+                 row_count: 0, message: response.error || 'Query failed' } as ComponentQueryResult
       }),
     )).then(list => {
       if (cancelled) return
@@ -1542,7 +1726,7 @@ function OrderComponentsDialog({
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2 text-[15px]">
             <Layers className="h-4 w-4 text-indigo-400" />
-            订单组件 · {orderKey}
+            Order Components · {orderKey}
           </DialogTitle>
         </DialogHeader>
         <div className="flex flex-wrap items-center gap-1.5" data-component-tabs>
@@ -1560,15 +1744,15 @@ function OrderComponentsDialog({
           ))}
         </div>
         <div className="min-h-[140px] space-y-3" data-component-content>
-          {loading && <div className="py-8 text-center text-[12px] text-[#8b8b9e]">查询中…</div>}
+          {loading && <div className="py-8 text-center text-[12px] text-[#8b8b9e]">Querying…</div>}
           {!loading && !queries && (
             <div className="rounded-lg border border-[#252530] bg-[#16161e] px-3 py-10 text-center text-[12px] text-[#8b8b9e]">
-              「{activeTab?.label}」查询配置中——SQL 待接入
+              "{activeTab?.label}" query not wired yet (SQL pending)
             </div>
           )}
           {!loading && queries && results.length === 0 && (
             <div className="rounded-lg border border-[#252530] bg-[#16161e] px-3 py-6 text-center text-[12px] text-red-200">
-              {error || '查询失败'}
+              {error || 'Query failed'}
             </div>
           )}
           {!loading && results.map(result => (
@@ -1584,7 +1768,7 @@ function OrderComponentsDialog({
                   <CircleAlert className="mt-0.5 h-3.5 w-3.5 shrink-0" />{result.message}
                 </div>
               ) : result.rows.length === 0 ? (
-                <div className="px-4 py-6 text-center text-[12px] text-[#8b8b9e]">暂无数据</div>
+                <div className="px-4 py-6 text-center text-[12px] text-[#8b8b9e]">No data</div>
               ) : (
                 <div className="max-h-[320px] overflow-auto">
                   <table className="w-full border-collapse text-left text-[11px]">
@@ -1625,7 +1809,7 @@ function OrderComponentsDialog({
           ))}
         </div>
         <DialogFooter>
-          <Button size="sm" variant="outline" className="h-8" onClick={() => onOpenChange(false)}>关闭</Button>
+          <Button size="sm" variant="outline" className="h-8" onClick={() => onOpenChange(false)}>Close</Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>
@@ -1659,6 +1843,8 @@ interface AnalysisSnapshot {
   preLmtParam: PreLmtParamState | null
   instanceUserResult: InstanceUserResult | null
   instanceOrderResult: InstanceUserResult | null
+  instanceTerminalResult: InstanceUserResult | null
+  familyOtherResult: FamilyOtherResult | null
   liveNode: AnalysisNodeResult | null
   selectedScheduler: string
   defScene: { sceneId: string; sceneName: string } | null
@@ -1672,6 +1858,7 @@ interface AnalysisSnapshot {
   staticConfigCode: string
   staticConfigResult: StaticConfigResult | null
   productDriveResult: ProductDriveResult | null
+  ruleBusiResult: RuleBusiResult | null
   driveCategory: string
   driveGradeNo: string
   driveOfferNo: string
@@ -1679,6 +1866,38 @@ interface AnalysisSnapshot {
 }
 
 let analysisSnapshot: Partial<AnalysisSnapshot> = {}
+
+/**
+ * 退出登录时清空查询快照。模块级快照用于切 tab/切中心后恢复查询结果（产品语义，
+ * 见组件初始化与同步 effect），但绝不能跨用户残留——其中含上一账号查过的
+ * 订单号与解密明文，登出（不整页刷新的 SPA）必须整体清空。
+ */
+export function resetAnalysisSnapshot() {
+  analysisSnapshot = {}
+  for (const key of Object.keys(businessKeyByCenter)) delete businessKeyByCenter[key]
+}
+
+/** 分析页弹窗目标联合：此前 open + target 的成对 state（16 组 30 个 useState）
+ * 收敛为单一判别联合，一次只弹一个窗。
+ * 打开 = setActiveDialog({kind, ...目标})；关闭 = setActiveDialog(null)。 */
+type ActiveDialog =
+  | { kind: 'message'; target: { taskId: string; doneDate: string; custOrderId: string; keyEleId: string } }
+  | { kind: 'custMessage'; custOrderId: string }
+  | { kind: 'acceptMessage'; custOrderId: string; flowInsId: string }
+  | { kind: 'soBusiPrint'; billId: string; createDate: string }
+  | { kind: 'busiCmpt'; id: string }
+  | { kind: 'soPreBusiLimit'; code: string }
+  | { kind: 'businessInfo'; id: string }
+  | { kind: 'upRule'; id: string }
+  | { kind: 'consumeEx'; taskId: string }
+  | { kind: 'offerSrvAttr'; customerOrderId: string; offerOrderId: string }
+  | { kind: 'srvAttr'; offerInstId: string }
+  | { kind: 'decrypt'; envelope: string; cachedPlain?: string }
+  | { kind: 'sceneCfg'; id: string }
+  | { kind: 'occCmpt'; id: string }
+  | { kind: 'components' }
+  | { kind: 'retry'; taskId: string; custOrderId: string }
+  | null
 
 // 历史月份默认当月（YYYY-MM，与 <input type="month"> 取值一致）
 function currentMonthValue() {
@@ -1696,6 +1915,8 @@ export function AnalysisPanel({ onQueryWorkflow }: {
   const [centers, setCenters] = useState<AnalysisCenterInfo[]>(analysisSnapshot.centers ?? [])
   const [centerCode, setCenterCode] = useState(analysisSnapshot.centerCode ?? '')
   const [businessKey, setBusinessKey] = useState(businessKeyByCenter[analysisSnapshot.centerCode ?? ''] ?? '')
+  // 规则中心·业务规则：规则编码（与业务编码二选一查询）
+  const [ruleCode, setRuleCode] = useState('')
   const [city, setCity] = useState(analysisSnapshot.city ?? '574')
   const [inTransit, setInTransit] = useState(analysisSnapshot.inTransit ?? true)
   const [historyMonth, setHistoryMonth] = useState(analysisSnapshot.historyMonth ?? currentMonthValue())
@@ -1721,6 +1942,10 @@ export function AnalysisPanel({ onQueryWorkflow }: {
     analysisSnapshot.instanceUserResult ?? null)
   const [instanceOrderResult, setInstanceOrderResult] = useState<InstanceUserResult | null>(
     analysisSnapshot.instanceOrderResult ?? null)
+  const [instanceTerminalResult, setInstanceTerminalResult] = useState<InstanceUserResult | null>(
+    analysisSnapshot.instanceTerminalResult ?? null)
+  const [familyOtherResult, setFamilyOtherResult] = useState<FamilyOtherResult | null>(
+    analysisSnapshot.familyOtherResult ?? null)
   const [liveNode, setLiveNode] = useState<AnalysisNodeResult | null>(
     analysisSnapshot.liveNode ?? null)
   const [selectedScheduler, setSelectedScheduler] = useState(
@@ -1730,39 +1955,10 @@ export function AnalysisPanel({ onQueryWorkflow }: {
   const [loadingSeconds, setLoadingSeconds] = useState(0)
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
-  const [messageTarget, setMessageTarget] = useState({
-    taskId: '', doneDate: '', custOrderId: '', keyEleId: '',
-  })
-  const [messageOpen, setMessageOpen] = useState(false)
-  const [custMsgOpen, setCustMsgOpen] = useState(false)
-  const [custMsgOrderId, setCustMsgOrderId] = useState('')
-  const [acceptMsgOpen, setAcceptMsgOpen] = useState(false)
-  const [acceptMsgTarget, setAcceptMsgTarget] = useState({ custOrderId: '', flowInsId: '' })
+  // 弹窗目标统一收敛（见 ActiveDialog）：open/target 成对 state 全部并入
+  const [activeDialog, setActiveDialog] = useState<ActiveDialog>(null)
+  const closeDialog = () => setActiveDialog(null)
   const [defScene, setDefScene] = useState<{ sceneId: string; sceneName: string } | null>(analysisSnapshot.defScene ?? null)
-  const [retryTarget, setRetryTarget] = useState<{ taskId: string; custOrderId: string } | null>(null)
-  const [busiCmptOpen, setBusiCmptOpen] = useState(false)
-  const [busiCmptId, setBusiCmptId] = useState('')
-  // 产品中心·限制参数 limit_code 点击 → 业务限制弹窗（规则配置库）
-  const [soPreBusiLimitOpen, setSoPreBusiLimitOpen] = useState(false)
-  const [soPreBusiLimitCode, setSoPreBusiLimitCode] = useState('')
-  // 产品中心·业务关系 relat_product_item_id 点击 → 业务信息弹窗（产品库）
-  const [businessInfoOpen, setBusinessInfoOpen] = useState(false)
-  const [businessInfoId, setBusinessInfoId] = useState('')
-  // 家庭业务中心·框架规则 RULE_ID 点击 → 规则定义弹窗（家庭业务配置库）
-  const [upRuleOpen, setUpRuleOpen] = useState(false)
-  const [upRuleId, setUpRuleId] = useState('')
-  const [decryptOpen, setDecryptOpen] = useState(false)
-  // 家庭订单·客户订单信息右上角「组件」入口（数据转换/规则适配/订单项/后置任务/流程模版）
-  const [componentsOpen, setComponentsOpen] = useState(false)
-  // 家庭订单·调度订单 scene_cfg_id 点击 → 场景配置查询
-  const [sceneCfgOpen, setSceneCfgOpen] = useState(false)
-  // 家庭订单·工单 busi_cmp_id 点击 → occ_busi_cmpt 组件定义
-  const [occCmptOpen, setOccCmptOpen] = useState(false)
-  const [occCmptId, setOccCmptId] = useState('')
-  const [sceneCfgId, setSceneCfgId] = useState('')
-  const [decryptEnvelope, setDecryptEnvelope] = useState('')
-  const [decryptResult, setDecryptResult] = useState<DecryptResult | null>(null)
-  const [decryptLoading, setDecryptLoading] = useState(false)
   // 已解密的密文信封 → 明文（表格中原位替换展示）
   const [decryptedMap, setDecryptedMap] = useState<Record<string, string>>(analysisSnapshot.decryptedMap ?? {})
   const decryptedMapRef = useRef<Record<string, string>>(analysisSnapshot.decryptedMap ?? {})
@@ -1774,48 +1970,13 @@ export function AnalysisPanel({ onQueryWorkflow }: {
     setDecryptedMap(decryptedMapRef.current)
   }
 
-  /** 点击 attr_value：已解密 → 直接查看；密文 → 调密码服务解密并替换原值 */
-  async function handleDecryptClick(value: string) {
-    const cached = decryptedMap[value]
-    if (cached !== undefined) {
-      setDecryptEnvelope(value)
-      setDecryptResult({ ok: true, plain: cached, raw: null, error: '' })
-      setDecryptLoading(false)
-      setDecryptOpen(true)
-      return
-    }
-    let envelope: { policy: string; cipher: string }
-    const text = value.trim()
-    try {
-      envelope = JSON.parse(text)
-    } catch {
-      // 库里存的是裸密文（如 0yOIb1|9RR7...），客户端补装信封
-      if (!text.includes('{') && text.includes('|')) {
-        envelope = { policy: 'SM4', cipher: text }
-      } else {
-        setDecryptEnvelope(value)
-        setDecryptResult({ ok: false, plain: '', raw: null, error: '密文格式无法识别：既不是信封 JSON 也不是裸密文' })
-        setDecryptLoading(false)
-        setDecryptOpen(true)
-        return
-      }
-    }
-    setDecryptEnvelope(value)
-    setDecryptResult(null)
-    setDecryptLoading(true)
-    setDecryptOpen(true)
-    const response = await api.decryptValue(envelope)
-    setDecryptLoading(false)
-    if (response.success && response.data?.ok) {
-      setDecryptResult(response.data)
-      // 解密成功：原位替换表格中的密文
-      const plain = response.data.plain
-      mergeDecrypted({ [value]: plain })
-    } else if (response.data) {
-      setDecryptResult(response.data)
-    } else {
-      setDecryptResult({ ok: false, plain: '', raw: null, error: response.error || '解密失败' })
-    }
+  /** 点击 attr_value：解密取数/信封解析已内聚到 DecryptDialog，这里只负责打开弹窗。
+   * 缓存命中时直接带明文，未命中由弹窗自行调密码服务，成功后经 onDecrypted 回写。 */
+  function handleDecryptClick(value: string) {
+    setActiveDialog({
+      kind: 'decrypt', envelope: value,
+      cachedPlain: decryptedMapRef.current[value],
+    })
   }
 
   /** 客户订单属性自动解密：查询后批量解密 attr_value 密文，表格直接展示明文 */
@@ -1829,13 +1990,17 @@ export function AnalysisPanel({ onQueryWorkflow }: {
       .filter(value => !value.includes('{') && value.includes('|') && value.length > 20)
       .filter(value => decryptedMapRef.current[value] === undefined))]
     if (pending.length === 0) return
-    const response = await api.decryptValues({ ciphers: pending })
-    if (response.success && response.data?.results) {
-      const entries: Record<string, string> = {}
-      response.data.results.forEach((item, index) => {
-        if (item.ok) entries[pending[index]] = item.plain
-      })
-      mergeDecrypted(entries)
+    try {
+      const response = await api.decryptValues({ ciphers: pending })
+      if (response.success && response.data?.results) {
+        const entries: Record<string, string> = {}
+        response.data.results.forEach((item, index) => {
+          if (item.ok) entries[pending[index]] = item.plain
+        })
+        mergeDecrypted(entries)
+      }
+    } catch {
+      // 自动解密属辅助增强：失败静默跳过，表格仍展示原密文
     }
   }
   // 客户订单中心两级查询：订单查询（按客户订单号）/ 配置查询（按场景ID/规则ID）
@@ -1850,6 +2015,7 @@ export function AnalysisPanel({ onQueryWorkflow }: {
   const [staticConfigCode, setStaticConfigCode] = useState(analysisSnapshot.staticConfigCode ?? '')
   const [staticConfigResult, setStaticConfigResult] = useState<StaticConfigResult | null>(analysisSnapshot.staticConfigResult ?? null)
   const [productDriveResult, setProductDriveResult] = useState<ProductDriveResult | null>(analysisSnapshot.productDriveResult ?? null)
+  const [ruleBusiResult, setRuleBusiResult] = useState<RuleBusiResult | null>(analysisSnapshot.ruleBusiResult ?? null)
   const [driveCategory, setDriveCategory] = useState(analysisSnapshot.driveCategory ?? 'role')
   const [driveGradeNo, setDriveGradeNo] = useState(analysisSnapshot.driveGradeNo ?? '')
   const [driveOfferNo, setDriveOfferNo] = useState(analysisSnapshot.driveOfferNo ?? '')
@@ -1870,11 +2036,12 @@ export function AnalysisPanel({ onQueryWorkflow }: {
     centerMemoryRef.current[centerCode] = {
       sceneCache, workflowResult, asyncFlowResult, structuredResult, productResult, productResultKey,
       planResult, planResultKey, itemRelatResult, preLmtParam, instanceUserResult,
-      instanceOrderResult, liveNode,
+      instanceOrderResult, instanceTerminalResult, familyOtherResult, liveNode,
       selectedScheduler, defScene, sceneCode, city,
       queryKind, configSceneId, sceneRules, configScene,
       familyTemplateTag, templateResult, familyConfigTab, staticConfigCode, staticConfigResult,
       productDriveResult, driveCategory, driveGradeNo, driveOfferNo,
+      ruleBusiResult,
     }
     // 业务主键按中心切换（各自记忆，互不影响）
     businessKeyByCenter[centerCode] = businessKey
@@ -1895,6 +2062,8 @@ export function AnalysisPanel({ onQueryWorkflow }: {
     setPreLmtParam(memory?.preLmtParam ?? null)
     setInstanceUserResult(memory?.instanceUserResult ?? null)
     setInstanceOrderResult(memory?.instanceOrderResult ?? null)
+    setInstanceTerminalResult(memory?.instanceTerminalResult ?? null)
+    setFamilyOtherResult(memory?.familyOtherResult ?? null)
     setLiveNode(memory?.liveNode ?? null)
     setSelectedScheduler(memory?.selectedScheduler ?? '')
     setDefScene(memory?.defScene ?? null)
@@ -1908,6 +2077,7 @@ export function AnalysisPanel({ onQueryWorkflow }: {
     setStaticConfigCode(memory?.staticConfigCode ?? '')
     setStaticConfigResult(memory?.staticConfigResult ?? null)
     setProductDriveResult(memory?.productDriveResult ?? null)
+    setRuleBusiResult(memory?.ruleBusiResult ?? null)
     setDriveCategory(memory?.driveCategory ?? 'role')
     setDriveGradeNo(memory?.driveGradeNo ?? '')
     setDriveOfferNo(memory?.driveOfferNo ?? '')
@@ -1927,6 +2097,8 @@ export function AnalysisPanel({ onQueryWorkflow }: {
     preLmtParam: PreLmtParamState | null
     instanceUserResult: InstanceUserResult | null
     instanceOrderResult: InstanceUserResult | null
+    instanceTerminalResult: InstanceUserResult | null
+    familyOtherResult: FamilyOtherResult | null
     liveNode: AnalysisNodeResult | null
     selectedScheduler: string
     defScene: { sceneId: string; sceneName: string } | null
@@ -1942,6 +2114,7 @@ export function AnalysisPanel({ onQueryWorkflow }: {
     staticConfigCode: string
     staticConfigResult: StaticConfigResult | null
     productDriveResult: ProductDriveResult | null
+    ruleBusiResult: RuleBusiResult | null
     driveCategory: string
     driveGradeNo: string
     driveOfferNo: string
@@ -1962,11 +2135,13 @@ export function AnalysisPanel({ onQueryWorkflow }: {
           : center.center_code === PRODUCT_DRIVE_CENTER_CODE
             ? [PRODUCT_DRIVE_SCENE]
           : center.center_code === INSTANCE_CENTER_CODE
-            ? [INSTANCE_USER_SCENE, INSTANCE_ORDER_SCENE]
+            ? [INSTANCE_USER_SCENE, INSTANCE_ORDER_SCENE, INSTANCE_TERMINAL_SCENE]
           : center.center_code === PRODUCT_CENTER_CODE
             ? [PRODUCT_CONFIG_SCENE, PLAN_CONFIG_SCENE]
-            : center.center_code === FAMILY_CENTER_CODE
-              ? [...center.scenes, WORKFLOW_SCENE, ASYNC_FLOW_SCENE]
+          : center.center_code === RULE_CENTER_CODE
+            ? [RULE_BUSI_SCENE]
+          : center.center_code === FAMILY_CENTER_CODE
+              ? [...center.scenes, WORKFLOW_SCENE, ASYNC_FLOW_SCENE, OTHER_SCENE]
               : center.scenes)
       : [],
     [center],
@@ -1978,6 +2153,8 @@ export function AnalysisPanel({ onQueryWorkflow }: {
   const isInstanceScene = centerCode === INSTANCE_CENTER_CODE
   // 家庭业务中心场景（产品驱动）：仅业务主键，无地市/在途历史之分
   const isDriveScene = centerCode === PRODUCT_DRIVE_CENTER_CODE
+  // 规则中心场景（业务规则）：仅业务编码，无地市/在途历史之分
+  const isRuleScene = centerCode === RULE_CENTER_CODE
 
   // 当前中心不含该场景时回退到首个场景（修正旧快照残留的 workflow_info）
   useEffect(() => {
@@ -1992,11 +2169,11 @@ export function AnalysisPanel({ onQueryWorkflow }: {
       centers, centerCode, businessKey, city, inTransit, historyMonth,
       sceneCode, sceneCache, workflowResult, asyncFlowResult, structuredResult,
       productResult, productResultKey, planResult, planResultKey, itemRelatResult, preLmtParam,
-      instanceUserResult, instanceOrderResult, liveNode,
+      instanceUserResult, instanceOrderResult, instanceTerminalResult, familyOtherResult, liveNode,
       selectedScheduler, defScene, queryKind, configSceneId, sceneRules,
       configScene, familyTemplateTag, templateResult, familyConfigTab,
       staticConfigCode, staticConfigResult, productDriveResult, driveCategory,
-      driveGradeNo, driveOfferNo,
+      driveGradeNo, driveOfferNo, ruleBusiResult,
       decryptedMap: decryptedMapRef.current,
     }
   })
@@ -2018,7 +2195,7 @@ export function AnalysisPanel({ onQueryWorkflow }: {
         setCity(response.data[0].default_city || '574')
         setSceneCode(response.data[0].scenes[0]?.scene_code ?? '')
       } else {
-        setError(response.error || '未配置业务中心')
+        setError(response.error || 'No analysis centers configured')
       }
     })
   }, [])
@@ -2035,7 +2212,7 @@ export function AnalysisPanel({ onQueryWorkflow }: {
   async function loadScene(nextScene: string, keyOverride?: string) {
     const keyValue = (keyOverride ?? businessKey).trim()
     if (!centerCode || !nextScene) return
-    if (nextScene !== PRODUCT_DRIVE_SCENE.scene_code && !keyValue) return
+    if (nextScene !== PRODUCT_DRIVE_SCENE.scene_code && nextScene !== RULE_BUSI_SCENE.scene_code && !keyValue) return
     setLoading(true)
     setError('')
     const started = performance.now()
@@ -2052,7 +2229,7 @@ export function AnalysisPanel({ onQueryWorkflow }: {
           setWorkflowResult(response.data)
           setElapsed(Math.round(performance.now() - started))
         } else {
-          setError(response.error || '工作流查询失败')
+          setError(response.error || 'Workflow query failed')
         }
       } else if (nextScene === ASYNC_FLOW_SCENE.scene_code) {
         const response = await api.getAsyncFlow({
@@ -2065,7 +2242,7 @@ export function AnalysisPanel({ onQueryWorkflow }: {
           setAsyncFlowResult(response.data)
           setElapsed(Math.round(performance.now() - started))
         } else {
-          setError(response.error || '异步流程查询失败')
+          setError(response.error || 'Async flow query failed')
         }
       } else if (nextScene === INSTANCE_USER_SCENE.scene_code) {
         const response = await api.getInstanceUser({ bill_id: keyValue })
@@ -2073,18 +2250,29 @@ export function AnalysisPanel({ onQueryWorkflow }: {
           setInstanceUserResult(response.data)
           setElapsed(Math.round(performance.now() - started))
         } else {
-          setError(response.error || '用户信息查询失败')
+          setError(response.error || 'User info query failed')
+        }
+      } else if (nextScene === OTHER_SCENE.scene_code) {
+        const response = await api.getFamilyOther({
+          business_key: keyValue, city_code: city,
+          in_transit: inTransit ? 'yes' : 'no', history_month: inTransit ? '' : historyMonth,
+        })
+        if (response.success && response.data) {
+          setFamilyOtherResult(response.data)
+          setElapsed(Math.round(performance.now() - started))
+        } else {
+          setError(response.error || 'Other info query failed')
         }
       } else if (nextScene === PRODUCT_DRIVE_SCENE.scene_code) {
         const grade = driveGradeNo.trim()
         const offer = driveOfferNo.trim()
         if (!grade) {
-          setError('请输入档次编号')
+          setError('Enter an offer ID')
           setLoading(false)
           return
         }
         if (driveCategory !== 'role' && !offer) {
-          setError('请输入策划编号')
+          setError('Enter a plan ID')
           setLoading(false)
           return
         }
@@ -2095,7 +2283,7 @@ export function AnalysisPanel({ onQueryWorkflow }: {
           setProductDriveResult(response.data)
           setElapsed(Math.round(performance.now() - started))
         } else {
-          setError(response.error || '产品驱动查询失败')
+          setError(response.error || 'Product drive query failed')
         }
       } else if (nextScene === INSTANCE_ORDER_SCENE.scene_code) {
         const response = await api.getInstanceOrder({ bill_id: keyValue })
@@ -2103,7 +2291,25 @@ export function AnalysisPanel({ onQueryWorkflow }: {
           setInstanceOrderResult(response.data)
           setElapsed(Math.round(performance.now() - started))
         } else {
-          setError(response.error || '订购信息查询失败')
+          setError(response.error || 'Subscription query failed')
+        }
+      } else if (nextScene === INSTANCE_TERMINAL_SCENE.scene_code) {
+        const response = await api.getInstanceTerminal({ bill_id: keyValue })
+        if (response.success && response.data) {
+          setInstanceTerminalResult(response.data)
+          setElapsed(Math.round(performance.now() - started))
+        } else {
+          setError(response.error || 'Terminal query failed')
+        }
+      } else if (nextScene === RULE_BUSI_SCENE.scene_code) {
+        const response = await api.getRuleBusiRules({
+          busi_code: businessKey.trim(), rule_code: ruleCode.trim(),
+        })
+        if (response.success && response.data) {
+          setRuleBusiResult(response.data)
+          setElapsed(Math.round(performance.now() - started))
+        } else {
+          setError(response.error || 'Business rule query failed')
         }
       } else if (nextScene === PRODUCT_CONFIG_SCENE.scene_code) {
         const response = await api.getProductConfig({ product_item_id: keyValue })
@@ -2112,7 +2318,7 @@ export function AnalysisPanel({ onQueryWorkflow }: {
           setProductResultKey(keyValue)
           setElapsed(Math.round(performance.now() - started))
         } else {
-          setError(response.error || '档次配置查询失败')
+          setError(response.error || 'Offer config query failed')
         }
       } else if (nextScene === PLAN_CONFIG_SCENE.scene_code) {
         const response = await api.getPlanConfig({ product_item_id: keyValue })
@@ -2123,7 +2329,7 @@ export function AnalysisPanel({ onQueryWorkflow }: {
           setPreLmtParam(null)
           setElapsed(Math.round(performance.now() - started))
         } else {
-          setError(response.error || '策划配置查询失败')
+          setError(response.error || 'Plan config query failed')
         }
       } else if (nextScene === STRUCTURED_SCENE.scene_code) {
         const response = await api.getStructuredOrderInfo({
@@ -2136,7 +2342,7 @@ export function AnalysisPanel({ onQueryWorkflow }: {
           setStructuredResult(response.data)
           setElapsed(Math.round(performance.now() - started))
         } else {
-          setError(response.error || '结构化订单查询失败')
+          setError(response.error || 'Structured order query failed')
         }
       } else {
         const response = await api.queryAnalysisScene(centerCode, {
@@ -2154,12 +2360,12 @@ export function AnalysisPanel({ onQueryWorkflow }: {
           // 客户订单属性：自动批量解密 attr_value，表格直接展示明文
           if (centerCode === 'family_order') void autoDecryptAttrValues(data.nodes)
         } else {
-          setError(response.error || '数据查询失败')
+          setError(response.error || 'Data query failed')
         }
       }
     } catch (exception) {
       // 请求异常/网络层失败也要给出提示并复位按钮，避免一直「查询中」
-      setError(`请求失败: ${exception instanceof Error ? exception.message : String(exception)}`)
+      setError(`Request failed: ${exception instanceof Error ? exception.message : String(exception)}`)
     } finally {
       setLoading(false)
     }
@@ -2170,26 +2376,34 @@ export function AnalysisPanel({ onQueryWorkflow }: {
       const grade = driveGradeNo.trim()
       const offer = driveOfferNo.trim()
       if (!grade) {
-        setError('请输入档次编号')
+        setError('Enter an offer ID')
         return
       }
       if (driveCategory !== 'role' && !offer) {
-        setError('请输入策划编号')
+        setError('Enter a plan ID')
+        return
+      }
+    } else if (isRuleScene) {
+      // 规则中心·业务规则：业务编码 / 规则编码 二选一
+      if (!businessKey.trim() && !ruleCode.trim()) {
+        setError('Enter a business code or rule code')
         return
       }
     } else if (!businessKey.trim()) {
-      setError(isProductScene ? (sceneCode === PLAN_CONFIG_SCENE.scene_code ? '请输入产品/策划编号' : '请输入档次编号') : isInstanceScene ? '请输入计费账号' : '请输入业务主键')
+      setError(isProductScene ? (sceneCode === PLAN_CONFIG_SCENE.scene_code ? 'Enter a product/plan ID' : 'Enter an offer ID') : isInstanceScene ? 'Enter a billing account' : 'Enter a business key')
       return
     }
     // 产品中心两个结果不清空：按 productResultKey/planResultKey 判定缓存是否仍有效，
     // 编号变了对应 tab 切换时会自动重查；跳转往返（档次↔策划）不丢数据不重查
     setSceneCache({})
     setProductDriveResult(null)
+    setRuleBusiResult(null)
     setWorkflowResult(null)
     setAsyncFlowResult(null)
     setStructuredResult(null)
     setInstanceUserResult(null)
     setInstanceOrderResult(null)
+    setFamilyOtherResult(null)
     setLiveNode(null)
     setSelectedScheduler('')
     setNotice('')
@@ -2203,77 +2417,96 @@ export function AnalysisPanel({ onQueryWorkflow }: {
   async function queryFamilyTemplate() {
     const tag = familyTemplateTag.trim()
     if (!tag) {
-      setError('请输入模板编码')
+      setError('Enter a template code')
       return
     }
     setLoading(true)
     setError('')
     const started = performance.now()
-    const response = await api.getWorkflowTemplate(tag)
-    if (response.success && response.data) {
-      setTemplateResult(response.data)
-      setElapsed(Math.round(performance.now() - started))
-    } else {
-      setError(response.error || '配置查询失败')
+    try {
+      const response = await api.getWorkflowTemplate(tag)
+      if (response.success && response.data) {
+        setTemplateResult(response.data)
+        setElapsed(Math.round(performance.now() - started))
+      } else {
+        setError(response.error || 'Config query failed')
+      }
+    } catch (e) {
+      setError(`Config query request failed: ${e}`)
+    } finally {
+      setLoading(false)
     }
-    setLoading(false)
   }
 
   /** 家庭订单中心配置查询·静态配置：按编码查 bs_para_detail + bs_static_data */
   async function queryStaticConfig() {
     const code = staticConfigCode.trim()
     if (!code) {
-      setError('请输入配置编码')
+      setError('Enter a config code')
       return
     }
     setLoading(true)
     setError('')
     const started = performance.now()
-    const response = await api.getStaticConfig({ code })
-    if (response.success && response.data) {
-      setStaticConfigResult(response.data)
-      setElapsed(Math.round(performance.now() - started))
-    } else {
-      setError(response.error || '静态配置查询失败')
+    try {
+      const response = await api.getStaticConfig({ code })
+      if (response.success && response.data) {
+        setStaticConfigResult(response.data)
+        setElapsed(Math.round(performance.now() - started))
+      } else {
+        setError(response.error || 'Static config query failed')
+      }
+    } catch (e) {
+      setError(`Static config query request failed: ${e}`)
+    } finally {
+      setLoading(false)
     }
-    setLoading(false)
   }
 
   /** 配置查询：按场景ID查 场景定义(DEF_SCENE) + 规则定义(DEF_RULE) + 业务组件(DEF_BUSI_CMPT) */
   async function queryConfig(sceneIdOverride?: string) {
     const sceneId = (sceneIdOverride ?? configSceneId).trim()
     if (!sceneId) {
-      setError('请输入场景ID')
+      setError('Enter a scene ID')
       return
     }
     setLoading(true)
     setError('')
     setConfigScene(null)
     const started = performance.now()
-    const [rulesResponse, sceneResponse] = await Promise.all([
-      api.getSceneRules({ scene_id: sceneId }),
-      api.getDefScene({ scene_id: sceneId }),
-    ])
-    if (rulesResponse.success && rulesResponse.data) {
-      setSceneRules(rulesResponse.data)
-      setElapsed(Math.round(performance.now() - started))
-    } else {
-      setError(rulesResponse.error || '配置查询失败')
+    try {
+      const [rulesResponse, sceneResponse] = await Promise.all([
+        api.getSceneRules({ scene_id: sceneId }),
+        api.getDefScene({ scene_id: sceneId }),
+      ])
+      if (rulesResponse.success && rulesResponse.data) {
+        setSceneRules(rulesResponse.data)
+        setElapsed(Math.round(performance.now() - started))
+      } else {
+        setError(rulesResponse.error || 'Config query failed')
+      }
+      if (sceneResponse.success && sceneResponse.data?.success) {
+        setConfigScene(sceneResponse.data)
+      }
+    } catch (e) {
+      setError(`Config query request failed: ${e}`)
+    } finally {
+      setLoading(false)
     }
-    if (sceneResponse.success && sceneResponse.data?.success) {
-      setConfigScene(sceneResponse.data)
-    }
-    setLoading(false)
   }
 
   /** 策划配置「关联产品」点击产品编号：下钻查询属性信息（up_item_relat 资费服务关系） */
   async function queryItemRelat(value: string) {
     setError('')
-    const response = await api.getItemRelat({ product_item_id: value })
-    if (response.success && response.data) {
-      setItemRelatResult(response.data)
-    } else {
-      setError(response.error || '属性信息查询失败')
+    try {
+      const response = await api.getItemRelat({ product_item_id: value })
+      if (response.success && response.data) {
+        setItemRelatResult(response.data)
+      } else {
+        setError(response.error || 'Attribute info query failed')
+      }
+    } catch (e) {
+      setError(`Attribute info query request failed: ${e}`)
     }
   }
 
@@ -2281,44 +2514,54 @@ export function AnalysisPanel({ onQueryWorkflow }: {
   async function queryPreLmtParam(value: string) {
     const match = /^(\w+)\((\d+)\)$/.exec(value.trim())
     if (!match) {
-      setError(`rule_exp 格式无法解析: ${value}（期望形如 TP1(300937)）`)
+      setError(`Cannot parse rule_exp: ${value} (expected like TP1(300937))`)
       return
     }
     setError('')
-    const response = await api.getPreLmtParam({ limit_code: match[1], param_id: match[2] })
-    if (response.success && response.data) {
-      setPreLmtParam({ limitCode: match[1], paramId: match[2], result: response.data })
-    } else {
-      setError(response.error || '限制参数查询失败')
+    try {
+      const response = await api.getPreLmtParam({ limit_code: match[1], param_id: match[2] })
+      if (response.success && response.data) {
+        setPreLmtParam({ limitCode: match[1], paramId: match[2], result: response.data })
+      } else {
+        setError(response.error || 'Pre-limit query failed')
+      }
+    } catch (e) {
+      setError(`Pre-limit query request failed: ${e}`)
     }
   }
 
   async function queryLiveWorkOrder(schedulerId: string) {
     setSelectedScheduler(schedulerId)
     setLiveNode(null)
-    const response = await api.queryAnalysisNode(centerCode, {
-      scene_code: 'order_info',
-      node_code: 'work_order',
-      value: schedulerId,
-      city_code: city,
-      in_transit: inTransit,
-      history_month: inTransit ? '' : historyMonth,
-    })
-    if (response.success && response.data) {
-      setLiveNode(response.data)
-    } else {
-      setError(response.error || '工单实时查询失败')
+    try {
+      const response = await api.queryAnalysisNode(centerCode, {
+        scene_code: 'order_info',
+        node_code: 'work_order',
+        value: schedulerId,
+        city_code: city,
+        in_transit: inTransit,
+        history_month: inTransit ? '' : historyMonth,
+      })
+      if (response.success && response.data) {
+        setLiveNode(response.data)
+      } else {
+        setError(response.error || 'Live ticket query failed')
+      }
+    } catch (e) {
+      setError(`Live ticket query request failed: ${e}`)
     }
   }
 
   function openMessage(values: Record<string, string>, schedulerId: string) {
-    setMessageTarget({
-      taskId: values.task_id || '',
-      doneDate: dateKey(values.done_date || values.create_date || ''),
-      custOrderId: values.cust_order_id || businessKey.trim(),
-      keyEleId: values.key_ele_id || values.scheduler_order_id || schedulerId,
+    setActiveDialog({
+      kind: 'message',
+      target: {
+        taskId: values.task_id || '',
+        doneDate: dateKey(values.done_date || values.create_date || ''),
+        custOrderId: values.cust_order_id || businessKey.trim(),
+        keyEleId: values.key_ele_id || values.scheduler_order_id || schedulerId,
+      },
     })
-    setMessageOpen(true)
   }
 
   /** 客户订单行「报文」：按行内 CUST_ORDER_ID 查 hall_cust_dtl 下单报文 */
@@ -2328,11 +2571,10 @@ export function AnalysisPanel({ onQueryWorkflow }: {
       <button
         className="flex h-6 shrink-0 items-center gap-1 whitespace-nowrap rounded border border-indigo-500/40 bg-indigo-500/10 px-1.5 text-[10px] text-indigo-300 hover:bg-indigo-500/20"
         onClick={() => {
-          setCustMsgOrderId(values.cust_order_id)
-          setCustMsgOpen(true)
+          setActiveDialog({ kind: 'custMessage', custOrderId: values.cust_order_id })
         }}
       >
-        <MessageSquareText className="h-3 w-3" />报文
+        <MessageSquareText className="h-3 w-3" />Message
       </button>
     )
   }
@@ -2350,45 +2592,98 @@ export function AnalysisPanel({ onQueryWorkflow }: {
       <button
         className="flex h-6 shrink-0 items-center gap-1 whitespace-nowrap rounded border border-amber-500/40 bg-amber-500/10 px-1.5 text-[10px] text-amber-300 hover:bg-amber-500/20"
         onClick={() => {
-          setAcceptMsgTarget({ custOrderId, flowInsId })
-          setAcceptMsgOpen(true)
+          setActiveDialog({ kind: 'acceptMessage', custOrderId, flowInsId })
         }}
       >
-        <MessageSquareText className="h-3 w-3" />受理报文
+        <MessageSquareText className="h-3 w-3" />Accept Msg
       </button>
     )
   }
 
   /** 工单行「重试」：task_type=5，HALL_TASK.TASK_STATE 与 HALL_TASK_FLOW_INS.handle_type 置 2（写操作，弹确认框） */
-  async function executeRetry() {
-    if (!retryTarget) return
-    const { taskId, custOrderId } = retryTarget
-    setRetryTarget(null)
+  async function executeRetry(taskId: string, custOrderId: string) {
+    setActiveDialog(null)
     setError('')
     setNotice('')
     const response = await api.retryHallTask({ cust_order_id: custOrderId, task_id: taskId })
     if (response.success && response.data?.ok) {
-      setNotice(`工单 ${taskId} 重试成功：${response.data.message}`)
+      setNotice(`Ticket ${taskId} retried: ${response.data.message}`)
       await loadScene(sceneCode)  // 刷新工单状态
     } else {
-      setError(response.error || response.data?.message || '重试失败')
+      setError(response.error || response.data?.message || 'Retry failed')
     }
   }
 
   const renderRetryAction = (values: Record<string, string>) => {
-    if (String(values.task_type) !== '5') return <span className="text-[10px] text-[#5a5a70]">—</span>
-    if (!values.task_id) return <span className="text-[10px] text-[#5a5a70]">—</span>
+    // 重试只写在途表（HALL_TASK / HALL_TASK_FLOW_INS），历史模式不提供入口
+    if (!inTransit) return null
+    if (String(values.task_type) !== '5') return null
+    if (!values.task_id) return null
     return (
       <button
         className="flex h-6 shrink-0 items-center gap-1 whitespace-nowrap rounded border border-rose-500/40 bg-rose-500/10 px-1.5 text-[10px] text-rose-300 hover:bg-rose-500/20"
         onClick={() => {
           const custOrderId = values.cust_order_id || businessKey.trim()
-          if (values.task_id && custOrderId) setRetryTarget({ taskId: values.task_id, custOrderId })
+          if (values.task_id && custOrderId) {
+            setActiveDialog({ kind: 'retry', taskId: values.task_id, custOrderId })
+          }
         }}
       >
-        <Activity className="h-3 w-3" />重试
+        <Activity className="h-3 w-3" />Retry
       </button>
     )
+  }
+
+  /** 协议单（task_type=3）「免填单」：按客户订单 BILL_ID + 创建月份查 SO_BUSI_PRINT（营业库） */
+  const renderSoBusiPrintAction = (values: Record<string, string>) => {
+    if (String(values.task_type) !== '3') return null
+    return (
+      <button
+        className="flex h-6 shrink-0 items-center gap-1 whitespace-nowrap rounded border border-sky-500/40 bg-sky-500/10 px-1.5 text-[10px] text-sky-300 hover:bg-sky-500/20"
+        data-so-busi-print-action
+        onClick={() => {
+          // bill_id / create_date 取自客户订单信息(hall_cust)结果行，工单行只提供 task_type 判定
+          const custNode = sceneCache[sceneCode]?.nodes.find(node => node.node_code === 'cust_order')
+          const row = custNode && custNode.rows.length > 0 ? rowValues(custNode.columns, custNode.rows[0]) : null
+          const billId = String(row?.bill_id ?? '').trim()
+          const createDate = String(row?.create_date ?? '').trim()
+          if (!billId || !createDate) {
+            setError('Customer order missing BILL_ID or create date — cannot query no-receipt')
+            return
+          }
+          setActiveDialog({ kind: 'soBusiPrint', billId, createDate })
+        }}
+      >
+        <Printer className="h-3 w-3" />No-Receipt
+      </button>
+    )
+  }
+
+  /** 策划订单项行「关联」：按行内 customer_order_id + offer_order_id 查 ord_srv_attr（家庭订单库） */
+  const renderPlanSrvAttrAction = (values: Record<string, string>) => (
+    <button
+      className="flex h-6 shrink-0 items-center gap-1 whitespace-nowrap rounded border border-emerald-500/40 bg-emerald-500/10 px-1.5 text-[10px] text-emerald-300 hover:bg-emerald-500/20"
+      data-offer-srv-attr-action
+      onClick={() => {
+        const customerOrderId = String(values.customer_order_id ?? '').trim()
+        const offerOrderId = String(values.offer_order_id ?? '').trim()
+        if (!customerOrderId || !offerOrderId) {
+          setError('Row missing customer_order_id / offer_order_id — cannot query linked srv attributes')
+          return
+        }
+        setActiveDialog({ kind: 'offerSrvAttr', customerOrderId, offerOrderId })
+      }}
+    >
+      <Link2 className="h-3 w-3" />Link
+    </button>
+  )
+
+  /** 工单行操作列：重试（task_type=5，在途）+ 免填单（task_type=3） */
+  const renderTaskOrderActions = (values: Record<string, string>) => {
+    const retry = renderRetryAction(values)
+    const print = renderSoBusiPrintAction(values)
+    if (!retry && !print) return <span className="text-[10px] text-[#5a5a70]">—</span>
+    return <span className="flex items-center gap-1">{retry}{print}</span>
   }
 
   /** 工单信息(task_type=5)提取有效 scene_id → 查 DEF_SCENE 展示场景名 */
@@ -2411,21 +2706,34 @@ export function AnalysisPanel({ onQueryWorkflow }: {
   const renderMessageAction = (schedulerId: string) => (values: Record<string, string>) => {
     if (!values.task_id) return <span className="text-[10px] text-[#5a5a70]">—</span>
     return (
-      <button
-        className="flex h-6 shrink-0 items-center gap-1 whitespace-nowrap rounded border border-indigo-500/40 bg-indigo-500/10 px-1.5 text-[10px] text-indigo-300 hover:bg-indigo-500/20"
-        onClick={() => openMessage(values, schedulerId)}
-      >
-        <MessageSquareText className="h-3 w-3" />报文
-      </button>
+      <div className="flex items-center gap-1">
+        <button
+          className="flex h-6 shrink-0 items-center gap-1 whitespace-nowrap rounded border border-indigo-500/40 bg-indigo-500/10 px-1.5 text-[10px] text-indigo-300 hover:bg-indigo-500/20"
+          onClick={() => openMessage(values, schedulerId)}
+        >
+          <MessageSquareText className="h-3 w-3" />Message
+        </button>
+        <button
+          className="flex h-6 shrink-0 items-center gap-1 whitespace-nowrap rounded border border-cyan-500/40 bg-cyan-500/10 px-1.5 text-[10px] text-cyan-300 hover:bg-cyan-500/20"
+          onClick={() => {
+            setActiveDialog({ kind: 'consumeEx', taskId: values.task_id })
+          }}
+        >
+          <MessageSquareText className="h-3 w-3" />Messages
+        </button>
+      </div>
     )
   }
+
+  // 当前激活的弹窗（null=无）；尾部挂载区按 dlg.kind 条件渲染
+  const dlg = activeDialog
 
   return (
     <div className="space-y-3" data-analysis-panel>
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="flex items-center gap-2">
           <Activity className="h-4 w-4 text-indigo-400" />
-          <h2 className="text-[15px] font-semibold text-[#e4e4e9]">数据查询</h2>
+          <h2 className="text-[15px] font-semibold text-[#e4e4e9]">Data Query</h2>
           {centers.length > 0 && (
             <div className="flex items-center gap-1 rounded-md border border-[#252530] p-0.5" data-center-tabs>
               {centers.map(item => (
@@ -2439,14 +2747,16 @@ export function AnalysisPanel({ onQueryWorkflow }: {
                   )}
                   onClick={() => switchCenter(item.center_code)}
                 >
-                  {item.center_name}
+                  {centerNameEn(item)}
                 </button>
               ))}
             </div>
           )}
-          {(
+          {/* 订单/配置两级 tab 仅对有配置表单的中心（家庭订单/客户订单）显示：
+              其余中心点「配置查询」只会回落渲染订单表单，误导用户以为功能异常 */}
+          {['family_order', 'hall_center'].includes(centerCode) && (
             <div className="flex items-center gap-1 rounded-md border border-[#3a3a4a] bg-white/[0.03] p-0.5" data-query-kind-tabs>
-              {([['order', '订单查询'], ['config', '配置查询']] as const).map(([kind, label]) => (
+              {([['order', 'Order Query'], ['config', 'Config Query']] as const).map(([kind, label]) => (
                 <button
                   key={kind}
                   className={cn(
@@ -2466,7 +2776,7 @@ export function AnalysisPanel({ onQueryWorkflow }: {
             </div>
           )}
         </div>
-        {elapsed > 0 && <span className="text-[11px] text-[#5a5a70]">总耗时 {elapsed} ms</span>}
+        {elapsed > 0 && <span className="text-[11px] text-[#5a5a70]">Total {elapsed} ms</span>}
       </div>
 
       <div className="rounded-xl border border-[#252530] bg-[#16161e] p-3">
@@ -2474,7 +2784,7 @@ export function AnalysisPanel({ onQueryWorkflow }: {
           <div className="flex flex-wrap items-end gap-3" data-config-form>
             {/* 配置查询子 tab：模板版本 / 静态配置 */}
             <div className="flex items-center gap-1 self-center rounded-md border border-[#3a3a4a] bg-white/[0.03] p-0.5" data-family-config-tabs>
-              {([['template', '模板版本'], ['static', '静态配置']] as const).map(([tab, label]) => (
+              {([['template', 'Template Versions'], ['static', 'Static Config']] as const).map(([tab, label]) => (
                 <button
                   key={tab}
                   className={cn('rounded px-2.5 py-1 text-[11px] font-medium transition-colors',
@@ -2488,35 +2798,35 @@ export function AnalysisPanel({ onQueryWorkflow }: {
             {familyConfigTab === 'static' ? (
               <>
                 <label className="space-y-1 text-[11px] text-[#8b8b9e]">
-                  <span>配置编码</span>
+                  <span>Config Code</span>
                   <Input
-                    className="h-8 w-[280px] bg-[#0f0f14] text-[12px]"
+                    className="h-8 w-[280px] max-w-full bg-[#0f0f14] text-[12px]"
                     value={staticConfigCode}
                     onChange={event => setStaticConfigCode(event.target.value)}
                     onKeyDown={event => event.key === 'Enter' && void queryStaticConfig()}
                   />
                 </label>
-                <span className="text-[10px] text-[#5a5a70]">按编码查 bs_para_detail / bs_static_data（家庭订单配置库）</span>
+                <span className="text-[10px] text-[#5a5a70]">Look up bs_para_detail / bs_static_data by code (Family Order Config DB)</span>
                 <Button size="sm" className="h-8" disabled={loading} onClick={() => void queryStaticConfig()}>
                   <Search className="mr-1 h-3.5 w-3.5" />
-                  {loading ? `查询中 ${loadingSeconds}s` : '查询'}
+                  {loading ? `Querying ${loadingSeconds}s` : '查询'}
                 </Button>
               </>
             ) : (
               <>
                 <label className="space-y-1 text-[11px] text-[#8b8b9e]">
-                  <span>模板编码</span>
+                  <span>Template Code</span>
                   <Input
-                    className="h-8 w-[240px] bg-[#0f0f14] text-[12px]"
+                    className="h-8 w-[240px] max-w-full bg-[#0f0f14] text-[12px]"
                     value={familyTemplateTag}
                     onChange={event => setFamilyTemplateTag(event.target.value)}
                     onKeyDown={event => event.key === 'Enter' && void queryFamilyTemplate()}
                   />
                 </label>
-                <span className="text-[10px] text-[#5a5a70]">按模板编码查版本（工作流配置库）</span>
+                <span className="text-[10px] text-[#5a5a70]">Template versions by code (Workflow Config DB)</span>
                 <Button size="sm" className="h-8" disabled={loading} onClick={() => void queryFamilyTemplate()}>
                   <Search className="mr-1 h-3.5 w-3.5" />
-                  {loading ? `查询中 ${loadingSeconds}s` : '查询'}
+                  {loading ? `Querying ${loadingSeconds}s` : '查询'}
                 </Button>
               </>
             )}
@@ -2524,18 +2834,18 @@ export function AnalysisPanel({ onQueryWorkflow }: {
         ) : queryKind === 'config' && centerCode === 'hall_center' ? (
           <div className="flex flex-wrap items-end gap-3" data-config-form>
             <label className="space-y-1 text-[11px] text-[#8b8b9e]">
-              <span>场景ID</span>
+              <span>Scene ID</span>
               <Input
-                className="h-8 w-[200px] bg-[#0f0f14] text-[12px]"
+                className="h-8 w-[200px] max-w-full bg-[#0f0f14] text-[12px]"
                 value={configSceneId}
                 onChange={event => setConfigSceneId(event.target.value)}
                 onKeyDown={event => event.key === 'Enter' && void queryConfig()}
               />
             </label>
-            <span className="text-[10px] text-[#5a5a70]">按场景ID查 场景定义 + 规则定义 + 场景单元关系（客户订单配置库）</span>
+            <span className="text-[10px] text-[#5a5a70]">Scene definitions + rule definitions + scene unit relations by scene ID (Customer Order Config DB)</span>
             <Button size="sm" className="h-8" disabled={loading} onClick={() => void queryConfig()}>
               <Search className="mr-1 h-3.5 w-3.5" />
-              {loading ? `查询中 ${loadingSeconds}s` : '查询'}
+              {loading ? `Querying ${loadingSeconds}s` : '查询'}
             </Button>
           </div>
         ) : (
@@ -2543,70 +2853,91 @@ export function AnalysisPanel({ onQueryWorkflow }: {
           {isDriveScene ? (
             <>
               <label className="space-y-1 text-[11px] text-[#8b8b9e]">
-                <span>档次编号</span>
+                <span>Offer ID</span>
                 <Input
-                  className="h-8 w-[220px] bg-[#0f0f14] text-[12px]"
+                  className="h-8 w-[220px] max-w-full bg-[#0f0f14] text-[12px]"
                   value={driveGradeNo}
                   onChange={event => setDriveGradeNo(event.target.value)}
                   onKeyDown={event => event.key === 'Enter' && void query()}
                 />
               </label>
               <label className="space-y-1 text-[11px] text-[#8b8b9e]">
-                <span>策划编号</span>
+                <span>Plan ID</span>
                 <Input
-                  className="h-8 w-[220px] bg-[#0f0f14] text-[12px]"
+                  className="h-8 w-[220px] max-w-full bg-[#0f0f14] text-[12px]"
                   value={driveOfferNo}
                   onChange={event => setDriveOfferNo(event.target.value)}
                   onKeyDown={event => event.key === 'Enter' && void query()}
                 />
               </label>
             </>
+          ) : isRuleScene ? (
+            <>
+              <label className="space-y-1 text-[11px] text-[#8b8b9e]">
+                <span>Business Code</span>
+                <Input
+                  className="h-8 w-[280px] max-w-full bg-[#0f0f14] text-[12px]"
+                  value={businessKey}
+                  onChange={event => setBusinessKey(event.target.value)}
+                  onKeyDown={event => event.key === 'Enter' && void query()}
+                />
+              </label>
+              <label className="space-y-1 text-[11px] text-[#8b8b9e]">
+                <span>Rule Code</span>
+                <Input
+                  className="h-8 w-[220px] max-w-full bg-[#0f0f14] text-[12px]"
+                  value={ruleCode}
+                  onChange={event => setRuleCode(event.target.value)}
+                  onKeyDown={event => event.key === 'Enter' && void query()}
+                />
+              </label>
+            </>
           ) : (
             <label className="space-y-1 text-[11px] text-[#8b8b9e]">
-              <span>{isProductScene ? (sceneCode === PLAN_CONFIG_SCENE.scene_code ? '产品/策划编号' : '档次编号') : isInstanceScene ? '计费账号' : '业务主键'}</span>
+              <span>{isProductScene ? (sceneCode === PLAN_CONFIG_SCENE.scene_code ? 'Product/Plan ID' : 'Offer ID') : isInstanceScene ? 'Billing Account' : 'Business Key'}</span>
               <Input
-                className="h-8 w-[280px] bg-[#0f0f14] text-[12px]"
+                className="h-8 w-[280px] max-w-full bg-[#0f0f14] text-[12px]"
                 value={businessKey}
                 onChange={event => setBusinessKey(event.target.value)}
                 onKeyDown={event => event.key === 'Enter' && void query()}
               />
             </label>
           )}
-          {!(isProductScene || isInstanceScene || isDriveScene) && (
+          {!(isProductScene || isInstanceScene || isDriveScene || isRuleScene) && (
           <label className="space-y-1 text-[11px] text-[#8b8b9e]">
-            <span>地市</span>
+            <span>City</span>
             <Input
-              className="h-8 w-[72px] bg-[#0f0f14] text-[12px]"
+              className="h-8 w-[72px] max-w-full bg-[#0f0f14] text-[12px]"
               value={city}
               onChange={event => setCity(event.target.value)}
             />
           </label>
           )}
-          {!(isProductScene || isInstanceScene || isDriveScene) && (
+          {!(isProductScene || isInstanceScene || isDriveScene || isRuleScene) && (
           <div className="space-y-1 text-[11px] text-[#8b8b9e]">
-            <span>数据类型</span>
+            <span>Data Type</span>
             <div className="flex h-8 items-center overflow-hidden rounded-md border border-[#252530]" data-transit-toggle>
               <button
                 className={cn('h-8 px-3 text-[11px]', inTransit ? 'bg-indigo-500/20 text-indigo-300' : 'text-[#8b8b9e] hover:bg-white/5')}
                 onClick={() => setInTransit(true)}
               >
-                在途
+                In-Transit
               </button>
               <button
                 className={cn('h-8 px-3 text-[11px]', !inTransit ? 'bg-indigo-500/20 text-indigo-300' : 'text-[#8b8b9e] hover:bg-white/5')}
                 onClick={() => setInTransit(false)}
               >
-                历史
+                History
               </button>
             </div>
           </div>
           )}
           {!(isProductScene || isInstanceScene || isDriveScene) && !inTransit && (
             <label className="space-y-1 text-[11px] text-[#8b8b9e]">
-              <span>历史月份</span>
+              <span>History Month</span>
               <Input
                 type="month"
-                className="h-8 w-[140px] bg-[#0f0f14] text-[12px]"
+                className="h-8 w-[140px] max-w-full bg-[#0f0f14] text-[12px]"
                 value={historyMonth}
                 onChange={event => setHistoryMonth(event.target.value)}
               />
@@ -2614,7 +2945,7 @@ export function AnalysisPanel({ onQueryWorkflow }: {
           )}
           <Button size="sm" className="h-8" disabled={loading} onClick={() => void query()}>
             <Search className="mr-1 h-3.5 w-3.5" />
-            {loading ? `查询中 ${loadingSeconds}s` : '查询'}
+            {loading ? `Querying ${loadingSeconds}s` : '查询'}
           </Button>
         </div>
         )}
@@ -2633,7 +2964,7 @@ export function AnalysisPanel({ onQueryWorkflow }: {
 
       {centerCode !== '' && scenes.length === 0 && !loading && (
         <div className="rounded-lg border border-[#252530] bg-[#16161e] px-3 py-10 text-center text-[12px] text-[#8b8b9e]" data-pending-center-placeholder>
-          「{center?.center_name}」查询配置中——场景/SQL 待接入（查询条件：业务主键 {businessKey.trim() || '—'}）
+          Query not wired for "{centerNameEn(center)}" — scenario/SQL pending (key: {businessKey.trim() || '—'})
         </div>
       )}
 
@@ -2660,6 +2991,11 @@ export function AnalysisPanel({ onQueryWorkflow }: {
                     productKeyMemoRef.current = ''
                     setBusinessKey(effectiveKey)
                   }
+                  // 切场景即离开当前视图：清掉实时工单下钻（只在订单信息里有意义）
+                  if (scene.scene_code !== sceneCode) {
+                    setLiveNode(null)
+                    setSelectedScheduler('')
+                  }
                   setSceneCode(scene.scene_code)
                   // 产品中心结果按查询时的编号缓存：编号一致直接展示，不一致才重查
                   const cached = scene.scene_code === WORKFLOW_SCENE.scene_code
@@ -2668,12 +3004,16 @@ export function AnalysisPanel({ onQueryWorkflow }: {
                       ? asyncFlowResult
                       : scene.scene_code === STRUCTURED_SCENE.scene_code
                         ? structuredResult
+                        : scene.scene_code === OTHER_SCENE.scene_code
+                          ? familyOtherResult
                         : scene.scene_code === INSTANCE_USER_SCENE.scene_code
                           ? instanceUserResult
                         : scene.scene_code === PRODUCT_DRIVE_SCENE.scene_code
                           ? productDriveResult
                         : scene.scene_code === INSTANCE_ORDER_SCENE.scene_code
                           ? instanceOrderResult
+                        : scene.scene_code === INSTANCE_TERMINAL_SCENE.scene_code
+                          ? instanceTerminalResult
                         : scene.scene_code === PRODUCT_CONFIG_SCENE.scene_code
                           ? (productResult && productResultKey === effectiveKey ? productResult : null)
                           : scene.scene_code === PLAN_CONFIG_SCENE.scene_code
@@ -2683,7 +3023,7 @@ export function AnalysisPanel({ onQueryWorkflow }: {
                   if (!cached) void loadScene(scene.scene_code, effectiveKey)
                 }}
               >
-                {scene.scene_name}
+                {sceneNameEn(scene)}
               </button>
             ))}
           </div>
@@ -2698,7 +3038,7 @@ export function AnalysisPanel({ onQueryWorkflow }: {
                     title={block.name}
                     rowCount={block.row_count}
                     table={block.table_name}
-                    datasource="家庭订单配置库"
+                    datasource="Family Order Config DB"
                   >
                     {!block.success && block.error ? (
                       <div className="flex items-start gap-2 px-3 py-3 text-[11px] text-red-300">
@@ -2710,24 +3050,24 @@ export function AnalysisPanel({ onQueryWorkflow }: {
                   </ResultCard>
                 )) : !loading && (
                   <div className="rounded-lg border border-[#252530] bg-[#16161e] px-3 py-10 text-center text-[12px] text-[#8b8b9e]">
-                    输入配置编码后查询静态配置（bs_para_detail / bs_static_data，家庭订单配置库）
+                    Enter a config code to query static config (bs_para_detail / bs_static_data, Family Order Config DB)
                   </div>
                 )
               ) : templateResult ? (
                 <ResultCard
-                  title="工作流模板版本"
+                  title="Workflow Template Versions"
                   table="vm_template_version"
-                  datasource="工作流配置库"
+                  datasource="Workflow Config DB"
                   rowCount={templateResult.versions.length}
                 >
                   {templateResult.versions.length === 0 ? (
-                    <div className="px-4 py-6 text-center text-[12px] text-[#8b8b9e]">该模板编码无版本记录</div>
+                    <div className="px-4 py-6 text-center text-[12px] text-[#8b8b9e]">No versions for this template code</div>
                   ) : (
                     <div className="max-h-[420px] overflow-auto">
                       <table className="w-full border-collapse text-left text-[11px]">
                         <thead className="sticky top-0 z-[1] bg-[#20202c]">
                           <tr>
-                            {['版本ID', '模板编码', '序号', '创建人', '创建时间', '生效日期', '失效日期', '状态', '修改说明'].map(title => (
+                            {['Version ID', 'Template Code', 'Seq', 'Created By', 'Created At', 'Effective From', 'Expires At', 'Status', 'Change Note'].map(title => (
                               <th key={title} className="whitespace-nowrap border-b border-[#3d3d4a] px-2.5 py-1.5 font-semibold text-[#e8e8f0]">{title}</th>
                             ))}
                           </tr>
@@ -2747,7 +3087,7 @@ export function AnalysisPanel({ onQueryWorkflow }: {
                                   version.is_expired
                                     ? 'border-[#3a3a45] bg-white/5 text-[#8b8b9e]'
                                     : 'border-emerald-500/40 bg-emerald-500/10 text-emerald-300')}>
-                                  {version.is_expired ? '已失效' : '生效中'}
+                                  {version.is_expired ? 'Expired' : 'Active'}
                                 </span>
                               </td>
                               <td className="max-w-[280px] truncate px-2.5 py-1.5 text-[#cdd3e0]" title={version.modify_desc ?? ''}>{version.modify_desc ?? '—'}</td>
@@ -2760,7 +3100,7 @@ export function AnalysisPanel({ onQueryWorkflow }: {
                 </ResultCard>
               ) : !loading && (
                 <div className="rounded-lg border border-[#252530] bg-[#16161e] px-3 py-10 text-center text-[12px] text-[#8b8b9e]">
-                  输入模板编码后查询工作流模板版本（数据源：工作流配置库）
+                  Enter a template code to query workflow template versions (Workflow Config DB)
                 </div>
               )}
             </div>
@@ -2770,9 +3110,9 @@ export function AnalysisPanel({ onQueryWorkflow }: {
                 <NodeCard
                   result={{
                     node_code: 'def_scene',
-                    node_name: '场景定义',
+                    node_name: 'Scene Definitions',
                     table_name: 'DEF_SCENE',
-                    datasource_name: '客户订单配置库',
+                    datasource_name: 'Customer Order Config DB',
                     color: 'purple',
                     parent_node_code: '',
                     parent_field: '',
@@ -2802,7 +3142,7 @@ export function AnalysisPanel({ onQueryWorkflow }: {
                     node_code: part.node_name,
                     node_name: part.node_name,
                     table_name: part.sql?.match(/FROM (\S+)/)?.[1] ?? '',
-                    datasource_name: '客户订单配置库',
+                    datasource_name: 'Customer Order Config DB',
                     color: 'blue',
                     parent_node_code: '',
                     parent_field: '',
@@ -2821,8 +3161,7 @@ export function AnalysisPanel({ onQueryWorkflow }: {
                       rows={ruleRows}
                       clickableColumns={['busi_cmpt_id', 'result']}
                       onCellClick={(_, value) => {
-                        setBusiCmptId(value)
-                        setBusiCmptOpen(true)
+                        setActiveDialog({ kind: 'busiCmpt', id: value })
                       }}
                     />
                   )}
@@ -2831,12 +3170,12 @@ export function AnalysisPanel({ onQueryWorkflow }: {
               })() : null}
               {sceneRules?.unit_rel ? (
                 <NodeCard
-                  hint="点击 BUSI_CMPT_ID 查看业务组件"
+                  hint="Click BUSI_CMPT_ID to view business components"
                   result={{
                     node_code: 'scene_unit_rel',
                     node_name: sceneRules.unit_rel.node_name,
                     table_name: sceneRules.unit_rel.sql?.match(/FROM (\S+)/)?.[1] ?? '',
-                    datasource_name: '客户订单配置库',
+                    datasource_name: 'Customer Order Config DB',
                     color: 'amber',
                     parent_node_code: '',
                     parent_field: '',
@@ -2855,8 +3194,7 @@ export function AnalysisPanel({ onQueryWorkflow }: {
                       rows={sceneRules.unit_rel.rows}
                       clickableColumns={['busi_cmpt_id']}
                       onCellClick={(_, value) => {
-                        setBusiCmptId(value)
-                        setBusiCmptOpen(true)
+                        setActiveDialog({ kind: 'busiCmpt', id: value })
                       }}
                     />
                   )}
@@ -2864,7 +3202,7 @@ export function AnalysisPanel({ onQueryWorkflow }: {
               ) : null}
               {!sceneRules && !loading && (
                 <div className="rounded-lg border border-[#252530] bg-[#16161e] px-3 py-10 text-center text-[12px] text-[#8b8b9e]">
-                  输入场景ID 后查询（数据源：客户订单配置库）
+                  Enter a scene ID to query (Customer Order Config DB)
                 </div>
               )}
             </div>
@@ -2898,7 +3236,7 @@ export function AnalysisPanel({ onQueryWorkflow }: {
                   rowCount={block.row_count}
                   table={block.table_name}
                   datasource={block.datasource ?? '产品库'}
-                  hint={block.name === '框架规则' ? '点击 RULE_ID 查看规则定义' : undefined}
+                  hint={block.name === '框架规则' ? 'Click RULE_ID to view rule definition' : undefined}
                 >
                   {!block.success && block.error ? (
                     <div className="flex items-start gap-2 px-3 py-3 text-[11px] text-red-300">
@@ -2910,8 +3248,7 @@ export function AnalysisPanel({ onQueryWorkflow }: {
                       rows={block.rows}
                       clickableColumns={['rule_id']}
                       onCellClick={(_, value) => {
-                        setUpRuleId(value)
-                        setUpRuleOpen(true)
+                        setActiveDialog({ kind: 'upRule', id: value })
                       }}
                     />
                   ) : (
@@ -2920,7 +3257,7 @@ export function AnalysisPanel({ onQueryWorkflow }: {
                 </ResultCard>
               )) : !loading && (
                 <div className="rounded-lg border border-[#252530] bg-[#16161e] px-3 py-10 text-center text-[12px] text-[#8b8b9e]">
-                  {`查询产品驱动·${PRODUCT_DRIVE_CATEGORIES.find(([code]) => code === driveCategory)?.[1] ?? ''}（待接入，表名/条件确认中）`}
+                  {`Product Drive · ${PRODUCT_DRIVE_CATEGORIES.find(([code]) => code === driveCategory)?.[1] ?? ''} (pending — table/conditions TBD)`}
                 </div>
               )}
             </div>
@@ -2932,8 +3269,8 @@ export function AnalysisPanel({ onQueryWorkflow }: {
                   title={block.name}
                   rowCount={block.row_count}
                   table={block.table_name}
-                  datasource="营业库"
-                  hint={block.name === '用户信息' ? 'cust_type=1 自动查个人客户，family_cust_id 非空自动查家庭客户' : undefined}
+                  datasource="Billing DB"
+                  hint={block.name === '用户信息' ? 'cust_type=1 auto-queries individual customer; non-empty family_cust_id auto-queries family customer' : undefined}
                 >
                   {!block.success && block.error ? (
                     <div className="flex items-start gap-2 px-3 py-3 text-[11px] text-red-300">
@@ -2945,7 +3282,7 @@ export function AnalysisPanel({ onQueryWorkflow }: {
                 </ResultCard>
               )) : !loading && (
                 <div className="rounded-lg border border-[#252530] bg-[#16161e] px-3 py-10 text-center text-[12px] text-[#8b8b9e]">
-                  输入计费账号后查询用户信息（ins_user / cm_indiv_customer / cm_family_customer，营业库）
+                  Enter a billing account to query user info (ins_user / cm_indiv_customer / cm_family_customer, Billing DB)
                 </div>
               )}
             </div>
@@ -2957,7 +3294,41 @@ export function AnalysisPanel({ onQueryWorkflow }: {
                   title={block.name}
                   rowCount={block.row_count}
                   table={block.table_name}
-                  datasource="营业库"
+                  datasource="Billing DB"
+                  hint={block.name === '订购信息' ? 'Click offer_inst_id to view srv attributes' : undefined}
+                >
+                  {!block.success && block.error ? (
+                    <div className="flex items-start gap-2 px-3 py-3 text-[11px] text-red-300">
+                      <CircleAlert className="mt-0.5 h-3.5 w-3.5 shrink-0" />{block.error}
+                    </div>
+                  ) : block.name === '订购信息' ? (
+                    <QueryResultTable
+                      columns={block.columns}
+                      rows={block.rows}
+                      clickableColumns={['offer_inst_id']}
+                      onCellClick={(_, value) => {
+                        setActiveDialog({ kind: 'srvAttr', offerInstId: value })
+                      }}
+                    />
+                  ) : (
+                    <QueryResultTable columns={block.columns} rows={block.rows} />
+                  )}
+                </ResultCard>
+              )) : !loading && (
+                <div className="rounded-lg border border-[#252530] bg-[#16161e] px-3 py-10 text-center text-[12px] text-[#8b8b9e]">
+                  Enter a billing account to query subscriptions (Billing DB)
+                </div>
+              )}
+            </div>
+          ) : sceneCode === INSTANCE_TERMINAL_SCENE.scene_code ? (
+            <div className="space-y-3" data-instance-terminal-results>
+              {instanceTerminalResult ? instanceTerminalResult.results.map(block => (
+                <ResultCard
+                  key={block.name}
+                  title={block.name}
+                  rowCount={block.row_count}
+                  table={block.table_name}
+                  datasource="Billing DB"
                 >
                   {!block.success && block.error ? (
                     <div className="flex items-start gap-2 px-3 py-3 text-[11px] text-red-300">
@@ -2969,7 +3340,7 @@ export function AnalysisPanel({ onQueryWorkflow }: {
                 </ResultCard>
               )) : !loading && (
                 <div className="rounded-lg border border-[#252530] bg-[#16161e] px-3 py-10 text-center text-[12px] text-[#8b8b9e]">
-                  输入计费账号后查询订购信息（营业库）
+                  Enter a billing account to query terminals (Billing DB)
                 </div>
               )}
             </div>
@@ -2981,9 +3352,9 @@ export function AnalysisPanel({ onQueryWorkflow }: {
                   title={block.name}
                   rowCount={block.row_count}
                   table={block.table_name}
-                  datasource="产品库"
-                  hint={block.name === '产品关系' ? '点击 关联产品编号 跳转策划配置查询'
-                    : block.name === '业务关系' ? '点击 relat_product_item_id 查看业务信息' : undefined}
+                  datasource="Product DB"
+                  hint={block.name === '产品关系' ? 'Click related product ID to open plan config query'
+                    : block.name === '业务关系' ? 'Click relat_product_item_id to view business info' : undefined}
                 >
                   {!block.success && block.error ? (
                     <div className="flex items-start gap-2 px-3 py-3 text-[11px] text-red-300">
@@ -3008,8 +3379,7 @@ export function AnalysisPanel({ onQueryWorkflow }: {
                       rows={block.rows}
                       clickableColumns={['relat_product_item_id']}
                       onCellClick={(_, value) => {
-                        setBusinessInfoId(value)
-                        setBusinessInfoOpen(true)
+                        setActiveDialog({ kind: 'businessInfo', id: value })
                       }}
                     />
                   ) : (
@@ -3018,7 +3388,7 @@ export function AnalysisPanel({ onQueryWorkflow }: {
                 </ResultCard>
               )) : !loading && (
                 <div className="rounded-lg border border-[#252530] bg-[#16161e] px-3 py-10 text-center text-[12px] text-[#8b8b9e]">
-                  输入档次编号后查询档次配置（先校验 up_offer.offer_type = OFFER_VAS_BIND，非档次报错；产品库）
+                  Enter an offer ID to query offer config (validates up_offer.offer_type = OFFER_VAS_BIND first; Product DB)
                 </div>
               )}
             </div>
@@ -3030,10 +3400,10 @@ export function AnalysisPanel({ onQueryWorkflow }: {
                   title={block.name}
                   rowCount={block.row_count}
                   table={block.table_name}
-                  datasource="产品库"
-                  hint={block.name === '关联产品' ? '点击 关联产品编号 查询属性信息'
-                    : block.name === '前项限制' ? '点击 rule_exp 查询限制参数'
-                    : block.name === '业务关系' ? '点击 relat_product_item_id 查看业务信息' : undefined}
+                  datasource="Product DB"
+                  hint={block.name === '关联产品' ? 'Click related product ID to query attribute info'
+                    : block.name === '前项限制' ? 'Click rule_exp to query pre-limit params'
+                    : block.name === '业务关系' ? 'Click relat_product_item_id to view business info' : undefined}
                 >
                   {!block.success && block.error ? (
                     <div className="flex items-start gap-2 px-3 py-3 text-[11px] text-red-300">
@@ -3060,8 +3430,7 @@ export function AnalysisPanel({ onQueryWorkflow }: {
                       rows={block.rows}
                       clickableColumns={['relat_product_item_id']}
                       onCellClick={(_, value) => {
-                        setBusinessInfoId(value)
-                        setBusinessInfoOpen(true)
+                        setActiveDialog({ kind: 'businessInfo', id: value })
                       }}
                     />
                   ) : (
@@ -3070,18 +3439,18 @@ export function AnalysisPanel({ onQueryWorkflow }: {
                 </ResultCard>
               )) : !loading && (
                 <div className="rounded-lg border border-[#252530] bg-[#16161e] px-3 py-10 text-center text-[12px] text-[#8b8b9e]">
-                  输入产品/策划编号后查询策划配置（up_product_item / up_item_feature / UP_OFFER_PRE_LIMIT / up_plan_prod_rel，产品库）
+                  Enter a product/plan ID to query plan config (up_product_item / up_item_feature / UP_OFFER_PRE_LIMIT / up_plan_prod_rel, Product DB)
                 </div>
               )}
               {itemRelatResult && (
                 <div className="space-y-3" data-item-relat-results>
                   <div className="flex items-center gap-2 px-1 text-[11px] text-[#8b8b9e]">
                     <Layers className="h-3.5 w-3.5 text-purple-300" />
-                    <span>属性信息 · 产品编号 <span className="font-mono text-[#cdd3e0]">{itemRelatResult.product_item_id}</span></span>
+                    <span>Attribute Info · Product <span className="font-mono text-[#cdd3e0]">{itemRelatResult.product_item_id}</span></span>
                     <button
                       className="ml-auto text-[10px] text-[#5a5a70] hover:text-[#cdd3e0]"
                       onClick={() => setItemRelatResult(null)}
-                    >收起</button>
+                    >Collapse</button>
                   </div>
                   {itemRelatResult.results.map(block => (
                     <ResultCard
@@ -3089,7 +3458,7 @@ export function AnalysisPanel({ onQueryWorkflow }: {
                       title={block.name}
                       rowCount={block.row_count}
                       table={block.table_name}
-                      datasource="产品库"
+                      datasource="Product DB"
                     >
                       {!block.success && block.error ? (
                         <div className="flex items-start gap-2 px-3 py-3 text-[11px] text-red-300">
@@ -3106,11 +3475,11 @@ export function AnalysisPanel({ onQueryWorkflow }: {
                 <div className="space-y-3" data-pre-lmt-param-results>
                   <div className="flex items-center gap-2 px-1 text-[11px] text-[#8b8b9e]">
                     <Layers className="h-3.5 w-3.5 text-purple-300" />
-                    <span>限制参数 · <span className="font-mono text-[#cdd3e0]">{preLmtParam.limitCode}({preLmtParam.paramId})</span></span>
+                    <span>Pre-Limit · <span className="font-mono text-[#cdd3e0]">{preLmtParam.limitCode}({preLmtParam.paramId})</span></span>
                     <button
                       className="ml-auto text-[10px] text-[#5a5a70] hover:text-[#cdd3e0]"
                       onClick={() => setPreLmtParam(null)}
-                    >收起</button>
+                    >Collapse</button>
                   </div>
                   {preLmtParam.result.results.map(block => (
                     <ResultCard
@@ -3118,8 +3487,8 @@ export function AnalysisPanel({ onQueryWorkflow }: {
                       title={block.name}
                       rowCount={block.row_count}
                       table={block.table_name}
-                      datasource="产品库"
-                      hint={block.name === '限制参数' ? '点击 limit_code 查看业务限制' : undefined}
+                      datasource="Product DB"
+                      hint={block.name === '限制参数' ? 'Click limit_code to view pre-limit details' : undefined}
                     >
                       {!block.success && block.error ? (
                         <div className="flex items-start gap-2 px-3 py-3 text-[11px] text-red-300">
@@ -3131,8 +3500,7 @@ export function AnalysisPanel({ onQueryWorkflow }: {
                           rows={block.rows}
                           clickableColumns={['limit_code']}
                           onCellClick={(_, value) => {
-                            setSoPreBusiLimitCode(value)
-                            setSoPreBusiLimitOpen(true)
+                            setActiveDialog({ kind: 'soPreBusiLimit', code: value })
                           }}
                         />
                       ) : (
@@ -3143,15 +3511,39 @@ export function AnalysisPanel({ onQueryWorkflow }: {
                 </div>
               )}
             </div>
+          ) : sceneCode === OTHER_SCENE.scene_code ? (
+            <div className="space-y-3" data-family-other-results>
+              {familyOtherResult ? familyOtherResult.results.map(block => (
+                <ResultCard
+                  key={block.name}
+                  title={block.name}
+                  rowCount={block.row_count}
+                  table={block.table_name}
+                  datasource={block.datasource ?? '家庭订单库'}
+                >
+                  {!block.success && block.error ? (
+                    <div className="flex items-start gap-2 px-3 py-3 text-[11px] text-red-300">
+                      <CircleAlert className="mt-0.5 h-3.5 w-3.5 shrink-0" />{block.error}
+                    </div>
+                  ) : (
+                    <QueryResultTable columns={block.columns} rows={block.rows} />
+                  )}
+                </ResultCard>
+              )) : !loading && (
+                <div className="rounded-lg border border-[#252530] bg-[#16161e] px-3 py-10 text-center text-[12px] text-[#8b8b9e]">
+                  Enter a business key to query other info (ord_router_lock_net, Family Order DB)
+                </div>
+              )}
+            </div>
           ) : sceneCode === ASYNC_FLOW_SCENE.scene_code ? (
             <div className="space-y-3" data-async-flow-results>
               {asyncFlowResult ? (
                 <NodeCard
                   result={{
                     node_code: 'async_flow',
-                    node_name: '异步流程',
+                    node_name: 'Async Flows',
                     table_name: asyncFlowResult.table_name,
-                    datasource_name: '家庭订单库',
+                    datasource_name: 'Family Order DB',
                     color: 'cyan',
                     parent_node_code: '',
                     parent_field: '',
@@ -3164,37 +3556,54 @@ export function AnalysisPanel({ onQueryWorkflow }: {
                     sql: asyncFlowResult.sql,
                   }}
                   hint={asyncFlowResult.history_fallback
-                    ? '在途无记录，已自动回退历史表'
+                    ? 'No in-transit rows; fell back to history table'
                     : asyncFlowResult.row_count === 0 && (asyncFlowResult.checked_tables?.length ?? 0) > 1
-                      ? `在途及近${(asyncFlowResult.checked_tables?.length ?? 1) - 1}个月历史表均无记录`
+                      ? `No rows in in-transit or last ${(asyncFlowResult.checked_tables?.length ?? 1) - 1} month(s) history tables`
                       : undefined}
                 />
               ) : !loading && (
                 <div className="rounded-lg border border-[#252530] bg-[#16161e] px-3 py-10 text-center text-[12px] text-[#8b8b9e]">
-                  输入家庭订单号后查询异步流程（ord_async_method_deal_task_order，处理完成移历史后自动回退查历史表）
+                  Enter a family order ID to query async flows (ord_async_method_deal_task_order; auto-falls back to history after completion)
                 </div>
               )}
             </div>
           ) : sceneCode === WORKFLOW_SCENE.scene_code ? (
             <div className="space-y-3" data-workflow-results>
-              {workflowResult ? workflowResult.results.map((block: AnalysisQueryBlock) => (
+              {workflowResult ? workflowResult.results.map((block: AnalysisQueryBlock) => {
+                // state 列枚举值追加中文（格式 值：含义；未匹配的值原样展示）
+                const stateIdx = block.columns.findIndex(col => col.toLowerCase() === 'state')
+                const rows = stateIdx < 0 ? block.rows : block.rows.map(row => {
+                  const raw = String(row[stateIdx] ?? '').trim()
+                  const cn = WORKFLOW_STATE_NAMES[raw]
+                  return cn ? [...row.slice(0, stateIdx), `${raw}：${cn}`, ...row.slice(stateIdx + 1)] : row
+                })
+                const tagClickable = (block.name === '工作流订单' || block.name === 'RBoss工作流')
+                return (
                 <ResultCard
                   key={block.name}
                   title={block.name}
                   rowCount={block.row_count}
                   table={block.sql?.match(/FROM (\S+)/)?.[1]}
+                  hint={tagClickable ? 'Click template_tag to open workflow query' : undefined}
                 >
                   {!block.success && block.error ? (
                     <div className="flex items-start gap-2 px-3 py-3 text-[11px] text-red-300">
                       <CircleAlert className="mt-0.5 h-3.5 w-3.5 shrink-0" />{block.error}
                     </div>
                   ) : (
-                    <QueryResultTable columns={block.columns} rows={block.rows} />
+                    <QueryResultTable
+                      columns={block.columns}
+                      rows={rows}
+                      clickableColumns={tagClickable ? ['template_tag'] : []}
+                      clickableValue={tagClickable ? (value) => !!value.trim() : undefined}
+                      onCellClick={tagClickable ? (_, value) => onQueryWorkflow?.(value.trim()) : undefined}
+                    />
                   )}
                 </ResultCard>
-              )) : !loading && (
+                )
+              }) : !loading && (
                 <div className="rounded-lg border border-[#252530] bg-[#16161e] px-3 py-10 text-center text-[12px] text-[#8b8b9e]">
-                  输入业务主键后查询；RBoss 调度订单ID 自动取自「订单信息」结果
+                  Enter a business key; RBoss schedule order ID auto-fills from Order Info results
                 </div>
               )}
             </div>
@@ -3207,7 +3616,7 @@ export function AnalysisPanel({ onQueryWorkflow }: {
                     node_code: table.table_name,
                     node_name: table.label,
                     table_name: table.table_name,
-                    datasource_name: '客户订单库',
+                    datasource_name: 'Customer Order DB',
                     color: 'cyan',
                     parent_node_code: '',
                     parent_field: '',
@@ -3222,7 +3631,30 @@ export function AnalysisPanel({ onQueryWorkflow }: {
                 />
               )) : !loading && (
                 <div className="rounded-lg border border-[#252530] bg-[#16161e] px-3 py-10 text-center text-[12px] text-[#8b8b9e]">
-                  输入业务主键后查询结构化订单信息（17 张 HALL_ORD_* 表并行）
+                  Enter a business key to query structured order info (17 HALL_ORD_* tables in parallel)
+                </div>
+              )}
+            </div>
+          ) : sceneCode === RULE_BUSI_SCENE.scene_code ? (
+            <div className="space-y-3" data-rule-busi-results>
+              {ruleBusiResult ? (
+                <ResultCard
+                  title="Business Rule Details"
+                  rowCount={ruleBusiResult.row_count}
+                  table={ruleBusiResult.table_name}
+                  datasource="Rule Config DB"
+                >
+                  {!ruleBusiResult.success && ruleBusiResult.error ? (
+                    <div className="flex items-start gap-2 px-3 py-3 text-[11px] text-red-300">
+                      <CircleAlert className="mt-0.5 h-3.5 w-3.5 shrink-0" />{ruleBusiResult.error}
+                    </div>
+                  ) : (
+                    <QueryResultTable columns={ruleBusiResult.columns} rows={ruleBusiResult.rows} />
+                  )}
+                </ResultCard>
+              ) : !loading && (
+                <div className="rounded-lg border border-[#252530] bg-[#16161e] px-3 py-10 text-center text-[12px] text-[#8b8b9e]">
+                  Enter a business code or rule code to query business rule details (joins instance/template/factor chain, Rule Config DB)
                 </div>
               )}
             </div>
@@ -3232,12 +3664,12 @@ export function AnalysisPanel({ onQueryWorkflow }: {
                 <div className="flex items-center gap-2.5 rounded-lg border border-amber-400/60 bg-amber-400/15 px-3.5 py-2 shadow-[0_0_12px_rgba(251,191,36,0.15)]"
                   data-def-scene-badge>
                   <Layers className="h-4 w-4 shrink-0 text-amber-300" />
-                  <span className="text-[11px] text-amber-200/80">场景</span>
-                  <span className="text-[14px] font-bold text-amber-300">{defScene.sceneName || '（未取到场景名）'}</span>
+                  <span className="text-[11px] text-amber-200/80">Scene</span>
+                  <span className="text-[14px] font-bold text-amber-300">{defScene.sceneName || '(no scene name)'}</span>
                   {/* 点击场景编号 → 跳转配置查询并自动带入该场景ID */}
                   <button
                     className="ml-auto shrink-0 rounded border border-amber-300/40 bg-amber-300/10 px-2 py-0.5 font-mono text-[10px] font-medium text-amber-200 hover:bg-amber-300/20 hover:text-amber-100"
-                    title="点击跳转配置查询"
+                    title="Open config query"
                     onClick={() => {
                       setQueryKind('config')
                       setConfigSceneId(defScene.sceneId)
@@ -3256,19 +3688,19 @@ export function AnalysisPanel({ onQueryWorkflow }: {
                     <NodeCard
                       key={node.node_code}
                       result={node}
-                      hint={node.node_code === 'scheduler_order' ? '点击行实时查询工单' : undefined}
+                      hint={node.node_code === 'scheduler_order' ? 'Click row for live ticket query' : undefined}
                       action={node.node_code === 'cust_order' && centerCode === 'family_order' ? (
                         <button
                           className="flex h-6 shrink-0 items-center gap-1 whitespace-nowrap rounded border border-indigo-500/40 bg-indigo-500/10 px-2 text-[10px] text-indigo-300 hover:bg-indigo-500/20"
                           disabled={!businessKey.trim()}
-                          onClick={() => setComponentsOpen(true)}
+                          onClick={() => setActiveDialog({ kind: 'components' })}
                         >
-                          <Layers className="h-3 w-3" />组件
+                          <Layers className="h-3 w-3" />Components
                         </button>
                       ) : undefined}
                       headerExtra={stats ? (
                         <div className="flex items-center gap-1.5 border-b border-[#252530] px-3 py-1.5 text-[10px] text-[#8b8b9e]">
-                          订单项统计：
+                          Order item stats:
                           {Object.entries(stats).map(([key, count]) => (
                             <span key={key} className={cn('rounded border px-1.5 py-0.5',
                               count > 0 ? 'border-emerald-500/40 bg-emerald-500/10 text-emerald-300' : 'border-[#252530] text-[#5a5a70]')}>
@@ -3287,7 +3719,7 @@ export function AnalysisPanel({ onQueryWorkflow }: {
                         <QueryResultTable
                           columns={node.columns}
                           rows={node.rows}
-                          renderActions={renderRetryAction}
+                          renderActions={renderTaskOrderActions}
                         />
                       ) : node.node_code === 'flowins_order' && centerCode === 'hall_center' ? (
                         <QueryResultTable
@@ -3298,8 +3730,7 @@ export function AnalysisPanel({ onQueryWorkflow }: {
                           onCellClick={(column, value) => {
                             if (column.toLowerCase() === 'busi_cmpt_id') {
                               // BUSI_CMPT_ID → 查 DEF_BUSI_CMPT 组件定义（支持逗号分隔多值 IN 查询）
-                              setBusiCmptId(value)
-                              setBusiCmptOpen(true)
+                              setActiveDialog({ kind: 'busiCmpt', id: value })
                               return
                             }
                             // EXT_DONE_CODE → 跳转家庭订单中心，值作为业务主键自动查询
@@ -3358,9 +3789,15 @@ export function AnalysisPanel({ onQueryWorkflow }: {
                           }}
                           clickableColumns={['scene_cfg_id']}
                           onCellClick={(_, value) => {
-                            setSceneCfgId(value)
-                            setSceneCfgOpen(true)
+                            setActiveDialog({ kind: 'sceneCfg', id: value })
                           }}
+                        />
+                      ) : node.node_code === 'plan' && centerCode === 'family_order' ? (
+                        /* 策划订单项：行操作「关联」查服务属性（ord_srv_attr，家庭订单库） */
+                        <QueryResultTable
+                          columns={node.columns}
+                          rows={node.rows}
+                          renderActions={renderPlanSrvAttrAction}
                         />
                       ) : undefined}
                     />
@@ -3372,8 +3809,8 @@ export function AnalysisPanel({ onQueryWorkflow }: {
                 if (!work) return null
                 return (
                   <NodeCard
-                    result={liveNode ? { ...liveNode, node_name: `${liveNode.node_name} · 实时` } : work}
-                    hint={liveNode ? `调度订单 ${selectedScheduler}` : undefined}
+                    result={liveNode ? { ...liveNode, node_name: `${liveNode.node_name} · Live` } : work}
+                    hint={liveNode ? `Schedule order ${selectedScheduler}` : undefined}
                     tableOverride={(
                       <QueryResultTable
                         columns={work.columns}
@@ -3381,8 +3818,7 @@ export function AnalysisPanel({ onQueryWorkflow }: {
                         renderActions={renderMessageAction(liveNode ? selectedScheduler : '')}
                         clickableColumns={['busi_cmp_id']}
                         onCellClick={(_, value) => {
-                          setOccCmptId(value)
-                          setOccCmptOpen(true)
+                          setActiveDialog({ kind: 'occCmpt', id: value })
                         }}
                       />
                     )}
@@ -3392,124 +3828,161 @@ export function AnalysisPanel({ onQueryWorkflow }: {
             </div>
           ) : !loading && (
             <div className="rounded-lg border border-[#252530] bg-[#16161e] px-3 py-10 text-center text-[12px] text-[#8b8b9e]">
-              请输入业务主键后查询
+              Enter a business key to query
             </div>
           )}
         </>
       )}
 
-      <MessageDialog
-        key={messageOpen ? 'open' : 'closed'}
-        open={messageOpen}
-        onOpenChange={setMessageOpen}
-        target={messageTarget}
-        context={{ city, inTransit, historyMonth }}
-      />
+      {/* 弹窗按 activeDialog 条件挂载：一次只弹一个；目标变化即新实例（state 初值即目标，无需 key hack） */}
+      {dlg?.kind === 'message' && (
+        <MessageDialog
+          open
+          onOpenChange={closeDialog}
+          target={dlg.target}
+          context={{ city, inTransit, historyMonth }}
+        />
+      )}
 
-      <CustomerOrderMessageDialog
-        open={custMsgOpen}
-        onOpenChange={setCustMsgOpen}
-        custOrderId={custMsgOrderId}
-        city={city}
-        inTransit={inTransit}
-        historyMonth={historyMonth}
-      />
+      {dlg?.kind === 'custMessage' && (
+        <CustomerOrderMessageDialog
+          open
+          onOpenChange={closeDialog}
+          custOrderId={dlg.custOrderId}
+          city={city}
+          inTransit={inTransit}
+          historyMonth={historyMonth}
+        />
+      )}
 
-      <AcceptMessageDialog
-        open={acceptMsgOpen}
-        onOpenChange={setAcceptMsgOpen}
-        custOrderId={acceptMsgTarget.custOrderId}
-        taskFlowInsId={acceptMsgTarget.flowInsId}
-      />
+      {dlg?.kind === 'acceptMessage' && (
+        <AcceptMessageDialog
+          open
+          onOpenChange={closeDialog}
+          custOrderId={dlg.custOrderId}
+          taskFlowInsId={dlg.flowInsId}
+        />
+      )}
 
-      <BusiCmptDialog
-        open={busiCmptOpen}
-        onOpenChange={setBusiCmptOpen}
-        busiCmptId={busiCmptId}
-      />
+      {dlg?.kind === 'busiCmpt' && (
+        <BusiCmptDialog open onOpenChange={closeDialog} busiCmptId={dlg.id} />
+      )}
 
-      <DecryptDialog
-        open={decryptOpen}
-        onOpenChange={setDecryptOpen}
-        envelopeText={decryptEnvelope}
-        result={decryptResult}
-        loading={decryptLoading}
-      />
+      {dlg?.kind === 'soBusiPrint' && (
+        <SoBusiPrintDialog
+          open
+          onOpenChange={closeDialog}
+          billId={dlg.billId}
+          createDate={dlg.createDate}
+          city={city}
+        />
+      )}
 
-      <OccBusiCmptDialog
-        open={occCmptOpen}
-        onOpenChange={setOccCmptOpen}
-        cmptCfgId={occCmptId}
-      />
+      {dlg?.kind === 'decrypt' && (
+        <DecryptDialog
+          open
+          onOpenChange={closeDialog}
+          envelopeText={dlg.envelope}
+          cachedPlain={dlg.cachedPlain}
+          onDecrypted={plain => mergeDecrypted({ [dlg.envelope]: plain })}
+        />
+      )}
 
-      <SoPreBusiLimitDialog
-        open={soPreBusiLimitOpen}
-        onOpenChange={setSoPreBusiLimitOpen}
-        limitCode={soPreBusiLimitCode}
-      />
+      {dlg?.kind === 'occCmpt' && (
+        <OccBusiCmptDialog open onOpenChange={closeDialog} cmptCfgId={dlg.id} />
+      )}
 
-      <BusinessInfoDialog
-        open={businessInfoOpen}
-        onOpenChange={setBusinessInfoOpen}
-        businessId={businessInfoId}
-      />
+      {dlg?.kind === 'soPreBusiLimit' && (
+        <SoPreBusiLimitDialog open onOpenChange={closeDialog} limitCode={dlg.code} />
+      )}
 
-      <UpRuleDialog
-        open={upRuleOpen}
-        onOpenChange={setUpRuleOpen}
-        ruleId={upRuleId}
-      />
+      {dlg?.kind === 'businessInfo' && (
+        <BusinessInfoDialog open onOpenChange={closeDialog} businessId={dlg.id} />
+      )}
 
+      {dlg?.kind === 'upRule' && (
+        <UpRuleDialog open onOpenChange={closeDialog} ruleId={dlg.id} />
+      )}
 
-      <SceneConfigDialog
-        open={sceneCfgOpen}
-        onOpenChange={setSceneCfgOpen}
-        sceneCfgId={sceneCfgId}
-        onQueryWorkflow={onQueryWorkflow}
-      />
+      {dlg?.kind === 'consumeEx' && (
+        <ConsumeExDialog
+          open
+          onOpenChange={closeDialog}
+          taskId={dlg.taskId}
+          context={{ city, inTransit, historyMonth }}
+        />
+      )}
 
-      <OrderComponentsDialog
-        open={componentsOpen}
-        onOpenChange={setComponentsOpen}
-        orderKey={businessKey.trim()}
-        params={(() => {
-          const node = sceneCache['order_info']?.nodes.find(item => item.node_code === 'cust_order')
-          if (!node || node.rows.length === 0) return {}
-          return rowValues(node.columns, node.rows[0])
-        })()}
-        onQueryWorkflow={onQueryWorkflow}
-      />
+      {dlg?.kind === 'offerSrvAttr' && (
+        <OfferSrvAttrDialog
+          open
+          onOpenChange={closeDialog}
+          customerOrderId={dlg.customerOrderId}
+          offerOrderId={dlg.offerOrderId}
+          context={{ city, inTransit, historyMonth }}
+        />
+      )}
+
+      {dlg?.kind === 'srvAttr' && (
+        <InstanceSrvAttrDialog open onOpenChange={closeDialog} offerInstId={dlg.offerInstId} />
+      )}
+
+      {dlg?.kind === 'sceneCfg' && (
+        <SceneConfigDialog
+          open
+          onOpenChange={closeDialog}
+          sceneCfgId={dlg.id}
+          onQueryWorkflow={onQueryWorkflow}
+        />
+      )}
+
+      {dlg?.kind === 'components' && (
+        <OrderComponentsDialog
+          open
+          onOpenChange={closeDialog}
+          orderKey={businessKey.trim()}
+          params={(() => {
+            const node = sceneCache['order_info']?.nodes.find(item => item.node_code === 'cust_order')
+            if (!node || node.rows.length === 0) return {}
+            return rowValues(node.columns, node.rows[0])
+          })()}
+          onQueryWorkflow={onQueryWorkflow}
+        />
+      )}
 
       {/* 工单重试确认（写操作） */}
-      <Dialog open={retryTarget !== null} onOpenChange={open => { if (!open) setRetryTarget(null) }}>
-        <DialogContent className="max-w-md gap-3">
-          <DialogHeader>
-            <DialogTitle className="flex items-center gap-2 text-[15px]">
-              <Activity className="h-4 w-4 text-rose-400" />工单重试
-            </DialogTitle>
-          </DialogHeader>
-          <div className="space-y-2 text-[12px]">
-            <div className="flex items-center justify-between gap-3">
-              <span className="text-[#8b8b9e]">工单ID</span>
-              <span className="font-mono text-[#cdd3e0]">{retryTarget?.taskId}</span>
+      {dlg?.kind === 'retry' && (
+        <Dialog open onOpenChange={open => { if (!open) closeDialog() }}>
+          <DialogContent className="max-w-md gap-3">
+            <DialogHeader>
+              <DialogTitle className="flex items-center gap-2 text-[15px]">
+                <Activity className="h-4 w-4 text-rose-400" />Ticket Retry
+              </DialogTitle>
+            </DialogHeader>
+            <div className="space-y-2 text-[12px]">
+              <div className="flex items-center justify-between gap-3">
+                <span className="text-[#8b8b9e]">Ticket ID</span>
+                <span className="font-mono text-[#cdd3e0]">{dlg.taskId}</span>
+              </div>
+              <div className="flex items-center justify-between gap-3">
+                <span className="text-[#8b8b9e]">Customer Order ID</span>
+                <span className="font-mono text-[#cdd3e0]">{dlg.custOrderId}</span>
+              </div>
+              <div className="flex items-start gap-2 rounded-md border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-[12px] text-rose-200">
+                <CircleAlert className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+                Will run UPDATE HALL_TASK SET TASK_STATE = 2 and UPDATE HALL_TASK_FLOW_INS SET handle_type = 2 on the in-transit tables. This cannot be undone.
+              </div>
             </div>
-            <div className="flex items-center justify-between gap-3">
-              <span className="text-[#8b8b9e]">客户订单ID</span>
-              <span className="font-mono text-[#cdd3e0]">{retryTarget?.custOrderId}</span>
-            </div>
-            <div className="flex items-start gap-2 rounded-md border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-[12px] text-rose-200">
-              <CircleAlert className="mt-0.5 h-3.5 w-3.5 shrink-0" />
-              确认后将执行 UPDATE HALL_TASK SET TASK_STATE = 2 与 UPDATE HALL_TASK_FLOW_INS SET handle_type = 2（在途表），该操作不可撤销。
-            </div>
-          </div>
-          <DialogFooter className="gap-2">
-            <Button size="sm" variant="outline" className="h-8" onClick={() => setRetryTarget(null)}>取消</Button>
-            <Button size="sm" className="h-8 bg-rose-600 text-white hover:bg-rose-500" onClick={() => void executeRetry()}>
-              <Activity className="mr-1 h-3.5 w-3.5" />确认重试
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+            <DialogFooter className="gap-2">
+              <Button size="sm" variant="outline" className="h-8" onClick={closeDialog}>Cancel</Button>
+              <Button size="sm" className="h-8 bg-rose-600 text-white hover:bg-rose-500"
+                onClick={() => void executeRetry(dlg.taskId, dlg.custOrderId)}>
+                <Activity className="mr-1 h-3.5 w-3.5" />Confirm Retry
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+      )}
     </div>
   )
 }

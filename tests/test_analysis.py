@@ -517,6 +517,180 @@ def test_up_rule_queries_by_rule_id():
         query_up_rule(FakeDbTools([]), "abc'; drop")
 
 
+def test_rule_busi_detail_joins_by_busi_code():
+    """规则中心·业务规则：业务编码一次联查 BUSI_REL→INSTANCE→TEMPLATE + 因子构造链
+    （规则配置库 RULE_CFG；BUSI_CODE 数值型不带引号）。"""
+    from jarvis_agent.analysis import query_rule_busi_detail
+
+    tools = FakeDbTools([
+        {"columns": ["BUSI_CODE", "RULE_ID", "INVOKE_SORT", "RULE_NAME"],
+         "rows": [["310000000029", "20180109", 1, "实名校验"]]},
+    ])
+    result = query_rule_busi_detail(tools, "310000000029")
+    assert tools.calls[0] == ("规则配置库",
+        "SELECT br.BUSI_CODE, br.RULE_ID, br.INVOKE_SORT, br.LIMIT_FLAG, br.IS_INTERRUPT, "
+        "ri.RULE_CODE, ri.RULE_NAME, ri.RULE_TYPE, "
+        "rt.RULE_TMPL_ID, rt.RULE_TMPL_DESC, rt.RULE_TMPL_EXP, "
+        "ro.OBJECT_CODE, ro.OBJECT_NAME, ro.CONST_TYPE, ro.CONST_CLASS, ro.CONST_FUNC, ro.PARAM_LIST, "
+        "ra.ATTR_CODE, ra.ATTR_NAME, ra.SRC_TABLE, ra.SRC_FIELD, ra.SRC_SYS "
+        "FROM RULE_CFG.RULE_BUSI_REL br "
+        "JOIN RULE_CFG.RULE_INSTANCE ri ON ri.RULE_ID = br.RULE_ID AND ri.STATE = '1' "
+        "JOIN RULE_CFG.RULE_TEMPLATE rt ON rt.RULE_TMPL_ID = ri.RULE_TMPL_ID AND rt.STATE = '1' "
+        "LEFT JOIN RULE_CFG.RULE_ATTR_REL ar ON ar.RULE_TMPL_ID = rt.RULE_TMPL_ID AND ar.STATE = '1' "
+        "LEFT JOIN RULE_CFG.RULE_OBJECT ro ON ro.OBJECT_ID = ar.OBJECT_ID AND ro.STATE = '1' "
+        "LEFT JOIN RULE_CFG.RULE_ATTR ra ON ra.ATTR_ID = ar.ATTR_ID AND ra.STATE = '1' "
+        "WHERE br.BUSI_CODE = 310000000029 AND br.STATE = '1' "
+        "AND now() BETWEEN br.EFFECT_DATE AND br.EXPIRE_DATE "
+        "ORDER BY br.INVOKE_SORT, br.RULE_ID, ro.OBJECT_CODE, ra.ATTR_CODE")
+    assert result["row_count"] == 1
+    assert result["table_name"] == "RULE_CFG.RULE_BUSI_REL"
+
+    with pytest.raises(ValueError, match="业务编码"):
+        query_rule_busi_detail(FakeDbTools([]), "")
+    with pytest.raises(ValueError, match="业务编码"):
+        query_rule_busi_detail(FakeDbTools([]), "310000000029; drop")  # 非纯数字拒绝
+
+
+def test_rule_busi_detail_by_rule_code():
+    """规则编码入口：RULE_INSTANCE 按编码查（STATE 作列不过滤），
+    JOIN 模板及因子构造链；与业务编码互斥。"""
+    from jarvis_agent.analysis import query_rule_busi_detail
+
+    tools = FakeDbTools([{"columns": ["RULE_ID", "RULE_CODE"], "rows": [["20180109", "Check_Imei_Is_Exist"]]}])
+    result = query_rule_busi_detail(tools, rule_code="Check_Imei_Is_Exist")
+    assert tools.calls[0][0] == "规则配置库"
+    sql = tools.calls[0][1]
+    assert "SELECT ri.RULE_ID, ri.RULE_CODE, ri.RULE_NAME, ri.RULE_TYPE, ri.STATE," in sql
+    assert "FROM RULE_CFG.RULE_INSTANCE ri" in sql
+    assert "WHERE ri.RULE_CODE = 'Check_Imei_Is_Exist'" in sql
+    assert "EFFECT_DATE" not in sql  # 规则编码入口不挂业务关系，无生效期过滤
+    assert "ORDER BY ro.OBJECT_CODE, ra.ATTR_CODE" in sql
+    assert result["table_name"] == "RULE_CFG.RULE_INSTANCE"
+
+    # 互斥：都填 / 都不填 → 拒绝
+    for kwargs in ({"busi_code": "123", "rule_code": "abc"}, {}, {"busi_code": "", "rule_code": ""}):
+        with pytest.raises(ValueError, match="只能填一个"):
+            query_rule_busi_detail(FakeDbTools([]), **kwargs)
+    with pytest.raises(ValueError, match="规则编码"):
+        query_rule_busi_detail(FakeDbTools([]), rule_code="x'; drop")
+
+
+def test_so_busi_print_queries_by_bill_and_month():
+    """免填单（协议单 task_type=3）：so570{city}.SO_BUSI_PRINT_{city}_{YYYYMM}
+    按计费账号查全列（营业库），月份取 hall_cust CREATE_DATE 年月；
+    info_data 七段内容由前端隐藏展示、拼接后供复制。"""
+    from jarvis_agent.analysis import query_so_busi_print
+
+    tools = FakeDbTools([{"columns": ["BILL_ID", "INFO_DATA"], "rows": [["17280380280", "全文"]]}])
+    result = query_so_busi_print(tools, "17280380280", "2026-10-30 15:29:02", "574")
+    assert tools.calls[0] == ("营业库",
+        "SELECT * FROM so570574.SO_BUSI_PRINT_574_202610 WHERE bill_id = '17280380280'")
+    assert result["row_count"] == 1
+    assert result["table_name"] == "so570574.SO_BUSI_PRINT_574_202610"
+
+    # 斜杠日期同样可解析；地市缺省 574
+    tools2 = FakeDbTools([{"columns": ["BILL_ID"], "rows": []}])
+    query_so_busi_print(tools2, "nbabc123", "2026/11/02 09:00:00", "")
+    assert "SO_BUSI_PRINT_574_202611" in tools2.calls[0][1]
+
+    with pytest.raises(ValueError, match="计费账号"):
+        query_so_busi_print(FakeDbTools([]), "", "2026-10-30", "574")
+    with pytest.raises(ValueError, match="创建时间"):
+        query_so_busi_print(FakeDbTools([]), "nbabc123", "", "574")
+    with pytest.raises(ValueError, match="城市编码"):
+        query_so_busi_print(FakeDbTools([]), "nbabc123", "2026-10-30", "abc")
+
+
+def test_offer_srv_attr_queries_by_customer_and_offer():
+    """关联服务属性（策划订单项「关联」按钮）：aiorder.ord_srv_attr_{city}
+    按 customer_order_id + offer_order_id 查（家庭订单库，历史走中心表名规则）。"""
+    from jarvis_agent.analysis import query_offer_srv_attr
+
+    tools = FakeDbTools([{"columns": ["ATTR_CODE", "ATTR_NAME"], "rows": [["10142", "属性"]]}])
+    result = query_offer_srv_attr(tools, "57400263750170", "57400510768932", "574")
+    assert tools.calls[0] == ("家庭订单库",
+        "SELECT * FROM aiorder.ord_srv_attr_574 WHERE customer_order_id = '57400263750170' "
+        "AND offer_order_id = '57400510768932'")
+    assert result["row_count"] == 1
+    assert result["table_name"] == "aiorder.ord_srv_attr_574"
+
+    # 历史模式：表名转历史规则
+    tools2 = FakeDbTools([{"columns": [], "rows": []}])
+    query_offer_srv_attr(tools2, "57400263750170", "57400510768932", "574", False, "2026-10")
+    assert tools2.calls[0][0] == "家庭订单库"
+    assert "aiorder.ord_srv_attr_h_574_202610" in tools2.calls[0][1]
+
+    with pytest.raises(ValueError, match="客户订单号"):
+        query_offer_srv_attr(FakeDbTools([]), "", "57400510768932", "574")
+    with pytest.raises(ValueError, match="策划订单号"):
+        query_offer_srv_attr(FakeDbTools([]), "57400263750170", "", "574")
+
+
+def test_family_other_queries_router_lock_net():
+    """家庭订单中心·其他：ord_router_lock_net 按客户订单号查（家庭订单库，
+    历史走中心表名规则）；锁网不落历史表，历史模式下仍查在途表。"""
+    from jarvis_agent.analysis import query_family_other
+
+    tools = FakeDbTools([
+        {"columns": ["cust_order_id"], "rows": [["57400263749845"]]},
+        {"columns": ["cust_order_id"], "rows": [["57400263733258"]]},
+    ])
+    result = query_family_other(tools, "57400263749845")
+    assert tools.calls[0] == ("家庭订单库",
+        "SELECT * FROM ord_router_lock_net_574 WHERE cust_order_id = '57400263749845'")
+    assert tools.calls[1] == ("家庭订单库",
+        "SELECT * FROM ord_wifi_group_574 WHERE cust_order_id = '57400263749845'")
+    assert [block["name"] for block in result["results"]] == ["路由锁网", "WiFi组网"]
+    assert [block["row_count"] for block in result["results"]] == [1, 1]
+
+    # 历史：WiFi组网转 _h_574_{month}；锁网不落历史表，强制仍查在途
+    tools_hist = FakeDbTools([{"columns": ["cust_order_id"], "rows": []},
+                              {"columns": ["cust_order_id"], "rows": []}])
+    query_family_other(tools_hist, "57400263749845", "574", False, "2026-05")
+    assert tools_hist.calls[0][1].startswith(
+        "SELECT * FROM ord_router_lock_net_574 WHERE")
+    assert tools_hist.calls[1][1].startswith(
+        "SELECT * FROM ord_wifi_group_h_574_202605 WHERE")
+
+    with pytest.raises(ValueError, match="客户订单号"):
+        query_family_other(FakeDbTools([]), "a'; drop")
+
+
+def test_consume_ex_queries_by_task_id():
+    """消息：aiorder.com_consume_ex 按 key_ele_id=task_id 查（家庭订单库，历史走规则）。"""
+    from jarvis_agent.analysis import query_consume_ex
+
+    tools = FakeDbTools([{"columns": ["key_ele_id"], "rows": [["57400263732766"]]}])
+    result = query_consume_ex(tools, "57400263732766")
+    assert tools.calls[0] == ("家庭订单库",
+        "SELECT * FROM aiorder.com_consume_ex_574 WHERE key_ele_id = '57400263732766'")
+    assert result["row_count"] == 1
+
+    tools_hist = FakeDbTools([{"columns": ["key_ele_id"], "rows": []}])
+    query_consume_ex(tools_hist, "57400263732766", "574", False, "2026-05")
+    assert tools_hist.calls[0][1].startswith(
+        "SELECT * FROM aiorder.com_consume_ex_h_574_202605 WHERE")
+
+    with pytest.raises(ValueError, match="任务ID"):
+        query_consume_ex(FakeDbTools([]), "abc'; drop")
+
+
+def test_instance_srv_attr_queries_unexpired():
+    """服务属性：so570574.ins_srv_attr_574 按订购实例ID查未过期（营业库；订购信息点击弹窗）。"""
+    from jarvis_agent.analysis import query_instance_srv_attr
+
+    tools = FakeDbTools([{"columns": ["offer_inst_id"], "rows": [["62510167349778"]]}])
+    result = query_instance_srv_attr(tools, "62510167349778")
+    assert tools.calls[0] == ("营业库",
+        "SELECT * FROM so570574.ins_srv_attr_574 "
+        "WHERE offer_inst_id = 62510167349778 AND expire_date > now()")
+    assert result["row_count"] == 1
+    assert result["table_name"] == "so570574.ins_srv_attr_574"
+
+    with pytest.raises(ValueError, match="订购实例ID"):
+        query_instance_srv_attr(FakeDbTools([]), "abc'; drop")
+
+
 def test_business_info_queries_by_business_id():
     """业务信息：product.up_business 按业务ID查（产品库；业务关系点击弹窗）。"""
     from jarvis_agent.analysis import query_business_info
@@ -684,6 +858,36 @@ def test_instance_order_cascades_from_user_id():
 
     with pytest.raises(ValueError, match="计费账号"):
         query_instance_order(FakeDbTools([]), "abc'; drop")
+
+
+def test_instance_terminal_cascades_from_user_id():
+    """终端信息（实例中心）：先按计费账号查 ins_user 取 user_id，再按 user_id 查
+    ins_device_{city}（营业库，user_id 即用户信息行的 user_id）。"""
+    from jarvis_agent.analysis import query_instance_terminal
+
+    tools = FakeDbTools([
+        {"columns": ["bill_id", "user_id"], "rows": [["nbcxa06600382", "9001"],
+                                                     ["nbcxa06600382", "9002"]]},
+        {"columns": ["imei"], "rows": [["860000000000001"]]},
+    ])
+    result = query_instance_terminal(tools, "nbcxa06600382")
+    assert tools.calls[0] == ("营业库",
+        "SELECT * FROM so570574.ins_user_574 WHERE bill_id = 'nbcxa06600382'")
+    assert tools.calls[1] == ("营业库",
+        "SELECT * FROM so570574.ins_device_574 WHERE user_id IN (9001, 9002)")
+    assert [block["name"] for block in result["results"]] == ["终端信息"]
+
+    # 无用户信息：不查终端表，返回明确错误提示
+    tools_empty = FakeDbTools([
+        {"columns": ["bill_id", "user_id"], "rows": [["nbcxa06600382", ""]]},
+    ])
+    result_empty = query_instance_terminal(tools_empty, "nbcxa06600382")
+    assert len(tools_empty.calls) == 1
+    assert result_empty["results"][0]["success"] is False
+    assert "user_id" in result_empty["results"][0]["error"]
+
+    with pytest.raises(ValueError, match="计费账号"):
+        query_instance_terminal(FakeDbTools([]), "abc'; drop")
 
 
 def test_static_config_queries_para_and_static_data():
@@ -909,3 +1113,92 @@ def test_analysis_family_order_apis_pass_params(tmp_path, monkeypatch):
     assert seen["type"] == "IMEP_BACK"
     assert seen["transit"] is False
     assert seen["month"] == "2026-05"
+
+
+# ---------- SQL 注入防御（负向用例：恶意输入必须在拼接前被拦截） ----------
+
+def test_scene_query_rejects_injection_via_city(db):
+    """city 拼进表名标识符：带 UNION 的恶意 city 必须在校验层拦截，不落库执行。"""
+    tools = FakeDbTools([])
+    with pytest.raises(ValueError, match="城市编码"):
+        execute_scene_query(db, tools, FAMILY_ORDER_CENTER, "order_info",
+                            "57400263", "574 UNION SELECT", True, "")
+    assert tools.calls == []
+
+
+def test_scene_query_rejects_injection_via_history_month(db):
+    """history_month 同样拼进表名：非 YYYYMM 格式必须拦截。"""
+    tools = FakeDbTools([])
+    with pytest.raises(ValueError, match="历史月份"):
+        execute_scene_query(db, tools, FAMILY_ORDER_CENTER, "order_info",
+                            "57400263", "574", False, "05; DROP TABLE x")
+    assert tools.calls == []
+
+
+def test_query_workflow_rejects_non_numeric_city():
+    tools = FakeDbTools([])
+    with pytest.raises(ValueError, match="城市编码"):
+        query_workflow(tools, "57400263", "", "574)", True, "")
+    assert tools.calls == []
+
+
+def test_wired_message_rejects_injection_via_city():
+    tools = FakeDbTools([])
+    with pytest.raises(ValueError, match="城市编码"):
+        query_wired_message(tools, "7001", "", "SEND_TO_IMEP",
+                            "574_20261014; DROP", True, "")
+    assert tools.calls == []
+
+
+def test_customer_order_message_rejects_quote_injection(db):
+    """cust_order_id 拼进单引号字面量：带引号的 UNION 注入必须拦截。"""
+    from jarvis_agent.analysis import query_customer_order_message
+
+    tools = FakeDbTools([])
+    with pytest.raises(ValueError, match="客户订单编号"):
+        query_customer_order_message(tools, "X' UNION SELECT password FROM mysql.user-- ",
+                                     "574", True, "")
+    assert tools.calls == []
+
+
+def test_structured_order_info_rejects_quote_injection(db):
+    from jarvis_agent.analysis import query_structured_order_info
+
+    tools = FakeDbTools([])
+    with pytest.raises(ValueError, match="客户订单编号"):
+        query_structured_order_info(tools, "1' OR '1'='1", "574", True, "")
+    assert tools.calls == []
+
+
+def test_accept_message_rejects_non_numeric_ids():
+    from jarvis_agent.analysis import query_accept_message
+
+    tools = FakeDbTools([])
+    with pytest.raises(ValueError, match="流程实例ID"):
+        query_accept_message(tools, "57400263", "abc' OR '1'='1")
+    with pytest.raises(ValueError, match="客户订单ID"):
+        query_accept_message(tools, "574'--", "100")
+    assert tools.calls == []
+
+
+def test_retry_hall_task_rejects_backslash_escape(db):
+    """原先只拦单引号：反斜杠可把闭合引号转义掉改写语句结构，现统一 isdigit 严格校验。"""
+    from jarvis_agent.analysis import retry_hall_task
+
+    tools = FakeDbTools([])
+    with pytest.raises(ValueError, match="客户订单ID"):
+        retry_hall_task(tools, "574\\", "123")
+    assert tools.calls == []
+
+
+def test_field_values_skips_quotes_and_backslash_values():
+    """级联 IN 列表二阶注入防御：上游数据里含引号/反斜杠的值不参与拼接。"""
+    from jarvis_agent.analysis import _field_values
+
+    result = {"columns": ["workflow_id"], "rows": [["100"], ["10'1"], ["20"], ["2\\2"], [""]]}
+    assert _field_values(result, "workflow_id") == ["100", "20"]
+
+
+def test_history_table_name_rejects_invalid_month():
+    with pytest.raises(ValueError, match="历史月份"):
+        history_table_name("ord_cust_574", "abc")

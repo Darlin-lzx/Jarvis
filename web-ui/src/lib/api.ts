@@ -1,6 +1,7 @@
 import type {
-  ApiResponse, Conversation, Message, TraceEvent, Settings,
+  ApiResponse, ApiCallRequest, ApiCallResult, Conversation, Message, TraceEvent, Settings,
   Agent, Skill, ModelDef, Datasource, DatasourceTestResult, KBDocument, KnowledgeBaseInfo, KGOverview, KBTriple,
+  SqlLibraryEntry, SqlLibraryFile, SqlLibraryItem,
   MCPServer, Prompt, PromptType,
   SecurityLog, Template, Space, SpaceSubsystem, BizTask, TaskDetail,
   ConversationDetail, ArtifactItem, SubSystemStats, UploadAttachmentResult, SendExtra,
@@ -15,7 +16,9 @@ import type {
   AcceptMessageResult, StructuredOrderInfoResult, DefSceneResult,
   SceneRulesResult, BusiCmptResult, DecryptResult, DecryptBatchResult,
   AsyncFlowResult, ProductConfigResult, SoPreBusiLimitResult, InstanceUserResult,
-  StaticConfigResult, ProductDriveResult, BusinessInfoResult, UpRuleResult,
+  StaticConfigResult, ProductDriveResult, BusinessInfoResult, UpRuleResult, RuleBusiResult,
+  SoBusiPrintResult, OfferSrvAttrResult,
+  FamilyOtherResult, ConsumeExResult, InstanceSrvAttrResult,
 } from './types'
 
 // —— 登录令牌（localStorage 持久化，401 统一踢回登录页） ——
@@ -53,7 +56,19 @@ async function request<T>(path: string, method = 'GET', body?: unknown): Promise
   if (body) opt.body = JSON.stringify(body)
   const res = await fetchWithAuth(path, opt)
   handleUnauthorized(res.status, path)
-  return res.json()
+  // 网关 502 HTML / 后端 500 等非 JSON 响应：json() 会抛错，统一转成结构化失败
+  let parsed: ApiResponse<T>
+  try {
+    parsed = await res.json() as ApiResponse<T>
+  } catch {
+    return { success: false, error: `服务异常（HTTP ${res.status}）` } as ApiResponse<T>
+  }
+  if (!res.ok && parsed && parsed.success !== false) {
+    // HTTP 错误但响应体里没有 success=false 标记（如 {detail}）：补全为失败结构
+    const detail = (parsed as { detail?: string }).detail
+    return { ...parsed, success: false, error: detail || `请求失败（HTTP ${res.status}）` } as ApiResponse<T>
+  }
+  return parsed
 }
 
 /** 带 Authorization 头的 fetch（直连 fetch 的调用统一走这里） */
@@ -61,6 +76,34 @@ async function fetchWithAuth(path: string, opt: RequestInit = {}): Promise<Respo
   const res = await fetch(path, { ...opt, headers: { ...authHeaders(), ...(opt.headers ?? {}) } })
   handleUnauthorized(res.status, path)
   return res
+}
+
+/** 数据分析/模板类 GET 查询通用封装：拼接查询参数 + 统一错误结构，
+ * 替代此前每个端点重复手写的 fetch → json → res.ok 样板。 */
+async function analysisGet<T>(path: string, params: Record<string, string> = {},
+                              fallbackError = '查询失败'): Promise<ApiResponse<T>> {
+  const search = new URLSearchParams(params).toString()
+  const res = await fetchWithAuth(search ? `${path}?${search}` : path)
+  const body = await res.json() as ApiResponse<T> & { detail?: string }
+  if (!res.ok) {
+    return { success: false, error: body?.detail || fallbackError }
+  }
+  return body
+}
+
+/** 数据分析 POST 查询通用封装：JSON 请求体 + 统一错误结构 */
+async function analysisPost<T>(path: string, payload: unknown,
+                               fallbackError = '查询失败'): Promise<ApiResponse<T>> {
+  const res = await fetchWithAuth(path, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  })
+  const body = await res.json() as ApiResponse<T> & { detail?: string }
+  if (!res.ok) {
+    return { success: false, error: body?.detail || fallbackError }
+  }
+  return body
 }
 
 export const api = {
@@ -125,7 +168,7 @@ export const api = {
     if (extra?.references?.length) body.references = extra.references
     if (extra?.attachment_ids?.length) body.attachment_ids = extra.attachment_ids
     if (extra?.skip_state_advance) body.skip_state_advance = true
-    return fetch('/api/chat/stream', {
+    return fetchWithAuth('/api/chat/stream', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
@@ -140,7 +183,8 @@ export const api = {
     if (opts?.conv_id != null) fd.append('conv_id', String(opts.conv_id))
     if (opts?.space_id != null) fd.append('space_id', String(opts.space_id))
     if (opts?.auto_import) fd.append('auto_import', '1')
-    return fetch('/api/chat/attachments', { method: 'POST', body: fd })
+    // FormData 不带 Content-Type（浏览器自动补 multipart boundary），fetchWithAuth 只补鉴权头
+    return fetchWithAuth('/api/chat/attachments', { method: 'POST', body: fd })
       .then(r => r.json()) as Promise<ApiResponse<UploadAttachmentResult[]>>
   },
   /** 知识图谱实体检索：q 为空返回最近 N 条 */
@@ -201,7 +245,7 @@ export const api = {
   },
   /** 上传 Excel 文件创建 Excel 数据源（源库不可连接时替代采集） */
   uploadDatasource: (fd: FormData) =>
-    fetch('/api/datasources/upload', { method: 'POST', body: fd })
+    fetchWithAuth('/api/datasources/upload', { method: 'POST', body: fd })
       .then(r => r.json()) as Promise<ApiResponse<Datasource>>,
   createDatasource: (d: Partial<Datasource> & { username?: string; password?: string; dsn?: string }) =>
     request<Datasource>('/api/datasources', 'POST', d),
@@ -241,6 +285,16 @@ export const api = {
       `/api/datasources/${encodeURIComponent(name)}/query`, 'POST', { sql, limit }),
   explainDatasource: (name: string, sql: string) =>
     request<unknown>(`/api/datasources/${encodeURIComponent(name)}/explain`, 'POST', { sql }),
+  /** 数据源 SQL 库：目录约定绑定（data/sql_library/<数据源名>.sql） */
+  listSqlLibrary: () => request<SqlLibraryItem[]>('/api/sql-library'),
+  getSqlLibraryFile: (datasource: string) =>
+    request<SqlLibraryFile>(`/api/sql-library/${encodeURIComponent(datasource)}`),
+  saveSqlLibraryFile: (datasource: string, content: string) =>
+    request<{ datasource: string; entries: SqlLibraryEntry[] }>(
+      `/api/sql-library/${encodeURIComponent(datasource)}`, 'PUT', { content }),
+  /** 接口调用调试：后端代理转发页面接口(JSON)/中台接口(XML)请求，规避浏览器 CORS */
+  callInterface: (payload: ApiCallRequest) =>
+    request<ApiCallResult>('/api/api-call', 'POST', payload),
   listDocuments: (spaceId?: number, subSystemId?: number, kbId?: number) => {
     const params = new URLSearchParams()
     if (spaceId) params.set('space_id', String(spaceId))
@@ -279,7 +333,7 @@ export const api = {
     fd.append('confidence', extra?.confidence || 'verified')
     fd.append('source', extra?.source || 'upload')
     if (extra?.source_ref) fd.append('source_ref', extra.source_ref)
-    return fetch('/api/kb/documents', { method: 'POST', body: fd }).then(r => r.json()) as Promise<ApiResponse<{ id: number; chunks: number }>>
+    return fetchWithAuth('/api/kb/documents', { method: 'POST', body: fd }).then(r => r.json()) as Promise<ApiResponse<{ id: number; chunks: number }>>
   },
   deleteDocument: (id: number) => request<never>(`/api/kb/documents/${id}`, 'DELETE'),
   searchKB: (q: string, opts?: { top_k?: number; space_id?: number; kb_id?: number }) => {
@@ -325,7 +379,7 @@ export const api = {
   uploadSkillScript: (sid: string, file: File) => {
     const fd = new FormData()
     fd.append('file', file)
-    return fetch(`/api/skills/${sid}/script`, { method: 'POST', body: fd }).then(r => r.json())
+    return fetchWithAuth(`/api/skills/${sid}/script`, { method: 'POST', body: fd }).then(r => r.json())
   },
   listPrompts: (filter?: { type?: PromptType }) => {
     const qs = filter?.type ? new URLSearchParams({ type: filter.type }).toString() : ''
@@ -441,294 +495,185 @@ export const api = {
   /** 任务流程静态表：恢复默认流程 */
   resetMigrateFlow: () => request<MigrateFlowNode[]>('/api/jarvis/flow/reset', 'POST', {}),
   /** 工作流模板：按模板编码查询并解析版本（source: remote 远端配置库 / local 本地库） */
-  getWorkflowTemplate: async (tag: string,
-                               source: 'remote' | 'local' = 'remote'): Promise<ApiResponse<WorkflowTemplateResponse>> => {
-    const res = await fetchWithAuth(`/api/workflow-templates?template_tag=${encodeURIComponent(tag)}&source=${source}`)
-    const body = await res.json() as ApiResponse<WorkflowTemplateResponse> & { detail?: string }
-    if (!res.ok) {
-      return { success: false, error: body?.detail || `工作流模板查询失败 (${res.status})` }
-    }
-    return body
-  },
+  getWorkflowTemplate: (tag: string, source: 'remote' | 'local' = 'remote') =>
+    analysisGet<WorkflowTemplateResponse>(
+      '/api/workflow-templates', { template_tag: tag, source }, `Workflow template query failed`),
   /** 工作流模板：解析编辑后的 XML 文本（图形编辑器同步用） */
-  parseWorkflowTemplate: async (xml: string): Promise<ApiResponse<WorkflowParseResponse>> => {
-    const res = await fetchWithAuth('/api/workflow-templates/parse', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ xml }),
-    })
-    const body = await res.json() as ApiResponse<WorkflowParseResponse> & { detail?: string }
-    if (!res.ok) {
-      return { success: false, error: body?.detail || `工作流模板解析失败 (${res.status})` }
-    }
-    return body
-  },
+  parseWorkflowTemplate: (xml: string) =>
+    analysisPost<WorkflowParseResponse>('/api/workflow-templates/parse', { xml }, `工作流模板解析失败`),
   /** 数据分析：业务中心与场景配置 */
-  listAnalysisCenters: async (): Promise<ApiResponse<AnalysisCenterInfo[]>> => {
-    const res = await fetchWithAuth('/api/analysis/centers')
-    const body = await res.json() as ApiResponse<AnalysisCenterInfo[]> & { detail?: string }
-    if (!res.ok) {
-      return { success: false, error: body?.detail || `业务中心加载失败 (${res.status})` }
-    }
-    return body
-  },
+  listAnalysisCenters: () =>
+    analysisGet<AnalysisCenterInfo[]>('/api/analysis/centers', {}, `业务中心加载失败`),
   /** 数据分析：场景级联查询 */
-  queryAnalysisScene: async (centerCode: string, payload: {
+  queryAnalysisScene: (centerCode: string, payload: {
     scene_code: string; business_key: string; city_code: string
     in_transit: boolean; history_month: string
-  }): Promise<ApiResponse<AnalysisSceneResult>> => {
-    const res = await fetchWithAuth(`/api/analysis/${encodeURIComponent(centerCode)}/query`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
-    })
-    const body = await res.json() as ApiResponse<AnalysisSceneResult> & { detail?: string }
-    if (!res.ok) {
-      return { success: false, error: body?.detail || `数据查询失败 (${res.status})` }
-    }
-    return body
-  },
+  }) =>
+    analysisPost<AnalysisSceneResult>(
+      `/api/analysis/${encodeURIComponent(centerCode)}/query`, payload, `Data query failed`),
   /** 数据分析：单节点实时查询（点击调度单查工单） */
-  queryAnalysisNode: async (centerCode: string, payload: {
+  queryAnalysisNode: (centerCode: string, payload: {
     scene_code: string; node_code: string; value: string
     city_code: string; in_transit: boolean; history_month: string
-  }): Promise<ApiResponse<AnalysisNodeResult>> => {
-    const res = await fetchWithAuth(`/api/analysis/${encodeURIComponent(centerCode)}/query-node`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
-    })
-    const body = await res.json() as ApiResponse<AnalysisNodeResult> & { detail?: string }
-    if (!res.ok) {
-      return { success: false, error: body?.detail || `节点查询失败 (${res.status})` }
-    }
-    return body
-  },
+  }) =>
+    analysisPost<AnalysisNodeResult>(
+      `/api/analysis/${encodeURIComponent(centerCode)}/query-node`, payload, `Node query failed`),
   /** 数据分析：家庭订单工作流信息 */
-  getAnalysisWorkflow: async (params: {
+  getAnalysisWorkflow: (params: {
     order_id: string; scheduler_ids: string; city_code: string
     in_transit: string; history_month: string
-  }): Promise<ApiResponse<AnalysisWorkflowResult>> => {
-    const search = new URLSearchParams(params).toString()
-    const res = await fetchWithAuth(`/api/analysis/family-order/workflow?${search}`)
-    const body = await res.json() as ApiResponse<AnalysisWorkflowResult> & { detail?: string }
-    if (!res.ok) {
-      return { success: false, error: body?.detail || `工作流查询失败 (${res.status})` }
-    }
-    return body
-  },
+  }) =>
+    analysisGet<AnalysisWorkflowResult>(
+      '/api/analysis/family-order/workflow', params, `Workflow query failed`),
   /** 数据分析：家庭订单报文类查询（有线/计费/阶段性回复） */
-  getAnalysisMessage: async (kind: 'wired-message' | 'billing-message' | 'stage-reply',
-                             params: Record<string, string>): Promise<ApiResponse<AnalysisMessageResult>> => {
-    const search = new URLSearchParams(params).toString()
-    const res = await fetchWithAuth(`/api/analysis/family-order/${kind}?${search}`)
-    const body = await res.json() as ApiResponse<AnalysisMessageResult> & { detail?: string }
-    if (!res.ok) {
-      return { success: false, error: body?.detail || `报文查询失败 (${res.status})` }
-    }
-    return body
-  },
+  getAnalysisMessage: (kind: 'wired-message' | 'billing-message' | 'stage-reply',
+                       params: Record<string, string>) =>
+    analysisGet<AnalysisMessageResult>(
+      `/api/analysis/family-order/${kind}`, params, `Message query failed`),
 
   /** 数据分析：异步流程（ord_async_method_deal_task_order，家庭订单库；在途查不到自动回退近月历史表） */
-  getAsyncFlow: async (params: {
+  getAsyncFlow: (params: {
     order_id: string; city_code: string
     in_transit: string; history_month: string
-  }): Promise<ApiResponse<AsyncFlowResult>> => {
-    const search = new URLSearchParams(params).toString()
-    const res = await fetchWithAuth(`/api/analysis/family-order/async-flow?${search}`)
-    const body = await res.json() as ApiResponse<AsyncFlowResult> & { detail?: string }
-    if (!res.ok) {
-      return { success: false, error: body?.detail || `异步流程查询失败 (${res.status})` }
-    }
-    return body
-  },
+  }) =>
+    analysisGet<AsyncFlowResult>(
+      '/api/analysis/family-order/async-flow', params, `Async flow query failed`),
 
   /** 数据分析：档次配置（up_product_item/up_item_feature/up_plan_plan_rel，产品库） */
-  getProductConfig: async (params: {
-    product_item_id: string
-  }): Promise<ApiResponse<ProductConfigResult>> => {
-    const search = new URLSearchParams(params).toString()
-    const res = await fetchWithAuth(`/api/analysis/product-center/product-config?${search}`)
-    const body = await res.json() as ApiResponse<ProductConfigResult> & { detail?: string }
-    if (!res.ok) {
-      return { success: false, error: body?.detail || `档次配置查询失败 (${res.status})` }
-    }
-    return body
-  },
+  getProductConfig: (params: { product_item_id: string }) =>
+    analysisGet<ProductConfigResult>(
+      '/api/analysis/product-center/product-config', params, `Offer config query failed`),
 
   /** 数据分析：策划配置（档次配置/特性/预占限制/关联产品，产品库） */
-  getPlanConfig: async (params: {
-    product_item_id: string
-  }): Promise<ApiResponse<ProductConfigResult>> => {
-    const search = new URLSearchParams(params).toString()
-    const res = await fetchWithAuth(`/api/analysis/product-center/plan-config?${search}`)
-    const body = await res.json() as ApiResponse<ProductConfigResult> & { detail?: string }
-    if (!res.ok) {
-      return { success: false, error: body?.detail || `策划配置查询失败 (${res.status})` }
-    }
-    return body
-  },
+  getPlanConfig: (params: { product_item_id: string }) =>
+    analysisGet<ProductConfigResult>(
+      '/api/analysis/product-center/plan-config', params, `Plan config query failed`),
 
   /** 数据分析：属性信息（up_item_relat 单产品资费服务关系；关联产品点击下钻） */
-  getItemRelat: async (params: {
-    product_item_id: string
-  }): Promise<ApiResponse<ProductConfigResult>> => {
-    const search = new URLSearchParams(params).toString()
-    const res = await fetchWithAuth(`/api/analysis/product-center/item-relat?${search}`)
-    const body = await res.json() as ApiResponse<ProductConfigResult> & { detail?: string }
-    if (!res.ok) {
-      return { success: false, error: body?.detail || `属性信息查询失败 (${res.status})` }
-    }
-    return body
-  },
+  getItemRelat: (params: { product_item_id: string }) =>
+    analysisGet<ProductConfigResult>(
+      '/api/analysis/product-center/item-relat', params, `Attribute info query failed`),
 
   /** 数据分析：限制参数（UP_PRE_LMT_PARAM；前项限制 rule_exp 拆分下钻） */
-  getPreLmtParam: async (params: {
-    limit_code: string
-    param_id: string
-  }): Promise<ApiResponse<ProductConfigResult>> => {
-    const search = new URLSearchParams(params).toString()
-    const res = await fetchWithAuth(`/api/analysis/product-center/pre-lmt-param?${search}`)
-    const body = await res.json() as ApiResponse<ProductConfigResult> & { detail?: string }
-    if (!res.ok) {
-      return { success: false, error: body?.detail || `限制参数查询失败 (${res.status})` }
-    }
-    return body
-  },
+  getPreLmtParam: (params: { limit_code: string; param_id: string }) =>
+    analysisGet<ProductConfigResult>(
+      '/api/analysis/product-center/pre-lmt-param', params, `Pre-limit query failed`),
 
   /** 数据分析：用户信息（实例中心，so570{city}.ins_user_{city} 按计费账号，营业库） */
-  getInstanceUser: async (params: {
-    bill_id: string
-  }): Promise<ApiResponse<InstanceUserResult>> => {
-    const search = new URLSearchParams(params).toString()
-    const res = await fetchWithAuth(`/api/analysis/instance-center/user-info?${search}`)
-    const body = await res.json() as ApiResponse<InstanceUserResult> & { detail?: string }
-    if (!res.ok) {
-      return { success: false, error: body?.detail || `用户信息查询失败 (${res.status})` }
-    }
-    return body
-  },
+  getInstanceUser: (params: { bill_id: string }) =>
+    analysisGet<InstanceUserResult>(
+      '/api/analysis/instance-center/user-info', params, `User info query failed`),
 
   /** 数据分析：框架规则定义（busicfg.UP_RULE 按规则ID，家庭业务配置库；框架规则点击弹窗） */
-  getUpRule: async (params: {
-    rule_id: string
-  }): Promise<ApiResponse<UpRuleResult>> => {
-    const search = new URLSearchParams(params).toString()
-    const res = await fetchWithAuth(`/api/analysis/product-drive-center/up-rule?${search}`)
-    const body = await res.json() as ApiResponse<UpRuleResult> & { detail?: string }
-    if (!res.ok) {
-      return { success: false, error: body?.detail || `框架规则定义查询失败 (${res.status})` }
-    }
-    return body
-  },
+  getUpRule: (params: { rule_id: string }) =>
+    analysisGet<UpRuleResult>(
+      '/api/analysis/product-drive-center/up-rule', params, `Rule definition query failed`),
+
+  /** 数据分析·规则中心：业务编码或规则编码（互斥）联查规则明细及因子构造链 */
+  getRuleBusiRules: (params: { busi_code?: string; rule_code?: string }) =>
+    analysisGet<RuleBusiResult>(
+      '/api/analysis/rule-center/busi-rules', params, `Business rule query failed`),
 
   /** 数据分析：业务信息（product.up_business 按业务ID，产品库；业务关系点击弹窗） */
-  getBusinessInfo: async (params: {
-    business_id: string
-  }): Promise<ApiResponse<BusinessInfoResult>> => {
-    const search = new URLSearchParams(params).toString()
-    const res = await fetchWithAuth(`/api/analysis/product-center/business-info?${search}`)
-    const body = await res.json() as ApiResponse<BusinessInfoResult> & { detail?: string }
-    if (!res.ok) {
-      return { success: false, error: body?.detail || `业务信息查询失败 (${res.status})` }
-    }
-    return body
-  },
+  getBusinessInfo: (params: { business_id: string }) =>
+    analysisGet<BusinessInfoResult>(
+      '/api/analysis/product-center/business-info', params, `Business info query failed`),
 
   /** 数据分析：产品驱动（家庭业务中心；待接入真实 SQL） */
-  getProductDrive: async (params: {
+  getProductDrive: (params: {
     product_item_id: string
     offer_id: string
     category: string
-  }): Promise<ApiResponse<ProductDriveResult>> => {
-    const search = new URLSearchParams(params).toString()
-    const res = await fetchWithAuth(`/api/analysis/product-drive-center/product-drive?${search}`)
-    const body = await res.json() as ApiResponse<ProductDriveResult> & { detail?: string }
-    if (!res.ok) {
-      return { success: false, error: body?.detail || `产品驱动查询失败 (${res.status})` }
-    }
-    return body
-  },
+  }) =>
+    analysisGet<ProductDriveResult>(
+      '/api/analysis/product-drive-center/product-drive', params, `Product drive query failed`),
+
+  /** 数据分析：家庭订单·其他（待接入真实 SQL） */
+  getFamilyOther: (params: {
+    business_key: string
+    city_code: string
+    in_transit: string
+    history_month: string
+  }) =>
+    analysisGet<FamilyOtherResult>(
+      '/api/analysis/family-order/other', params, `Other info query failed`),
+
+  /** 数据分析：消息（aiorder.com_consume_ex 按 key_ele_id=task_id，家庭订单库；工单行「消息」弹窗） */
+  getConsumeEx: (params: {
+    task_id: string
+    city_code: string
+    in_transit: string
+    history_month: string
+  }) =>
+    analysisGet<ConsumeExResult>(
+      '/api/analysis/family-order/consume-ex', params, `Message query failed`),
+
+  /** 数据分析·关联服务属性（策划订单项「关联」按钮）：ord_srv_attr_{city} 按
+   * customer_order_id + offer_order_id 查询（家庭订单库） */
+  getOfferSrvAttr: (params: {
+    customer_order_id: string
+    offer_order_id: string
+    city_code: string
+    in_transit: string
+    history_month: string
+  }) =>
+    analysisGet<OfferSrvAttrResult>(
+      '/api/analysis/family-order/offer-srv-attr', params, `Linked srv attribute query failed`),
+
+  /** 数据分析：服务属性（ins_srv_attr 按订购实例ID查未过期，营业库；订购信息点击弹窗） */
+  getInstanceSrvAttr: (params: { offer_inst_id: string }) =>
+    analysisGet<InstanceSrvAttrResult>(
+      '/api/analysis/instance-center/srv-attr', params, `Srv attribute query failed`),
 
   /** 数据分析：静态配置（bs_para_detail / bs_static_data 按编码，家庭订单库） */
-  getStaticConfig: async (params: {
-    code: string
-  }): Promise<ApiResponse<StaticConfigResult>> => {
-    const search = new URLSearchParams(params).toString()
-    const res = await fetchWithAuth(`/api/analysis/family-order/static-config?${search}`)
-    const body = await res.json() as ApiResponse<StaticConfigResult> & { detail?: string }
-    if (!res.ok) {
-      return { success: false, error: body?.detail || `静态配置查询失败 (${res.status})` }
-    }
-    return body
-  },
+  getStaticConfig: (params: { code: string }) =>
+    analysisGet<StaticConfigResult>(
+      '/api/analysis/family-order/static-config', params, `Static config query failed`),
 
   /** 数据分析：订购信息（实例中心，按计费账号，营业库；表名待确认） */
-  getInstanceOrder: async (params: {
-    bill_id: string
-  }): Promise<ApiResponse<InstanceUserResult>> => {
-    const search = new URLSearchParams(params).toString()
-    const res = await fetchWithAuth(`/api/analysis/instance-center/order-info?${search}`)
-    const body = await res.json() as ApiResponse<InstanceUserResult> & { detail?: string }
-    if (!res.ok) {
-      return { success: false, error: body?.detail || `订购信息查询失败 (${res.status})` }
-    }
-    return body
-  },
+  getInstanceOrder: (params: { bill_id: string }) =>
+    analysisGet<InstanceUserResult>(
+      '/api/analysis/instance-center/order-info', params, `Subscription query failed`),
+
+  /** 数据分析：终端信息（实例中心，按计费账号，营业库） */
+  getInstanceTerminal: (params: { bill_id: string }) =>
+    analysisGet<InstanceUserResult>(
+      '/api/analysis/instance-center/terminal-info', params, `Terminal query failed`),
 
   /** 数据分析：业务限制（rule_Cfg.SO_PRE_BUSI_LIMIT，规则配置库；限制参数 limit_code 点击弹窗） */
-  getSoPreBusiLimit: async (params: {
-    limit_code: string
-  }): Promise<ApiResponse<SoPreBusiLimitResult>> => {
-    const search = new URLSearchParams(params).toString()
-    const res = await fetchWithAuth(`/api/analysis/product-center/so-pre-busi-limit?${search}`)
-    const body = await res.json() as ApiResponse<SoPreBusiLimitResult> & { detail?: string }
-    if (!res.ok) {
-      return { success: false, error: body?.detail || `业务限制查询失败 (${res.status})` }
-    }
-    return body
-  },
+  getSoPreBusiLimit: (params: { limit_code: string }) =>
+    analysisGet<SoPreBusiLimitResult>(
+      '/api/analysis/product-center/so-pre-busi-limit', params, `Pre-limit query failed`),
 
   /** 数据分析：客户订单下单报文（hall_cust_dtl，客户订单库 OceanBase） */
-  getCustomerOrderMessage: async (params: {
+  getCustomerOrderMessage: (params: {
     cust_order_id: string; city_code: string
     in_transit: string; history_month: string
-  }): Promise<ApiResponse<CustomerOrderMessageResult>> => {
-    const search = new URLSearchParams(params).toString()
-    const res = await fetchWithAuth(`/api/analysis/hall-center/order-message?${search}`)
-    const body = await res.json() as ApiResponse<CustomerOrderMessageResult> & { detail?: string }
-    if (!res.ok) {
-      return { success: false, error: body?.detail || `报文查询失败 (${res.status})` }
-    }
-    return body
-  },
+  }) =>
+    analysisGet<CustomerOrderMessageResult>(
+      '/api/analysis/hall-center/order-message', params, `Message query failed`),
 
   /** 数据分析：流程实例受理报文（HALL_ORDER_BUSI_LOG 最近一条） */
-  getAcceptMessage: async (params: {
+  getAcceptMessage: (params: {
     cust_order_id: string; task_flow_ins_id: string
-  }): Promise<ApiResponse<AcceptMessageResult>> => {
-    const search = new URLSearchParams(params).toString()
-    const res = await fetchWithAuth(`/api/analysis/hall-center/accept-message?${search}`)
-    const body = await res.json() as ApiResponse<AcceptMessageResult> & { detail?: string }
-    if (!res.ok) {
-      return { success: false, error: body?.detail || `受理报文查询失败 (${res.status})` }
-    }
-    return body
-  },
+  }) =>
+    analysisGet<AcceptMessageResult>(
+      '/api/analysis/hall-center/accept-message', params, `受理报文查询失败`),
+
+  /** 数据分析·免填单（协议单 task_type=3）：SO_BUSI_PRINT_{city}_{YYYYMM} 按计费账号查（营业库） */
+  getSoBusiPrint: (params: {
+    bill_id: string; create_date: string; city_code: string
+  }) =>
+    analysisGet<SoBusiPrintResult>(
+      '/api/analysis/hall-center/so-busi-print', params, `免填单查询失败`),
 
   /** 数据分析：结构化订单信息（17 张 HALL_ORD_* 表并行查询） */
-  getStructuredOrderInfo: async (params: {
+  getStructuredOrderInfo: (params: {
     cust_order_id: string; city_code: string
     in_transit: string; history_month: string
-  }): Promise<ApiResponse<StructuredOrderInfoResult>> => {
-    const search = new URLSearchParams(params).toString()
-    const res = await fetchWithAuth(`/api/analysis/hall-center/structured-order-info?${search}`)
-    const body = await res.json() as ApiResponse<StructuredOrderInfoResult> & { detail?: string }
-    if (!res.ok) {
-      return { success: false, error: body?.detail || `结构化订单查询失败 (${res.status})` }
-    }
-    return body
-  },
+  }) =>
+    analysisGet<StructuredOrderInfoResult>(
+      '/api/analysis/hall-center/structured-order-info', params, `结构化订单查询失败`),
 
   /** 数据分析：工单重试（task_type=5，HALL_TASK.TASK_STATE 与 HALL_TASK_FLOW_INS.handle_type 置 2，固定模板写操作） */
   retryHallTask: (params: { cust_order_id: string; task_id: string }) =>
@@ -741,39 +686,19 @@ export const api = {
     }>('/api/analysis/hall-center/retry-task', 'POST', params),
 
   /** 数据分析：展示场景（DEF_SCENE，客户订单配置库） */
-  getDefScene: async (params: { scene_id: string }): Promise<ApiResponse<DefSceneResult>> => {
-    const search = new URLSearchParams(params).toString()
-    const res = await fetchWithAuth(`/api/analysis/hall-center/def-scene?${search}`)
-    const body = await res.json() as ApiResponse<DefSceneResult> & { detail?: string }
-    if (!res.ok) {
-      return { success: false, error: body?.detail || `场景查询失败 (${res.status})` }
-    }
-    return body
-  },
+  getDefScene: (params: { scene_id: string }) =>
+    analysisGet<DefSceneResult>(
+      '/api/analysis/hall-center/def-scene', params, `场景查询失败`),
 
   /** 数据分析：配置查询（按场景ID查 DEF_RULE 规则定义 + DEF_BUSI_CMPT 业务组件） */
-  getSceneRules: async (params: {
-    scene_id: string
-  }): Promise<ApiResponse<SceneRulesResult>> => {
-    const search = new URLSearchParams(params).toString()
-    const res = await fetchWithAuth(`/api/analysis/hall-center/scene-rules?${search}`)
-    const body = await res.json() as ApiResponse<SceneRulesResult> & { detail?: string }
-    if (!res.ok) {
-      return { success: false, error: body?.detail || `配置查询失败 (${res.status})` }
-    }
-    return body
-  },
+  getSceneRules: (params: { scene_id: string }) =>
+    analysisGet<SceneRulesResult>(
+      '/api/analysis/hall-center/scene-rules', params, `配置查询失败`),
 
   /** 数据分析：业务组件定义（DEF_BUSI_CMPT 按 BUSI_CMPT_ID） */
-  getBusiCmpt: async (params: { busi_cmpt_id: string }): Promise<ApiResponse<BusiCmptResult>> => {
-    const search = new URLSearchParams(params).toString()
-    const res = await fetchWithAuth(`/api/analysis/hall-center/busi-cmpt?${search}`)
-    const body = await res.json() as ApiResponse<BusiCmptResult> & { detail?: string }
-    if (!res.ok) {
-      return { success: false, error: body?.detail || `业务组件查询失败 (${res.status})` }
-    }
-    return body
-  },
+  getBusiCmpt: (params: { busi_cmpt_id: string }) =>
+    analysisGet<BusiCmptResult>(
+      '/api/analysis/hall-center/busi-cmpt', params, `业务组件查询失败`),
 
   /** 数据分析：SM4 加密字段解密（密文信封 → 密码服务） */
   decryptValue: (payload: { policy: string; cipher: string }) =>

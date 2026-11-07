@@ -154,6 +154,10 @@ export function useChatStream() {
     try {
       const resp = await api.chatStream(message, convId, agentId, controller.signal, extra)
       if (!resp.ok) {
+        // 401：令牌缺失/过期。fetchWithAuth 已清令牌并触发跳转登录，这里给出可读提示
+        if (resp.status === 401) {
+          throw new Error('登录已过期，正在跳转登录页，请重新登录后继续')
+        }
         const errText = await resp.text().catch(() => '')
         throw new Error(`HTTP ${resp.status}: ${errText.slice(0, 200)}`)
       }

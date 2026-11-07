@@ -16,9 +16,9 @@ const sidebarSource = readFileSync(new URL('../src/components/layout/sidebar.tsx
 const appSource = readFileSync(new URL('../src/App.tsx', import.meta.url), 'utf8')
 
 test('workflow panel queries by encoded template tag', () => {
-  assert.equal(apiSource.includes('getWorkflowTemplate: async (tag: string,'), true)
-  assert.equal(apiSource.includes('encodeURIComponent(tag)'), true)
-  assert.equal(apiSource.includes('&source=${source}'), true)
+  // api 收敛为 analysisGet：编码交给 URLSearchParams，source 作为查询参数传入
+  assert.equal(apiSource.includes("getWorkflowTemplate: (tag: string, source: 'remote' | 'local' = 'remote') =>"), true)
+  assert.equal(apiSource.includes("'/api/workflow-templates', { template_tag: tag, source }"), true)
   assert.equal(source.includes('api.getWorkflowTemplate(trimmed, nextSource)'), true)
   assert.equal(source.includes("const DEFAULT_TAG = 'com.ai.order.workflow.shedule.vm.GsmYdkjNewWFSchedule'"), true)
   assert.equal(source.includes('void query(DEFAULT_TAG)'), false)
@@ -36,7 +36,9 @@ test('workflow panel switches database source between remote and local', () => {
 })
 
 test('workflow API preserves backend error details', () => {
-  assert.equal(apiSource.includes("error: body?.detail || `工作流模板查询失败 (${res.status})`"), true)
+  // analysisGet 优先透传后端 detail，缺失时回退各端点专属兜底文案
+  assert.equal(apiSource.includes('return { success: false, error: body?.detail || fallbackError }'), true)
+  assert.equal(apiSource.includes('`Workflow template query failed`'), true)
 })
 
 test('workflow panel renders original coordinates and version selection', () => {
@@ -131,7 +133,7 @@ test('workflow panel exports sql with edited xml', () => {
   assert.equal(source.includes("xml={effectiveXml ?? ''}"), true)
   assert.equal(source.includes('table={response?.version_table}'), true)
   assert.equal(typesSource.includes('version_table?: string'), true)
-  assert.equal(apiSource.includes('parseWorkflowTemplate: async (xml: string)'), true)
+  assert.equal(apiSource.includes('parseWorkflowTemplate: (xml: string)'), true)
   assert.equal(apiSource.includes("'/api/workflow-templates/parse'"), true)
   assert.equal(typesSource.includes('export interface WorkflowParseResponse'), true)
 })
@@ -157,6 +159,6 @@ test('workflow panel is reachable from workbench navigation', () => {
   assert.equal(workbenchSource.includes("import { WorkflowPanel } from './workflow-panel'"), true)
   assert.equal(workbenchSource.includes("case 'workflows': return <WorkflowPanel />"), true)
   assert.equal(sidebarSource.includes("value: 'workflows'"), true)
-  assert.equal(sidebarSource.includes("label: '工作流'"), true)
+  assert.equal(sidebarSource.includes("label: 'Workflows'"), true)
   assert.equal(appSource.includes("'workflows'"), true)
 })

@@ -12,6 +12,7 @@ import { useConversations } from '@/hooks/use-conversations'
 import { useHealth } from '@/hooks/use-health'
 import { agents as builtinAgents } from '@/components/chat/agent-tabs'
 import { api } from '@/lib/api'
+import { resetAnalysisSnapshot } from '@/components/workbench/analysis-panel'
 import type { Agent } from '@/lib/types'
 import { TaskListPage } from '@/components/project/task-list-page'
 import { TaskDetailPage } from '@/components/project/task-detail-page'
@@ -117,7 +118,7 @@ export default function App() {
 
   // 同步 URL hash 与当前会话 / 工作台面板（主动保留 {tab}，避免 #/workspace/dbs 被覆写后回跳）
   // 注意：非工作台面板（如任务页 tasks）不写 hash，避免写入 #/workspace 后又经 hashchange 弹回工作台
-  const workbenchTabs = ['kb', 'artifacts', 'vector', 'kg', 'agents', 'conversations', 'skills', 'prompts', 'templates', 'dbs', 'mcp', 'migrate', 'workflows', 'analysis', 'sql', 'users']
+  const workbenchTabs = ['kb', 'artifacts', 'vector', 'kg', 'agents', 'conversations', 'skills', 'prompts', 'templates', 'dbs', 'mcp', 'migrate', 'workflows', 'analysis', 'sql', 'apicall', 'users']
   useEffect(() => {
     if (conv.currentId != null) {
       window.location.hash = `#/chat/${conv.currentId}`
@@ -297,7 +298,14 @@ export default function App() {
         />
         <main className="flex-1 flex flex-col min-w-0">
           <TopBar healthy={healthy} onSettings={() => setSettingsOpen(true)}
-                        authUser={authUser} onLogout={() => { clearToken(); setAuthed(false) }} />
+                        authUser={authUser} onLogout={() => {
+                          // 退出时通知后端吊销会话令牌；请求失败不阻塞本地退出
+                          void api.logout().catch(() => {})
+                          // 清空分析页模块级快照（含订单号/解密明文），防止跨用户残留
+                          resetAnalysisSnapshot()
+                          clearToken()
+                          setAuthed(false)
+                        }} />
           {selectedTask ? (
             <TaskDetailPage
               taskId={selectedTask.id}
@@ -316,9 +324,12 @@ export default function App() {
                   const agent = (r.success && r.data?.agent_id) || 'jarvis_commander'
                   setActiveAgent(agent)
                   api.createConversation(selectedTask.name, { task_id: selectedTask.id }).then(cr => {
-                    if (cr.success && cr.data) handleConvCreated(cr.data.id)
-                  })
-                })
+                    if (cr.success && cr.data) {
+                      handleConvCreated(cr.data.id)
+                      bumpSidebarRefresh()
+                    }
+                  }).catch(e => window.alert(`创建会话失败: ${e}`))
+                }).catch(e => window.alert(`任务详情加载失败: ${e}`))
               }}
               onBackToTasks={(f) => { setTaskFilter(f); setSelectedTask(null) }}
               onCopyTask={(ctx) => { setNewTaskCtx(ctx as NewTaskContext); setNewTaskOpen(true) }}
